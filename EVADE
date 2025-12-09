@@ -1,0 +1,183 @@
+-- Evade Movement Pack (Stable, Lag-Free, NO LERP)
+-- Enhanced BHOP, Slope Trimp, Super-Trimp, Auto A/D Strafe
+-- Zero fling when downed, fixed ground detection
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local humanoid
+local rootPart
+local camera = Workspace.CurrentCamera
+
+-----------------------------------------------------
+-- SETTINGS
+-----------------------------------------------------
+local jumpPower = 20
+local jumpCooldown = 0.05
+local trimpPower = 8
+local superTrimpPower = 12
+local strafeSpeed = 14        -- slightly lowered to prevent overboost
+local groundRayLength = 4.5
+local updateRate = 0.03
+
+-----------------------------------------------------
+-- STATE
+-----------------------------------------------------
+local isHoldingSpace = false
+local moveX, moveZ = 0, 0
+local lastJump = 0
+local movementEnabled = true
+local onGround = false
+local slopeNormal = Vector3.new(0,1,0)
+
+local V3_DOWN = Vector3.new(0,-1,0)
+
+-----------------------------------------------------
+-- FILTER (only map)
+-----------------------------------------------------
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Whitelist
+rayParams.FilterDescendantsInstances = {Workspace.Map or Workspace}
+
+-----------------------------------------------------
+-- DOWNED HANDLING (NO FLING)
+-----------------------------------------------------
+local function connectHumanoid(h)
+    humanoid = h
+
+    h.StateChanged:Connect(function(_, new)
+        if new == Enum.HumanoidStateType.Physics or new == Enum.HumanoidStateType.Dead then
+            movementEnabled = false
+        else
+            if humanoid.Health > 0 then
+                movementEnabled = true
+            end
+        end
+    end)
+
+    h:GetPropertyChangedSignal("Health"):Connect(function()
+        if humanoid.Health > 0 and humanoid:GetState() ~= Enum.HumanoidStateType.Physics then
+            movementEnabled = true
+        end
+    end)
+end
+
+local function initCharacter(char)
+    rootPart = char:WaitForChild("HumanoidRootPart")
+    local h = char:WaitForChild("Humanoid")
+    connectHumanoid(h)
+
+    movementEnabled = true
+end
+
+if player.Character then initCharacter(player.Character) end
+player.CharacterAdded:Connect(initCharacter)
+
+-----------------------------------------------------
+-- INPUT
+-----------------------------------------------------
+UIS.InputBegan:Connect(function(input,p)
+    if p or not movementEnabled then return end
+    local code = input.KeyCode
+
+    if code == Enum.KeyCode.Space then isHoldingSpace = true
+    elseif code == Enum.KeyCode.A then moveX = -1
+    elseif code == Enum.KeyCode.D then moveX = 1
+    elseif code == Enum.KeyCode.W then moveZ = 1
+    elseif code == Enum.KeyCode.S then moveZ = -1
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    local code = input.KeyCode
+
+    if code == Enum.KeyCode.Space then isHoldingSpace = false
+    elseif code == Enum.KeyCode.A or code == Enum.KeyCode.D then moveX = 0
+    elseif code == Enum.KeyCode.W or code == Enum.KeyCode.S then moveZ = 0
+    end
+end)
+
+-----------------------------------------------------
+-- GROUND CHECK (3 rays)
+-----------------------------------------------------
+local groundOffsets = {
+    Vector3.new(0,0,0),
+    Vector3.new(1,0,0),
+    Vector3.new(-1,0,0)
+}
+
+local function updateGround()
+    if not rootPart then return end
+
+    local hit
+
+    for _, offset in ipairs(groundOffsets) do
+        local origin = rootPart.Position + offset
+        hit = Workspace:Raycast(origin, V3_DOWN * groundRayLength, rayParams)
+        if hit then break end
+    end
+
+    onGround = (hit ~= nil)
+    slopeNormal = hit and hit.Normal or Vector3.new(0,1,0)
+end
+
+RunService.Heartbeat:Connect(function()
+    if movementEnabled then updateGround() end
+end)
+
+-----------------------------------------------------
+-- MOVEMENT LOOP (NO FLING PHYSICS)
+-----------------------------------------------------
+RunService.Heartbeat:Connect(function()
+    if not rootPart or not movementEnabled then return end
+
+    local vel = rootPart.Velocity
+    local final = vel
+
+    -------------------------------------------------
+    -- ENHANCED BHOP (fixed timing)
+    -------------------------------------------------
+    if onGround and isHoldingSpace and (tick() - lastJump >= jumpCooldown) then
+        final = Vector3.new(final.X, jumpPower, final.Z)
+
+        local hv = Vector3.new(vel.X,0,vel.Z)
+        if hv.Magnitude > 1 then
+            final += hv.Unit * 4.2
+        end
+
+        if slopeNormal.Y < 0.99 then
+            final += Vector3.new(0, (1 - slopeNormal.Y) * 2.4, 0)
+        end
+
+        lastJump = tick()
+    end
+
+    -------------------------------------------------
+    -- MOVEMENT + SUPER TRIMP + A/D AUTO STRAFE
+    -------------------------------------------------
+    if moveX ~= 0 or moveZ ~= 0 then
+        local camCF = camera.CFrame
+        local dir = camCF.LookVector * moveZ + camCF.RightVector * moveX
+
+        if dir.Magnitude > 0 then
+            dir = dir.Unit
+
+            if onGround then
+                local slopeDir = dir - dir:Dot(slopeNormal) * slopeNormal
+                if slopeDir.Magnitude > 0 then
+                    final += slopeDir.Unit * superTrimpPower
+                end
+            end
+
+            final += Vector3.new(dir.X * strafeSpeed, 0, dir.Z * strafeSpeed)
+        end
+    end
+
+    -------------------------------------------------
+    -- Apply
+    -------------------------------------------------
+    rootPart.Velocity = final
+end)
