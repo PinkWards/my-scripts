@@ -1,3 +1,15 @@
+-- Console print
+print("[Evade Movement Pack] Executed at " .. os.date("%Y-%m-%d %H:%M:%S"))
+
+-- Screen notification
+pcall(function()
+    game.StarterGui:SetCore("SendNotification", {
+        Title = "Evade Movement Pack";
+        Text = "Loaded at " .. os.date("%H:%M:%S");
+        Duration = 4;
+    })
+end)
+
 -- Evade Movement Pack (Stable, Lag-Free, NO LERP)
 -- Enhanced BHOP, Slope Trimp, Super-Trimp, Auto A/D Strafe
 -- Zero fling when downed, fixed ground detection
@@ -19,7 +31,7 @@ local jumpPower = 20
 local jumpCooldown = 0.05
 local trimpPower = 8
 local superTrimpPower = 12
-local strafeSpeed = 14        -- slightly lowered to prevent overboost
+local strafeSpeed = 14
 local groundRayLength = 4.5
 local updateRate = 0.03
 
@@ -36,14 +48,14 @@ local slopeNormal = Vector3.new(0,1,0)
 local V3_DOWN = Vector3.new(0,-1,0)
 
 -----------------------------------------------------
--- FILTER (only map)
+-- FILTER (map only)
 -----------------------------------------------------
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Whitelist
 rayParams.FilterDescendantsInstances = {Workspace.Map or Workspace}
 
 -----------------------------------------------------
--- DOWNED HANDLING (NO FLING)
+-- DOWNED HANDLING
 -----------------------------------------------------
 local function connectHumanoid(h)
     humanoid = h
@@ -69,7 +81,6 @@ local function initCharacter(char)
     rootPart = char:WaitForChild("HumanoidRootPart")
     local h = char:WaitForChild("Humanoid")
     connectHumanoid(h)
-
     movementEnabled = true
 end
 
@@ -79,8 +90,8 @@ player.CharacterAdded:Connect(initCharacter)
 -----------------------------------------------------
 -- INPUT
 -----------------------------------------------------
-UIS.InputBegan:Connect(function(input,p)
-    if p or not movementEnabled then return end
+UIS.InputBegan:Connect(function(input, gp)
+    if gp or not movementEnabled then return end
     local code = input.KeyCode
 
     if code == Enum.KeyCode.Space then isHoldingSpace = true
@@ -101,7 +112,7 @@ UIS.InputEnded:Connect(function(input)
 end)
 
 -----------------------------------------------------
--- GROUND CHECK (3 rays)
+-- GROUND CHECK (3 Raycasts)
 -----------------------------------------------------
 local groundOffsets = {
     Vector3.new(0,0,0),
@@ -111,7 +122,6 @@ local groundOffsets = {
 
 local function updateGround()
     if not rootPart then return end
-
     local hit
 
     for _, offset in ipairs(groundOffsets) do
@@ -129,7 +139,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -----------------------------------------------------
--- MOVEMENT LOOP (NO FLING PHYSICS)
+-- MOVEMENT LOOP
 -----------------------------------------------------
 RunService.Heartbeat:Connect(function()
     if not rootPart or not movementEnabled then return end
@@ -138,12 +148,12 @@ RunService.Heartbeat:Connect(function()
     local final = vel
 
     -------------------------------------------------
-    -- ENHANCED BHOP (fixed timing)
+    -- ENHANCED BHOP
     -------------------------------------------------
     if onGround and isHoldingSpace and (tick() - lastJump >= jumpCooldown) then
         final = Vector3.new(final.X, jumpPower, final.Z)
 
-        local hv = Vector3.new(vel.X,0,vel.Z)
+        local hv = Vector3.new(vel.X, 0, vel.Z)
         if hv.Magnitude > 1 then
             final += hv.Unit * 4.2
         end
@@ -156,7 +166,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     -------------------------------------------------
-    -- MOVEMENT + SUPER TRIMP + A/D AUTO STRAFE
+    -- MOVEMENT + SUPER TRIMP + AUTO STRAFE
     -------------------------------------------------
     if moveX ~= 0 or moveZ ~= 0 then
         local camCF = camera.CFrame
@@ -177,7 +187,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     -------------------------------------------------
-    -- Apply
+    -- APPLY VELOCITY
     -------------------------------------------------
     rootPart.Velocity = final
 end)
