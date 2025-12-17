@@ -1,6 +1,5 @@
--- Ultra-Clean Animation Copy Script v5.1
--- Fixed arm/leg twisting when target moves
--- Added respawn confirmation popup
+-- Ultra-Clean Animation Copy Script v5.2
+-- Fixed: No longer blocks external teleports (Infinite Yield, etc.)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,7 +15,7 @@ local CONFIG = {
     RespawnAtSameLocation = true,
     BlackFadeTime = 0.3,
     FadeOutTime = 0.4,
-    PopupTimeout = 10, -- Seconds before popup auto-closes
+    PopupTimeout = 10,
 }
 
 -- State
@@ -25,6 +24,7 @@ local targetPlayer = nil
 local mainConnection = nil
 local savedCFrame = nil
 local isRespawning = false
+local justRespawned = false -- NEW: Track if we just respawned
 
 -- Animation storage
 local loadedAnims = {}
@@ -221,12 +221,10 @@ local function showPopup()
     popupResult = nil
     popupActive = true
     
-    -- Reset popup state
     popupBox.Position = UDim2.new(0.5, -160, 0.5, -90)
     popupBox.Size = UDim2.new(0, 320, 0, 180)
     popupContainer.Visible = true
     
-    -- Animate popup in
     popupBox.Position = UDim2.new(0.5, -160, 0.6, -90)
     popupBox:TweenPosition(
         UDim2.new(0.5, -160, 0.5, -90),
@@ -236,7 +234,6 @@ local function showPopup()
         true
     )
     
-    -- Timer countdown
     local timeLeft = CONFIG.PopupTimeout
     
     task.spawn(function()
@@ -246,19 +243,16 @@ local function showPopup()
             timeLeft = timeLeft - 1
         end
         
-        -- Auto-close (defaults to No)
         if popupActive then
             popupResult = false
             popupActive = false
         end
     end)
     
-    -- Wait for result
     while popupActive do
         task.wait(0.1)
     end
     
-    -- Animate popup out
     popupBox:TweenPosition(
         UDim2.new(0.5, -160, 0.6, -90),
         Enum.EasingDirection.In,
@@ -291,7 +285,6 @@ end
 addHoverEffect(yesButton, Color3.fromRGB(0, 170, 127), Color3.fromRGB(0, 200, 150))
 addHoverEffect(noButton, Color3.fromRGB(60, 60, 65), Color3.fromRGB(80, 80, 85))
 
--- Button clicks
 yesButton.MouseButton1Click:Connect(function()
     closePopup(true)
 end)
@@ -319,7 +312,7 @@ local function fadeFromBlack()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- ANIMATION COPY FUNCTIONS
+-- ANIMATION COPY FUNCTIONS (NO POSITION SAVING DURING COPY)
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimateScript()
@@ -476,6 +469,10 @@ local function copyAnimation(animId, targetTrack)
     end)
 end
 
+-- ═══════════════════════════════════════════════════════════════════
+-- MAIN UPDATE LOOP (REMOVED POSITION SAVING - THIS WAS THE ISSUE!)
+-- ═══════════════════════════════════════════════════════════════════
+
 local function update()
     if not isCopying or isRespawning then return end
     
@@ -486,12 +483,8 @@ local function update()
         disableAnimateScript()
     end
     
-    if CONFIG.RespawnAtSameLocation then
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if root then
-            savedCFrame = root.CFrame
-        end
-    end
+    -- REMOVED: No longer saving position every frame!
+    -- This was blocking external teleports
     
     if not targetPlayer or not targetPlayer.Character then
         local newTarget = getNearestPlayer()
@@ -552,6 +545,23 @@ local function update()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
+-- MANUAL POSITION SAVE FUNCTION (Call this when you want to save)
+-- ═══════════════════════════════════════════════════════════════════
+
+local function saveCurrentPosition()
+    local char = LocalPlayer.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root then
+            savedCFrame = root.CFrame
+            print("📍 Position saved!")
+            return true
+        end
+    end
+    return false
+end
+
+-- ═══════════════════════════════════════════════════════════════════
 -- TOGGLE FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════
 
@@ -562,13 +572,8 @@ local function startCopying()
     completeCleanup()
     disableAnimateScript()
     
-    local char = LocalPlayer.Character
-    if char then
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if root then
-            savedCFrame = root.CFrame
-        end
-    end
+    -- Save position ONCE when starting (not every frame)
+    saveCurrentPosition()
     
     targetPlayer = getNearestPlayer()
     
@@ -579,6 +584,7 @@ local function startCopying()
     else
         print("🔍 Waiting for nearby player...")
     end
+    print("📍 Position saved for respawn")
     print("═══════════════════════════════════")
     
     mainConnection = RunService.Heartbeat:Connect(update)
@@ -617,8 +623,36 @@ end
 
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
+    
     if input.KeyCode == CONFIG.ToggleKey then
         toggle()
+    end
+    
+    -- NEW: Press P to manually save current position
+    if input.KeyCode == Enum.KeyCode.P then
+        if saveCurrentPosition() then
+            -- Visual feedback
+            local notification = Instance.new("TextLabel")
+            notification.Size = UDim2.new(0, 200, 0, 40)
+            notification.Position = UDim2.new(0.5, -100, 0, 50)
+            notification.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+            notification.BackgroundTransparency = 0.2
+            notification.TextColor3 = Color3.new(1, 1, 1)
+            notification.TextSize = 16
+            notification.Font = Enum.Font.GothamBold
+            notification.Text = "📍 Position Saved!"
+            notification.Parent = screenGui
+            
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 8)
+            corner.Parent = notification
+            
+            task.delay(2, function()
+                TweenService:Create(notification, TweenInfo.new(0.3), {BackgroundTransparency = 1, TextTransparency = 1}):Play()
+                task.wait(0.3)
+                notification:Destroy()
+            end)
+        end
     end
 end)
 
@@ -631,24 +665,26 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     playingTracks = {}
     loadedAnims = {}
     animateScriptDisabled = false
+    justRespawned = true
     
     -- Wait for character to load
     local hum = char:WaitForChild("Humanoid", 10)
     local root = char:WaitForChild("HumanoidRootPart", 10)
     
-    if not hum or not root then return end
+    if not hum or not root then 
+        justRespawned = false
+        return 
+    end
     
-    -- Check if we have a saved position
+    -- Only show popup if we have a saved position AND respawn option is enabled
     if CONFIG.RespawnAtSameLocation and savedCFrame then
         isRespawning = true
         
-        -- Show confirmation popup
-        task.wait(0.3) -- Small delay so player can see they respawned
+        task.wait(0.5)
         
         local wantsTeleport = showPopup()
         
         if wantsTeleport then
-            -- Teleport back
             fadeToBlack()
             
             task.wait(0.2)
@@ -669,14 +705,14 @@ LocalPlayer.CharacterAdded:Connect(function(char)
             
             print("📍 Teleported to saved location")
         else
-            -- Stay at spawn, update saved position
+            -- Update saved position to current spawn
             savedCFrame = root.CFrame
             
             if isCopying then
                 disableAnimateScript()
             end
             
-            print("📍 Staying at spawn point")
+            print("📍 Staying at spawn point (position updated)")
         end
         
         isRespawning = false
@@ -686,6 +722,8 @@ LocalPlayer.CharacterAdded:Connect(function(char)
             disableAnimateScript()
         end
     end
+    
+    justRespawned = false
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -705,13 +743,15 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 print("═══════════════════════════════════════════")
-print("    🎭 Animation Copy v5.1")
+print("    🎭 Animation Copy v5.2")
 print("═══════════════════════════════════════════")
-print("    Press [H] to toggle")
+print("    Keybinds:")
+print("    [H] - Toggle animation copy")
+print("    [P] - Save current position")
 print("")
 print("    Features:")
 print("    ✓ Copy nearest player animations")
 print("    ✓ No twisted arms/legs")
-print("    ✓ Smooth respawn with confirmation")
-print("    ✓ Auto-close popup after 10s")
+print("    ✓ Respawn confirmation popup")
+print("    ✓ Works with Infinite Yield/other TPs")
 print("═══════════════════════════════════════════")
