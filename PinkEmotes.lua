@@ -1,37 +1,37 @@
 --[[ 
-    Pink Emote System
+    Pink Emote System (OPTIMIZED)
     Connected to: github.com/PinkWards/emote-sniper
     💗 Final Clean Version - Light & Smooth!
 ]]
 
-if _G.EmotesGUIRunning then
-    return
-end
+if _G.EmotesGUIRunning then return end
 _G.EmotesGUIRunning = true
 
+-- Cache all services once
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
 local StarterGui = game:GetService("StarterGui")
+local MarketplaceService = game:GetService("MarketplaceService")
+local GuiService = game:GetService("GuiService")
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 
--- 💗 YOUR DATABASE 💗
+-- Database URL
 local DATABASE_URL = "https://raw.githubusercontent.com/PinkWards/emote-sniper/main/EmoteSniper.json"
 
+-- State variables
 local emoteClickConnections = {}
 local isMonitoringClicks = false
-
 local emotesData = {}
 local originalEmotesData = {}
 local filteredEmotes = {}
 local favoriteEmotes = {}
 local favoriteFileName = "FavoriteEmotes.json"
-local emoteSearchTerm = ""
 
 local currentPage = 1
 local itemsPerPage = 8
@@ -41,19 +41,34 @@ local totalEmotesLoaded = 0
 local favoriteEnabled = false
 local isGUICreated = false
 
--- 💗 PINK THEME COLORS (LIGHTER!) 💗
-local PINK_LIGHT = Color3.fromHex("#FFEBF2")      -- Very light pink
-local PINK_MEDIUM = Color3.fromHex("#FFC8DC")     -- Light medium pink
-local PINK_WHEEL = Color3.fromHex("#FFD9E8")      -- Light wheel background
-local PINK_HEART = Color3.fromHex("#FF6B9D")      -- Heart pink
-local WHITE = Color3.fromRGB(255, 255, 255)
+-- 💗 PINK THEME COLORS (cached once)
+local COLORS = {
+    PINK_LIGHT = Color3.fromHex("#FFEBF2"),
+    PINK_MEDIUM = Color3.fromHex("#FFC8DC"),
+    PINK_WHEEL = Color3.fromHex("#FFD9E8"),
+    PINK_HEART = Color3.fromHex("#FF6B9D"),
+    WHITE = Color3.fromRGB(255, 255, 255),
+    PLACEHOLDER = Color3.fromRGB(255, 210, 230),
+}
 
--- 💗 LAG FIX: Throttle updates
+-- 💗 LAG FIX: Throttle settings
 local lastThemeUpdate = 0
-local THEME_UPDATE_INTERVAL = 0.5  -- Only update theme every 0.5 seconds
+local THEME_UPDATE_INTERVAL = 0.5
+local frameCount = 0
+local FRAME_CHECK_INTERVAL = 30
 
-local Under, UIListLayout, _1left, _9right, _4pages, _3TextLabel, _2Routenumber, Top,
-    UIListLayout_2, UICorner, Search, Favorite, UICorner2
+-- GUI element references
+local Under, UIListLayout, _1left, _9right, _4pages, _3TextLabel, _2Routenumber
+local Top, UIListLayout_2, UICorner, Search, Favorite, UICorner2
+
+-- Click cooldown table
+local clickCooldown = {}
+
+-- Cache for emotes wheel path
+local cachedEmotesWheel = nil
+local lastWheelCheck = 0
+
+--============ UTILITY FUNCTIONS ============--
 
 local function Notify(data)
     pcall(function()
@@ -65,31 +80,52 @@ local function Notify(data)
     end)
 end
 
-local function stopEmotes()
-    pcall(function()
-        for _, track in ipairs(humanoid:GetPlayingAnimationTracks()) do
-            track:Stop()
-        end
-    end)
-end
-
 local function getCharacterAndHumanoid()
     local char = player.Character
     if not char then return nil, nil end
     local hum = char:FindFirstChild("Humanoid")
-    if not hum then return nil, nil end
     return char, hum
 end
 
-local function checkEmotesMenuExists()
-    local success, emotesWheel = pcall(function()
+local function stopEmotes()
+    pcall(function()
+        local tracks = humanoid:GetPlayingAnimationTracks()
+        for i = 1, #tracks do
+            tracks[i]:Stop()
+        end
+    end)
+end
+
+-- Optimized: Cache emotes wheel lookup
+local function getEmotesWheel()
+    local currentTime = tick()
+    
+    -- Return cached if recent
+    if cachedEmotesWheel and cachedEmotesWheel.Parent and (currentTime - lastWheelCheck) < 1 then
+        return cachedEmotesWheel
+    end
+    
+    lastWheelCheck = currentTime
+    
+    local success, wheel = pcall(function()
         return CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel
     end)
-    if success and emotesWheel then
-        return true, emotesWheel
+    
+    if success and wheel then
+        cachedEmotesWheel = wheel
+        return wheel
     end
-    return false, nil
+    
+    cachedEmotesWheel = nil
+    return nil
 end
+
+local function checkEmotesMenuExists()
+    local wheel = getEmotesWheel()
+    return wheel ~= nil, wheel
+end
+
+--============ FILE I/O ============--
 
 local function saveFavorites()
     if writefile then
@@ -107,13 +143,15 @@ local function loadFavorites()
     end
 end
 
+--============ HELPER FUNCTIONS ============--
+
 local function extractAssetId(imageUrl)
     return string.match(imageUrl, "Asset&id=(%d+)")
 end
 
 local function getEmoteName(assetId)
     local success, productInfo = pcall(function()
-        return game:GetService("MarketplaceService"):GetProductInfo(tonumber(assetId))
+        return MarketplaceService:GetProductInfo(tonumber(assetId))
     end)
     if success and productInfo then
         return productInfo.Name
@@ -122,15 +160,17 @@ local function getEmoteName(assetId)
 end
 
 local function isInFavorites(assetId)
-    for _, favorite in pairs(favoriteEmotes) do
-        if tostring(favorite.id) == tostring(assetId) then
+    local assetStr = tostring(assetId)
+    for i = 1, #favoriteEmotes do
+        if tostring(favoriteEmotes[i].id) == assetStr then
             return true
         end
     end
     return false
 end
 
--- 💗 SMALL HEART
+--============ FAVORITE ICON ============--
+
 local function updateFavoriteIcon(imageLabel, assetId, isFavorite)
     local favoriteIcon = imageLabel:FindFirstChild("FavoriteHeart")
     
@@ -145,81 +185,89 @@ local function updateFavoriteIcon(imageLabel, assetId, isFavorite)
             favoriteIcon.Text = "💗"
             favoriteIcon.TextScaled = true
             favoriteIcon.Font = Enum.Font.SourceSans
-            favoriteIcon.TextColor3 = WHITE
+            favoriteIcon.TextColor3 = COLORS.WHITE
             favoriteIcon.Parent = imageLabel
         else
             favoriteIcon.Visible = true
         end
-    else
-        if favoriteIcon then
-            favoriteIcon.Visible = false
-        end
+    elseif favoriteIcon then
+        favoriteIcon.Visible = false
     end
 end
 
--- 💗 APPLY LIGHT PINK TO WHEEL (Optimized - less loops!)
+--============ THEME APPLICATION (OPTIMIZED) ============--
+
 local function applyPinkThemeToWheel()
+    local emotesWheel = getEmotesWheel()
+    if not emotesWheel then return end
+    
     pcall(function()
-        local emotesWheel = CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel
-        
-        -- Back layer
         local back = emotesWheel:FindFirstChild("Back")
         if back then
             local background = back:FindFirstChild("Background")
             if background then
                 if background:IsA("Frame") then
-                    background.BackgroundColor3 = PINK_WHEEL
-                    background.BackgroundTransparency = 0.05  -- More visible, lighter
+                    background.BackgroundColor3 = COLORS.PINK_WHEEL
+                    background.BackgroundTransparency = 0.05
                 end
                 
                 local overlay = background:FindFirstChild("BackgroundCircleOverlay")
                 if overlay then
-                    overlay.BackgroundColor3 = PINK_LIGHT
+                    overlay.BackgroundColor3 = COLORS.PINK_LIGHT
                     overlay.BackgroundTransparency = 0.1
                 end
                 
-                -- Only style direct children (faster!)
-                for _, child in pairs(background:GetChildren()) do
+                local children = background:GetChildren()
+                for i = 1, #children do
+                    local child = children[i]
                     if child:IsA("ImageLabel") then
-                        child.ImageColor3 = PINK_LIGHT
+                        child.ImageColor3 = COLORS.PINK_LIGHT
                         child.ImageTransparency = 0.05
                     end
                 end
             end
         end
         
-        -- Center - lighter colors
         local center = emotesWheel:FindFirstChild("Center")
         if center then
-            for _, child in pairs(center:GetChildren()) do
+            local children = center:GetChildren()
+            for i = 1, #children do
+                local child = children[i]
                 if child:IsA("Frame") then
-                    child.BackgroundColor3 = PINK_MEDIUM
+                    child.BackgroundColor3 = COLORS.PINK_MEDIUM
                     child.BackgroundTransparency = 0.2
                 elseif child:IsA("ImageLabel") then
-                    child.ImageColor3 = PINK_MEDIUM
+                    child.ImageColor3 = COLORS.PINK_MEDIUM
                 end
             end
         end
     end)
 end
 
--- 💗 MAKE EMOTE ICONS LIGHTER (Optimized!)
 local function lightenEmoteIcons()
+    local emotesWheel = getEmotesWheel()
+    if not emotesWheel then return end
+    
     pcall(function()
-        local emotesButtons = CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel.Front.EmotesButtons
+        local front = emotesWheel:FindFirstChild("Front")
+        if not front then return end
         
-        for _, child in pairs(emotesButtons:GetChildren()) do
+        local emotesButtons = front:FindFirstChild("EmotesButtons")
+        if not emotesButtons then return end
+        
+        local children = emotesButtons:GetChildren()
+        for i = 1, #children do
+            local child = children[i]
             if child:IsA("ImageLabel") then
-                -- Make emote icons brighter/lighter
-                child.ImageColor3 = Color3.fromRGB(255, 255, 255)  -- Full brightness
-                child.ImageTransparency = 0  -- Fully visible
-                child.BackgroundTransparency = 1  -- No background box
+                child.ImageColor3 = COLORS.WHITE
+                child.ImageTransparency = 0
+                child.BackgroundTransparency = 1
                 
-                -- Remove any added elements (faster cleanup)
+                -- Remove decorative elements
                 local stroke = child:FindFirstChild("PinkStroke")
                 if stroke then stroke:Destroy() end
                 
-                local corner = child:FindFirstChild("PinkCorner") 
+                local corner = child:FindFirstChild("PinkCorner")
                 if corner then corner:Destroy() end
                 
                 local bg = child:FindFirstChild("PinkBackground")
@@ -229,15 +277,22 @@ local function lightenEmoteIcons()
     end)
 end
 
--- 💗 OPTIMIZED: Update favorites only (not full theme)
 local function updateAllFavoriteIcons()
+    local emotesWheel = getEmotesWheel()
+    if not emotesWheel then return end
+    
     pcall(function()
-        local frontFrame = CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel.Front.EmotesButtons
+        local front = emotesWheel:FindFirstChild("Front")
+        if not front then return end
         
-        for _, child in pairs(frontFrame:GetChildren()) do
+        local emotesButtons = front:FindFirstChild("EmotesButtons")
+        if not emotesButtons then return end
+        
+        local children = emotesButtons:GetChildren()
+        for i = 1, #children do
+            local child = children[i]
             if child:IsA("ImageLabel") and child.Image ~= "" then
-                -- Make icon lighter
-                child.ImageColor3 = WHITE
+                child.ImageColor3 = COLORS.WHITE
                 child.ImageTransparency = 0
                 child.BackgroundTransparency = 1
                 
@@ -250,11 +305,10 @@ local function updateAllFavoriteIcons()
     end)
 end
 
--- 💗 LAG FIX: Throttled color updates
+-- Throttled color update
 local function updateGUIColors()
     local currentTime = tick()
     
-    -- Only update theme every 0.5 seconds to reduce lag
     if currentTime - lastThemeUpdate < THEME_UPDATE_INTERVAL then
         return
     end
@@ -264,27 +318,30 @@ local function updateGUIColors()
     lightenEmoteIcons()
     
     -- Update UI elements
-    if _1left then _1left.ImageColor3 = PINK_MEDIUM end
-    if _9right then _9right.ImageColor3 = PINK_MEDIUM end
-    if _4pages then _4pages.TextColor3 = WHITE end
-    if _3TextLabel then _3TextLabel.TextColor3 = WHITE end
-    if _2Routenumber then _2Routenumber.TextColor3 = WHITE end
-    if Top then Top.BackgroundColor3 = PINK_MEDIUM; Top.BackgroundTransparency = 0.15 end
-    if Favorite then 
-        if not favoriteEnabled then
-            Favorite.BackgroundColor3 = PINK_MEDIUM
-            Favorite.BackgroundTransparency = 0.15
-        end
+    if _1left then _1left.ImageColor3 = COLORS.PINK_MEDIUM end
+    if _9right then _9right.ImageColor3 = COLORS.PINK_MEDIUM end
+    if _4pages then _4pages.TextColor3 = COLORS.WHITE end
+    if _3TextLabel then _3TextLabel.TextColor3 = COLORS.WHITE end
+    if _2Routenumber then _2Routenumber.TextColor3 = COLORS.WHITE end
+    if Top then
+        Top.BackgroundColor3 = COLORS.PINK_MEDIUM
+        Top.BackgroundTransparency = 0.15
+    end
+    if Favorite and not favoriteEnabled then
+        Favorite.BackgroundColor3 = COLORS.PINK_MEDIUM
+        Favorite.BackgroundTransparency = 0.15
     end
 end
+
+--============ PAGINATION ============--
 
 local function calculateTotalPages()
     local favoritesToUse = _G.filteredFavoritesForDisplay or favoriteEmotes
     local hasFavorites = #favoritesToUse > 0
     local normalEmotesCount = 0
 
-    for _, emote in pairs(filteredEmotes) do
-        if not isInFavorites(emote.id) then
+    for i = 1, #filteredEmotes do
+        if not isInFavorites(filteredEmotes[i].id) then
             normalEmotesCount = normalEmotesCount + 1
         end
     end
@@ -299,6 +356,15 @@ local function calculateTotalPages()
 
     return math.max(pages, 1)
 end
+
+local function updatePageDisplay()
+    if _4pages and _2Routenumber then
+        _4pages.Text = tostring(totalPages)
+        _2Routenumber.Text = tostring(currentPage)
+    end
+end
+
+--============ EMOTE MANAGEMENT ============--
 
 local function updateEmotes()
     local char, hum = getCharacterAndHumanoid()
@@ -321,18 +387,20 @@ local function updateEmotes()
         local endIndex = math.min(startIndex + itemsPerPage - 1, #favoritesToUse)
 
         for i = startIndex, endIndex do
-            if favoritesToUse[i] then
-                table.insert(currentPageEmotes, {
-                    id = tonumber(favoritesToUse[i].id),
-                    name = favoritesToUse[i].name
-                })
+            local fav = favoritesToUse[i]
+            if fav then
+                currentPageEmotes[#currentPageEmotes + 1] = {
+                    id = tonumber(fav.id),
+                    name = fav.name
+                }
             end
         end
     else
         local normalEmotes = {}
-        for _, emote in pairs(filteredEmotes) do
+        for i = 1, #filteredEmotes do
+            local emote = filteredEmotes[i]
             if not isInFavorites(emote.id) then
-                table.insert(normalEmotes, emote)
+                normalEmotes[#normalEmotes + 1] = emote
             end
         end
 
@@ -342,36 +410,32 @@ local function updateEmotes()
 
         for i = startIndex, endIndex do
             if normalEmotes[i] then
-                table.insert(currentPageEmotes, normalEmotes[i])
+                currentPageEmotes[#currentPageEmotes + 1] = normalEmotes[i]
             end
         end
     end
 
-    for _, emote in pairs(currentPageEmotes) do
+    for i = 1, #currentPageEmotes do
+        local emote = currentPageEmotes[i]
         emoteTable[emote.name] = {emote.id}
-        table.insert(equippedEmotes, emote.name)
+        equippedEmotes[#equippedEmotes + 1] = emote.name
     end
 
     humanoidDescription:SetEmotes(emoteTable)
     humanoidDescription:SetEquippedEmotes(equippedEmotes)
     
-    -- Delayed update for smoother experience
     task.delay(0.15, updateAllFavoriteIcons)
 end
 
-local function updatePageDisplay()
-    if _4pages and _2Routenumber then
-        _4pages.Text = tostring(totalPages)
-        _2Routenumber.Text = tostring(currentPage)
-    end
-end
+--============ FAVORITES ============--
 
 local function toggleFavorite(emoteId, emoteName)
     local found = false
     local index = 0
+    local emoteIdStr = tostring(emoteId)
 
-    for i, fav in pairs(favoriteEmotes) do
-        if tostring(fav.id) == tostring(emoteId) then
+    for i = 1, #favoriteEmotes do
+        if tostring(favoriteEmotes[i].id) == emoteIdStr then
             found = true
             index = i
             break
@@ -382,7 +446,7 @@ local function toggleFavorite(emoteId, emoteName)
         table.remove(favoriteEmotes, index)
         Notify({Title = '💗 Favorites', Content = 'Removed "' .. emoteName .. '"', Duration = 3})
     else
-        table.insert(favoriteEmotes, {id = emoteId, name = emoteName .. " 💗"})
+        favoriteEmotes[#favoriteEmotes + 1] = {id = emoteId, name = emoteName .. " 💗"}
         Notify({Title = '💗 Favorites', Content = 'Added "' .. emoteName .. '"', Duration = 3})
     end
 
@@ -394,19 +458,29 @@ end
 
 local function setupEmoteClickDetection()
     if isMonitoringClicks then return end
-   
+    
     local function monitorEmotes()
         while favoriteEnabled do
             pcall(function()
-                local frontFrame = CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel.Front.EmotesButtons
+                local emotesWheel = getEmotesWheel()
+                if not emotesWheel then return end
+                
+                local front = emotesWheel:FindFirstChild("Front")
+                if not front then return end
+                
+                local frontFrame = front:FindFirstChild("EmotesButtons")
+                if not frontFrame then return end
                 
                 -- Disconnect old connections
-                for _, connection in pairs(emoteClickConnections) do
-                    if connection then connection:Disconnect() end
+                for i = 1, #emoteClickConnections do
+                    local conn = emoteClickConnections[i]
+                    if conn then conn:Disconnect() end
                 end
                 emoteClickConnections = {}
-               
-                for _, child in pairs(frontFrame:GetChildren()) do
+                
+                local children = frontFrame:GetChildren()
+                for i = 1, #children do
+                    local child = children[i]
                     if child:IsA("ImageLabel") and child.Image ~= "" then
                         local clickDetector = child:FindFirstChild("ClickDetector")
                         if not clickDetector then
@@ -429,22 +503,24 @@ local function setupEmoteClickDetection()
                                     toggleFavorite(assetId, getEmoteName(assetId))
                                 end
                             end)
-                            table.insert(emoteClickConnections, connection)
+                            emoteClickConnections[#emoteClickConnections + 1] = connection
                         end
                     end
                 end
             end)
-           
-            task.wait(0.15)  -- Slightly faster response
+            
+            task.wait(0.15)
         end
-       
-        for _, connection in pairs(emoteClickConnections) do
-            if connection then connection:Disconnect() end
+        
+        -- Cleanup
+        for i = 1, #emoteClickConnections do
+            local conn = emoteClickConnections[i]
+            if conn then conn:Disconnect() end
         end
         emoteClickConnections = {}
         isMonitoringClicks = false
     end
-   
+    
     if favoriteEnabled then
         isMonitoringClicks = true
         task.spawn(monitorEmotes)
@@ -454,14 +530,25 @@ end
 local function stopEmoteClickDetection()
     isMonitoringClicks = false
     
-    for _, connection in pairs(emoteClickConnections) do
-        if connection then connection:Disconnect() end
+    for i = 1, #emoteClickConnections do
+        local conn = emoteClickConnections[i]
+        if conn then conn:Disconnect() end
     end
     emoteClickConnections = {}
     
     pcall(function()
-        local frontFrame = CoreGui.RobloxGui.EmotesMenu.Children.Main.EmotesWheel.Front.EmotesButtons
-        for _, child in pairs(frontFrame:GetChildren()) do
+        local emotesWheel = getEmotesWheel()
+        if not emotesWheel then return end
+        
+        local front = emotesWheel:FindFirstChild("Front")
+        if not front then return end
+        
+        local frontFrame = front:FindFirstChild("EmotesButtons")
+        if not frontFrame then return end
+        
+        local children = frontFrame:GetChildren()
+        for i = 1, #children do
+            local child = children[i]
             if child:IsA("ImageLabel") then
                 local clickDetector = child:FindFirstChild("ClickDetector")
                 if clickDetector then clickDetector:Destroy() end
@@ -469,6 +556,28 @@ local function stopEmoteClickDetection()
         end
     end)
 end
+
+local function toggleFavoriteMode()
+    favoriteEnabled = not favoriteEnabled
+
+    if favoriteEnabled then
+        if Favorite then
+            Favorite.BackgroundColor3 = COLORS.PINK_HEART
+            Favorite.BackgroundTransparency = 0.1
+        end
+        Notify({Title = '💗 Favorites', Content = "Click emotes to add hearts!", Duration = 5})
+        setupEmoteClickDetection()
+    else
+        if Favorite then
+            Favorite.BackgroundColor3 = COLORS.PINK_MEDIUM
+            Favorite.BackgroundTransparency = 0.15
+        end
+        Notify({Title = '💗 Favorites', Content = 'Favorite mode OFF', Duration = 3})
+        stopEmoteClickDetection()
+    end
+end
+
+--============ DATA FETCHING ============--
 
 local function fetchAllEmotes()
     if isLoading then return end
@@ -489,19 +598,21 @@ local function fetchAllEmotes()
     if success and result then
         local emotesList = result.data or result
         
-        for _, item in pairs(emotesList) do
-            local emoteData = {
-                id = tonumber(item.id),
-                name = item.name or ("Emote_" .. (item.id or "Unknown"))
-            }
-            if emoteData.id and emoteData.id > 0 then
-                table.insert(emotesData, emoteData)
+        for i = 1, #emotesList do
+            local item = emotesList[i]
+            local emoteId = tonumber(item.id)
+            if emoteId and emoteId > 0 then
+                emotesData[#emotesData + 1] = {
+                    id = emoteId,
+                    name = item.name or ("Emote_" .. item.id)
+                }
                 totalEmotesLoaded = totalEmotesLoaded + 1
             end
         end
         
         Notify({Title = '💗 Pink Emotes', Content = "Loaded " .. totalEmotesLoaded .. " emotes!", Duration = 5})
     else
+        -- Fallback data
         emotesData = {
             {id = 3360686498, name = "Stadium"},
             {id = 3360692915, name = "Tilt"},
@@ -520,6 +631,8 @@ local function fetchAllEmotes()
     isLoading = false
 end
 
+--============ SEARCH ============--
+
 local function searchEmotes(searchTerm)
     if isLoading then return end
 
@@ -533,9 +646,10 @@ local function searchEmotes(searchTerm)
         local newFilteredList = {}
         
         if isIdSearch then
-            for _, emote in pairs(originalEmotesData) do
+            for i = 1, #originalEmotesData do
+                local emote = originalEmotesData[i]
                 if tostring(emote.id) == searchTerm then
-                    table.insert(newFilteredList, emote)
+                    newFilteredList[#newFilteredList + 1] = emote
                 end
             end
             
@@ -543,14 +657,15 @@ local function searchEmotes(searchTerm)
                 local emoteId = tonumber(searchTerm)
                 if emoteId then
                     local newEmote = {id = emoteId, name = getEmoteName(emoteId)}
-                    table.insert(originalEmotesData, newEmote)
-                    table.insert(newFilteredList, newEmote)
+                    originalEmotesData[#originalEmotesData + 1] = newEmote
+                    newFilteredList[#newFilteredList + 1] = newEmote
                 end
             end
         else
-            for _, emote in pairs(originalEmotesData) do
+            for i = 1, #originalEmotesData do
+                local emote = originalEmotesData[i]
                 if emote.name:lower():find(searchTerm) then
-                    table.insert(newFilteredList, emote)
+                    newFilteredList[#newFilteredList + 1] = emote
                 end
             end
         end
@@ -559,9 +674,10 @@ local function searchEmotes(searchTerm)
 
         if not isIdSearch then
             _G.filteredFavoritesForDisplay = {}
-            for _, favorite in pairs(favoriteEmotes) do
+            for i = 1, #favoriteEmotes do
+                local favorite = favoriteEmotes[i]
                 if favorite.name:lower():find(searchTerm) then
-                    table.insert(_G.filteredFavoritesForDisplay, favorite)
+                    _G.filteredFavoritesForDisplay[#_G.filteredFavoritesForDisplay + 1] = favorite
                 end
             end
         end
@@ -572,6 +688,8 @@ local function searchEmotes(searchTerm)
     updatePageDisplay()
     updateEmotes()
 end
+
+--============ NAVIGATION ============--
 
 local function goToPage(pageNumber)
     currentPage = math.clamp(pageNumber, 1, totalPages)
@@ -591,35 +709,7 @@ local function nextPage()
     updateEmotes()
 end
 
-local function onCharacterAdded(char)
-    local hum = char:WaitForChild("Humanoid")
-    hum.Died:Connect(function()
-        favoriteEnabled = false
-        stopEmotes()
-    end)
-end
-
-local function toggleFavoriteMode()
-    favoriteEnabled = not favoriteEnabled
-
-    if favoriteEnabled then
-        if Favorite then
-            Favorite.BackgroundColor3 = PINK_HEART
-            Favorite.BackgroundTransparency = 0.1
-        end
-        Notify({Title = '💗 Favorites', Content = "Click emotes to add hearts!", Duration = 5})
-        setupEmoteClickDetection()
-    else
-        if Favorite then
-            Favorite.BackgroundColor3 = PINK_MEDIUM
-            Favorite.BackgroundTransparency = 0.15
-        end
-        Notify({Title = '💗 Favorites', Content = 'Favorite mode OFF', Duration = 3})
-        stopEmoteClickDetection()
-    end
-end
-
-local clickCooldown = {}
+--============ BUTTON HELPERS ============--
 
 local function safeButtonClick(buttonName, callback)
     local currentTime = tick()
@@ -629,20 +719,24 @@ local function safeButtonClick(buttonName, callback)
     end
 end
 
-function connectEvents()
+local function connectEvents()
     if _1left then _1left.MouseButton1Click:Connect(previousPage) end
     if _9right then _9right.MouseButton1Click:Connect(nextPage) end
     
     if _2Routenumber then
         _2Routenumber.FocusLost:Connect(function()
             local pageNum = tonumber(_2Routenumber.Text)
-            if pageNum then goToPage(pageNum) else _2Routenumber.Text = tostring(currentPage) end
+            if pageNum then
+                goToPage(pageNum)
+            else
+                _2Routenumber.Text = tostring(currentPage)
+            end
         end)
     end
     
     if Search then
-        Search.Changed:Connect(function(property)
-            if property == "Text" then searchEmotes(Search.Text) end
+        Search:GetPropertyChangedSignal("Text"):Connect(function()
+            searchEmotes(Search.Text)
         end)
     end
     
@@ -653,13 +747,16 @@ function connectEvents()
     end
 end
 
+--============ GUI CREATION ============--
+
 local function createGUIElements()
     local exists, emotesWheel = checkEmotesMenuExists()
     if not exists then return false end
 
     -- Clean up old elements
-    for _, name in pairs({"Under", "Top", "EmoteWalkButton", "Favorite", "SpeedEmote", "SpeedBox", "Changepage", "Reload"}) do
-        local element = emotesWheel:FindFirstChild(name)
+    local elementsToClean = {"Under", "Top", "EmoteWalkButton", "Favorite", "SpeedEmote", "SpeedBox", "Changepage", "Reload"}
+    for i = 1, #elementsToClean do
+        local element = emotesWheel:FindFirstChild(elementsToClean[i])
         if element then element:Destroy() end
     end
 
@@ -683,7 +780,7 @@ local function createGUIElements()
     _1left.BackgroundTransparency = 1
     _1left.Size = UDim2.new(0.17, 0, 0.94, 0)
     _1left.Image = "rbxassetid://93111945058621"
-    _1left.ImageColor3 = PINK_MEDIUM
+    _1left.ImageColor3 = COLORS.PINK_MEDIUM
 
     _9right = Instance.new("ImageButton")
     _9right.Name = "9right"
@@ -691,7 +788,7 @@ local function createGUIElements()
     _9right.BackgroundTransparency = 1
     _9right.Size = UDim2.new(0.17, 0, 0.94, 0)
     _9right.Image = "rbxassetid://107938916240738"
-    _9right.ImageColor3 = PINK_MEDIUM
+    _9right.ImageColor3 = COLORS.PINK_MEDIUM
 
     _4pages = Instance.new("TextLabel")
     _4pages.Name = "4pages"
@@ -700,7 +797,7 @@ local function createGUIElements()
     _4pages.Size = UDim2.new(0.16, 0, 0.81, 0)
     _4pages.Font = Enum.Font.GothamBold
     _4pages.Text = "1"
-    _4pages.TextColor3 = WHITE
+    _4pages.TextColor3 = COLORS.WHITE
     _4pages.TextScaled = true
 
     _3TextLabel = Instance.new("TextLabel")
@@ -710,7 +807,7 @@ local function createGUIElements()
     _3TextLabel.Size = UDim2.new(0.34, 0, 0.94, 0)
     _3TextLabel.Font = Enum.Font.GothamBold
     _3TextLabel.Text = " --- "
-    _3TextLabel.TextColor3 = WHITE
+    _3TextLabel.TextColor3 = COLORS.WHITE
     _3TextLabel.TextScaled = true
 
     _2Routenumber = Instance.new("TextBox")
@@ -720,14 +817,14 @@ local function createGUIElements()
     _2Routenumber.Size = UDim2.new(0.16, 0, 0.81, 0)
     _2Routenumber.Font = Enum.Font.GothamBold
     _2Routenumber.Text = "1"
-    _2Routenumber.TextColor3 = WHITE
+    _2Routenumber.TextColor3 = COLORS.WHITE
     _2Routenumber.TextScaled = true
 
-    -- Top search bar (lighter!)
+    -- Top search bar
     Top = Instance.new("Frame")
     Top.Name = "Top"
     Top.Parent = emotesWheel
-    Top.BackgroundColor3 = PINK_MEDIUM
+    Top.BackgroundColor3 = COLORS.PINK_MEDIUM
     Top.BackgroundTransparency = 0.15
     Top.BorderSizePixel = 0
     Top.Position = UDim2.new(0.13, 0, -0.11, 0)
@@ -750,16 +847,16 @@ local function createGUIElements()
     Search.Size = UDim2.new(0.87, 0, 0.82, 0)
     Search.Font = Enum.Font.GothamBold
     Search.PlaceholderText = "Search/ID"
-    Search.PlaceholderColor3 = Color3.fromRGB(255, 210, 230)
+    Search.PlaceholderColor3 = COLORS.PLACEHOLDER
     Search.Text = ""
-    Search.TextColor3 = WHITE
+    Search.TextColor3 = COLORS.WHITE
     Search.TextScaled = true
 
-    -- 💗 Heart Button (lighter!)
+    -- Heart Button
     Favorite = Instance.new("ImageButton")
     Favorite.Name = "Favorite"
     Favorite.Parent = emotesWheel
-    Favorite.BackgroundColor3 = PINK_MEDIUM
+    Favorite.BackgroundColor3 = COLORS.PINK_MEDIUM
     Favorite.BackgroundTransparency = 0.15
     Favorite.BorderSizePixel = 0
     Favorite.Position = UDim2.new(0.019, 0, -0.108, 0)
@@ -773,7 +870,7 @@ local function createGUIElements()
     heartText.Size = UDim2.new(1, 0, 1, 0)
     heartText.Font = Enum.Font.SourceSans
     heartText.Text = "💗"
-    heartText.TextColor3 = WHITE
+    heartText.TextColor3 = COLORS.WHITE
     heartText.TextScaled = true
     heartText.ZIndex = Favorite.ZIndex + 1
 
@@ -792,14 +889,15 @@ local function createGUIElements()
 end
 
 local function checkAndRecreateGUI()
-    local exists, emotesWheel = checkEmotesMenuExists()
-    if not exists then
+    local emotesWheel = getEmotesWheel()
+    if not emotesWheel then
         isGUICreated = false
         return
     end
 
-    if not emotesWheel:FindFirstChild("Under") or not emotesWheel:FindFirstChild("Top") or
-        not emotesWheel:FindFirstChild("Favorite") then
+    if not emotesWheel:FindFirstChild("Under") or 
+       not emotesWheel:FindFirstChild("Top") or
+       not emotesWheel:FindFirstChild("Favorite") then
         isGUICreated = false
         if createGUIElements() then
             updatePageDisplay()
@@ -808,18 +906,32 @@ local function checkAndRecreateGUI()
     end
 end
 
--- Character handling
-if player.Character then onCharacterAdded(player.Character) end
+--============ CHARACTER HANDLING ============--
+
+local function onCharacterAdded(char)
+    local hum = char:WaitForChild("Humanoid")
+    hum.Died:Connect(function()
+        favoriteEnabled = false
+        stopEmotes()
+    end)
+end
+
+if player.Character then
+    onCharacterAdded(player.Character)
+end
 
 player.CharacterAdded:Connect(function(char)
     onCharacterAdded(char)
     character = char
     humanoid = char:WaitForChild("Humanoid")
     favoriteEnabled = false
+    cachedEmotesWheel = nil
     
     task.wait(0.3)
     task.spawn(function()
-        while not checkEmotesMenuExists() do task.wait(0.1) end
+        while not checkEmotesMenuExists() do
+            task.wait(0.1)
+        end
         task.wait(0.3)
         stopEmotes()
         if createGUIElements() and #emotesData > 0 then
@@ -829,13 +941,13 @@ player.CharacterAdded:Connect(function(char)
     end)
 end)
 
--- 💗 LAG FIX: Use RenderStepped with throttle instead of Heartbeat
-local frameCount = 0
+--============ MAIN LOOPS (OPTIMIZED) ============--
+
+-- Throttled render update
 RunService.RenderStepped:Connect(function()
     frameCount = frameCount + 1
     
-    -- Only check every 30 frames (~0.5 seconds at 60fps)
-    if frameCount >= 30 then
+    if frameCount >= FRAME_CHECK_INTERVAL then
         frameCount = 0
         
         if not isGUICreated then
@@ -848,7 +960,9 @@ end)
 
 -- Initial setup
 task.spawn(function()
-    while not checkEmotesMenuExists() do task.wait(0.1) end
+    while not checkEmotesMenuExists() do
+        task.wait(0.1)
+    end
     if createGUIElements() then
         loadFavorites()
         fetchAllEmotes()
@@ -857,21 +971,18 @@ end)
 
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
 
--- 💗 LAG FIX: Slower background loop
+-- Background check loop (slower)
 task.spawn(function()
     while true do
         pcall(function()
-            local emotesMenu = CoreGui:FindFirstChild("RobloxGui") and CoreGui.RobloxGui:FindFirstChild("EmotesMenu")
+            local emotesMenu = CoreGui:FindFirstChild("RobloxGui")
+            emotesMenu = emotesMenu and emotesMenu:FindFirstChild("EmotesMenu")
             
             if not emotesMenu then
                 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, true)
             else
-                local exists = emotesMenu:FindFirstChild("Children") and 
-                               emotesMenu.Children:FindFirstChild("Main") and
-                               emotesMenu.Children.Main:FindFirstChild("EmotesWheel")
-
-                if exists then
-                    local emotesWheel = emotesMenu.Children.Main.EmotesWheel
+                local emotesWheel = getEmotesWheel()
+                if emotesWheel then
                     if not emotesWheel:FindFirstChild("Under") or not emotesWheel:FindFirstChild("Top") then
                         createGUIElements()
                         updatePageDisplay()
@@ -880,7 +991,7 @@ task.spawn(function()
                 end
             end
         end)
-        task.wait(1)  -- Check every 1 second instead of 0.3
+        task.wait(1)
     end
 end)
 
@@ -903,17 +1014,19 @@ if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(0, 55, 0, 55)
         btn.Position = UDim2.new(0, 10, 0.5, -27)
-        btn.BackgroundColor3 = PINK_MEDIUM
+        btn.BackgroundColor3 = COLORS.PINK_MEDIUM
         btn.BackgroundTransparency = 0.15
         btn.Text = "💗"
         btn.TextSize = 28
-        btn.TextColor3 = WHITE
+        btn.TextColor3 = COLORS.WHITE
         btn.Parent = openButton
         
         Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 12)
         
         btn.MouseButton1Click:Connect(function()
-            pcall(function() game:GetService("GuiService"):SetEmotesMenuOpen(true) end)
+            pcall(function()
+                GuiService:SetEmotesMenuOpen(true)
+            end)
         end)
     end)
     
@@ -926,6 +1039,6 @@ end
 
 print("=========================================")
 print("   💗 PinkWards Pink Emote System!")
-print("   Light & Smooth Edition")
+print("   Light & Smooth Edition (OPTIMIZED)")
 print("   Press '.' to open")
 print("=========================================")
