@@ -1,5 +1,5 @@
 --[[
-    Animation Changer v3.6 - External Database Version
+    Animation Changer v3.6 - External Database Version (OPTIMIZED)
     ★ Press RIGHT CONTROL to toggle GUI
     ★ Persists through respawns
     ★ Fetches animations from external database
@@ -8,10 +8,12 @@
 if _G.AnimChangerLoaded then return end
 _G.AnimChangerLoaded = true
 
+-- Cache services once
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -30,41 +32,105 @@ local AnimationData = {}
 -- Database URL
 local DATABASE_URL = "https://raw.githubusercontent.com/SpeakSpanishOrVanish/Gaze-stuff/refs/heads/main/Gaze%20Anim%20Database"
 
+-- Pre-create TweenInfo objects (reused throughout)
+local TWEEN_FAST = TweenInfo.new(0.15)
+local TWEEN_NORMAL = TweenInfo.new(0.2)
+local TWEEN_SMOOTH = TweenInfo.new(0.25)
+local TWEEN_POPUP_IN = TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local TWEEN_POPUP_OUT = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+
+-- Cache colors (avoid creating new Color3 objects)
+local COLORS = {
+    BG_DARK = Color3.fromRGB(25, 25, 35),
+    BG_MEDIUM = Color3.fromRGB(35, 35, 50),
+    BG_LIGHT = Color3.fromRGB(45, 45, 62),
+    BG_HOVER = Color3.fromRGB(60, 60, 82),
+    ACCENT_BLUE = Color3.fromRGB(70, 130, 210),
+    ACCENT_GREEN = Color3.fromRGB(60, 170, 90),
+    ACCENT_GREEN_HOVER = Color3.fromRGB(80, 210, 120),
+    ACCENT_RED = Color3.fromRGB(200, 60, 60),
+    ACCENT_RED_HOVER = Color3.fromRGB(240, 80, 80),
+    TEXT_WHITE = Color3.fromRGB(255, 255, 255),
+    TEXT_GRAY = Color3.fromRGB(150, 150, 175),
+    TEXT_DARK = Color3.fromRGB(120, 120, 140),
+    SUCCESS = Color3.fromRGB(100, 220, 130),
+    WARNING = Color3.fromRGB(255, 180, 60),
+    ERROR = Color3.fromRGB(255, 100, 100),
+    INFO = Color3.fromRGB(100, 180, 255),
+}
+
+local typeColors = {
+    All = Color3.fromRGB(140, 140, 160),
+    Idle = Color3.fromRGB(100, 170, 255),
+    Walk = Color3.fromRGB(100, 220, 140),
+    Run = Color3.fromRGB(255, 180, 80),
+    Jump = Color3.fromRGB(255, 120, 120),
+    Fall = Color3.fromRGB(180, 120, 255),
+    Climb = Color3.fromRGB(255, 160, 180),
+    Swim = Color3.fromRGB(80, 200, 240),
+    SwimIdle = Color3.fromRGB(60, 180, 220),
+}
+
+-- Animation type order (reused in multiple places)
+local ANIM_ORDER = {"Idle", "Walk", "Run", "Jump", "Fall", "Climb", "Swim", "SwimIdle"}
+
+-- Animation folder mapping (cached)
+local ANIM_MAP = {
+    Idle = {"idle", {"Animation1", "Animation2"}},
+    Walk = {"walk", {"WalkAnim"}},
+    Run = {"run", {"RunAnim"}},
+    Jump = {"jump", {"JumpAnim"}},
+    Fall = {"fall", {"FallAnim"}},
+    Climb = {"climb", {"ClimbAnim"}},
+    Swim = {"swim", {"Swim"}},
+    SwimIdle = {"swimidle", {"SwimIdle"}},
+}
+
+-- Default animation IDs
+local DEFAULT_ANIMS = {
+    idle = {"507766388", "507766666"},
+    walk = "507777826",
+    run = "507767714",
+    jump = "507765000",
+    fall = "507767968",
+    climb = "507765644",
+    swim = "507784897",
+    swimidle = "507785072"
+}
+
 local function loadSaveData()
     pcall(function()
         if readfile then
             local data = readfile("AnimLoadouts.json")
-            if data and data ~= "" then SavedLoadouts = HttpService:JSONDecode(data) end
+            if data and data ~= "" then
+                SavedLoadouts = HttpService:JSONDecode(data)
+            end
         end
     end)
 end
 
 local function saveData()
     pcall(function()
-        if writefile then writefile("AnimLoadouts.json", HttpService:JSONEncode(SavedLoadouts)) end
+        if writefile then
+            writefile("AnimLoadouts.json", HttpService:JSONEncode(SavedLoadouts))
+        end
     end)
 end
 
 -- Fetch animation database from GitHub
 local function fetchAnimationDatabase()
+    if RunService:IsStudio() then return nil end
+    
     local success, result = pcall(function()
-        if game:GetService("RunService"):IsStudio() then
-            return nil
-        end
-        
         -- Try different methods to fetch
         if syn and syn.request then
-            local response = syn.request({Url = DATABASE_URL, Method = "GET"})
-            return response.Body
+            return syn.request({Url = DATABASE_URL, Method = "GET"}).Body
         elseif http and http.request then
-            local response = http.request({Url = DATABASE_URL, Method = "GET"})
-            return response.Body
+            return http.request({Url = DATABASE_URL, Method = "GET"}).Body
         elseif request then
-            local response = request({Url = DATABASE_URL, Method = "GET"})
-            return response.Body
+            return request({Url = DATABASE_URL, Method = "GET"}).Body
         elseif http_request then
-            local response = http_request({Url = DATABASE_URL, Method = "GET"})
-            return response.Body
+            return http_request({Url = DATABASE_URL, Method = "GET"}).Body
         elseif game.HttpGet then
             return game:HttpGet(DATABASE_URL)
         elseif HttpGet then
@@ -73,62 +139,45 @@ local function fetchAnimationDatabase()
         return nil
     end)
     
-    if success and result then
-        return result
-    end
-    return nil
+    return success and result or nil
 end
 
 -- Parse the database text into animation data
 local function parseDatabase(rawData)
     if not rawData then return nil end
     
-    local data = {
-        Idle = {},
-        Walk = {},
-        Run = {},
-        Jump = {},
-        Fall = {},
-        Climb = {},
-        Swim = {},
-        SwimIdle = {}
-    }
+    local data = {}
+    for i = 1, #ANIM_ORDER do
+        data[ANIM_ORDER[i]] = {}
+    end
     
-    local currentCategory = nil
+    local currentCat = nil
     
     for line in rawData:gmatch("[^\r\n]+") do
-        -- Remove leading/trailing whitespace
         line = line:match("^%s*(.-)%s*$")
         
-        -- Skip empty lines and comments
         if line ~= "" and not line:match("^%-%-") and not line:match("^#") then
-            -- Check for category headers
             local categoryMatch = line:match("^%[(%w+)%]$")
             if categoryMatch then
-                currentCategory = categoryMatch
-                if not data[currentCategory] then
-                    data[currentCategory] = {}
+                currentCat = categoryMatch
+                if not data[currentCat] then
+                    data[currentCat] = {}
                 end
-            elseif currentCategory then
-                -- Parse animation entries
-                -- Format: Name = ID or Name = {ID1, ID2} for Idle
+            elseif currentCat then
                 local name, value = line:match("^([%w_%-]+)%s*=%s*(.+)$")
                 if name and value then
-                    -- Remove quotes if present
                     value = value:gsub('"', ''):gsub("'", "")
                     
-                    -- Check if it's a table format {id1, id2}
                     local id1, id2 = value:match("^{%s*([%d]+)%s*,%s*([%d]+)%s*}$")
                     if id1 and id2 then
-                        data[currentCategory][name] = {id1, id2}
+                        data[currentCat][name] = {id1, id2}
                     else
-                        -- Single ID
                         local singleId = value:match("^([%d]+)$")
                         if singleId then
-                            if currentCategory == "Idle" then
-                                data[currentCategory][name] = {singleId, singleId}
+                            if currentCat == "Idle" then
+                                data[currentCat][name] = {singleId, singleId}
                             else
-                                data[currentCategory][name] = singleId
+                                data[currentCat][name] = singleId
                             end
                         end
                     end
@@ -145,23 +194,18 @@ local function tryLoadAsLua(rawData)
     if not rawData then return nil end
     
     local success, result = pcall(function()
-        local func, err = loadstring(rawData)
+        local func = loadstring(rawData)
         if func then
             local data = func()
-            if type(data) == "table" then
-                return data
-            end
+            return type(data) == "table" and data or nil
         end
         return nil
     end)
     
-    if success and result then
-        return result
-    end
-    return nil
+    return success and result or nil
 end
 
--- Fallback database if fetch fails
+-- Fallback database
 local function getDefaultDatabase()
     return {
         Idle = {
@@ -191,14 +235,6 @@ local function getDefaultDatabase()
             ["Zombie"] = {"616158929", "616160636"},
             ["Rthro"] = {"10921265698", "10921265698"},
             ["Bold"] = {"16738333868", "16738334710"},
-            ["Adidas"] = {"122257458498464", "102357151005774"},
-            ["Amazon"] = {"98281136301627", "138183121662404"},
-            ["Gojo"] = {"95643163365384", "95643163365384"},
-            ["Geto"] = {"85811471336028", "85811471336028"},
-            ["MrToilet"] = {"4417977954", "4417978624"},
-            ["WickedDancing"] = {"92849173543269", "132238900951109"},
-            ["WickedPopular"] = {"118832222982049", "76049494037641"},
-            ["Float"] = {"110375749767299", "110375749767299"},
         },
         Walk = {
             ["Astronaut"] = "891667138", ["Bubbly"] = "910034870", ["Cartoony"] = "742640026",
@@ -209,8 +245,6 @@ local function getDefaultDatabase()
             ["Princess"] = "941028902", ["Robot"] = "616095330", ["Sneaky"] = "1132510133",
             ["Stylish"] = "616146177", ["Superhero"] = "10921298616", ["Toy"] = "782843345",
             ["Vampire"] = "1083473930", ["Werewolf"] = "1083178339", ["Zombie"] = "616168032",
-            ["Adidas"] = "122150855457006", ["Amazon"] = "90478085024465", ["Gojo"] = "95643163365384",
-            ["WickedDancing"] = "73718308412641", ["WickedPopular"] = "92072849924640",
         },
         Run = {
             ["Astronaut"] = "10921039308", ["Bubbly"] = "10921057244", ["Cartoony"] = "10921076136",
@@ -221,8 +255,6 @@ local function getDefaultDatabase()
             ["Princess"] = "941015281", ["Robot"] = "10921250460", ["Sneaky"] = "1132494274",
             ["Stylish"] = "10921276116", ["Superhero"] = "10921291831", ["Toy"] = "10921306285",
             ["Vampire"] = "10921320299", ["Werewolf"] = "10921336997", ["Zombie"] = "616163682",
-            ["Adidas"] = "82598234841035", ["Amazon"] = "134824450619865", ["Naruto"] = "127364859201746",
-            ["WickedDancing"] = "135515454877967", ["WickedPopular"] = "72301599441680",
         },
         Jump = {
             ["Astronaut"] = "891627522", ["Bubbly"] = "910016857", ["Cartoony"] = "742637942",
@@ -232,8 +264,7 @@ local function getDefaultDatabase()
             ["Patrol"] = "1148811837", ["Pirate"] = "750782230", ["Princess"] = "941008832",
             ["Robot"] = "616090535", ["Sneaky"] = "1132489853", ["Stylish"] = "616139451",
             ["Superhero"] = "10921294559", ["Toy"] = "10921308158", ["Vampire"] = "1083455352",
-            ["Werewolf"] = "1083218792", ["Zombie"] = "616161997", ["Adidas"] = "75290611992385",
-            ["WickedDancing"] = "78508480717326", ["WickedPopular"] = "104325245285198",
+            ["Werewolf"] = "1083218792", ["Zombie"] = "616161997",
         },
         Fall = {
             ["Astronaut"] = "891617961", ["Bubbly"] = "910001910", ["Cartoony"] = "742637151",
@@ -243,8 +274,7 @@ local function getDefaultDatabase()
             ["Patrol"] = "1148863382", ["Pirate"] = "750780242", ["Princess"] = "941000007",
             ["Robot"] = "616087089", ["Sneaky"] = "1132469004", ["Stylish"] = "616134815",
             ["Superhero"] = "10921293373", ["Toy"] = "782846423", ["Vampire"] = "1083443587",
-            ["Werewolf"] = "1083189019", ["Zombie"] = "616157476", ["Adidas"] = "98600215928904",
-            ["WickedDancing"] = "78147885297412", ["WickedPopular"] = "121152442762481",
+            ["Werewolf"] = "1083189019", ["Zombie"] = "616157476",
         },
         Climb = {
             ["Astronaut"] = "10921032124", ["Cartoony"] = "742636889", ["Confident"] = "1069946257",
@@ -253,8 +283,7 @@ local function getDefaultDatabase()
             ["Ninja"] = "656114359", ["OldSchool"] = "10921229866", ["Pirate"] = "750780242",
             ["Princess"] = "940996062", ["Robot"] = "616086039", ["Sneaky"] = "1132461372",
             ["Stylish"] = "10921271391", ["Superhero"] = "10921286911", ["Vampire"] = "1083439238",
-            ["Werewolf"] = "10921329322", ["Zombie"] = "616156119", ["Adidas"] = "88763136693023",
-            ["WickedDancing"] = "129447497744818", ["WickedPopular"] = "131326830509784",
+            ["Werewolf"] = "10921329322", ["Zombie"] = "616156119",
         },
         Swim = {
             ["Astronaut"] = "891663592", ["Bubbly"] = "910028158", ["Cartoony"] = "10921079380",
@@ -263,7 +292,6 @@ local function getDefaultDatabase()
             ["OldSchool"] = "10921243048", ["Pirate"] = "750784579", ["Princess"] = "941018893",
             ["Robot"] = "10921253142", ["Sneaky"] = "1132500520", ["Stylish"] = "10921281000",
             ["Superhero"] = "10921295495", ["Vampire"] = "10921324408", ["Zombie"] = "616165109",
-            ["Adidas"] = "133308483266208", ["WickedDancing"] = "110657013921774",
         },
         SwimIdle = {
             ["Astronaut"] = "891663592", ["Bubbly"] = "910030921", ["Cartoony"] = "10921079380",
@@ -271,7 +299,7 @@ local function getDefaultDatabase()
             ["Knight"] = "10921125935", ["Mage"] = "707894699", ["Ninja"] = "656118341",
             ["OldSchool"] = "10921244018", ["Pirate"] = "750785176", ["Princess"] = "941025398",
             ["Robot"] = "10921253767", ["Sneaky"] = "1132506407", ["Stylish"] = "10921281964",
-            ["Superhero"] = "10921297391", ["Vampire"] = "10921325443", ["Adidas"] = "109346520324160",
+            ["Superhero"] = "10921297391", ["Vampire"] = "10921325443",
         },
     }
 end
@@ -285,7 +313,7 @@ local function loadAnimations()
     if rawData then
         -- First try to load as Lua
         local luaData = tryLoadAsLua(rawData)
-        if luaData and type(luaData) == "table" then
+        if luaData then
             AnimationData = luaData
             print("✅ Loaded database as Lua module")
             return true
@@ -294,10 +322,9 @@ local function loadAnimations()
         -- Try to parse as custom format
         local parsedData = parseDatabase(rawData)
         if parsedData then
-            -- Check if we got any animations
             local count = 0
-            for cat, anims in pairs(parsedData) do
-                for _ in pairs(anims) do count = count + 1 end
+            for _, anims in pairs(parsedData) do
+                for _ in pairs(anims) do count += 1 end
             end
             if count > 0 then
                 AnimationData = parsedData
@@ -317,7 +344,6 @@ local function loadAnimations()
         end
     end
     
-    -- Fallback to default
     print("⚠️ Using fallback database")
     AnimationData = getDefaultDatabase()
     return false
@@ -325,19 +351,108 @@ end
 
 loadSaveData()
 
-local typeColors = {
-    All = Color3.fromRGB(140, 140, 160), Idle = Color3.fromRGB(100, 170, 255),
-    Walk = Color3.fromRGB(100, 220, 140), Run = Color3.fromRGB(255, 180, 80),
-    Jump = Color3.fromRGB(255, 120, 120), Fall = Color3.fromRGB(180, 120, 255),
-    Climb = Color3.fromRGB(255, 160, 180), Swim = Color3.fromRGB(80, 200, 240),
-    SwimIdle = Color3.fromRGB(60, 180, 220),
-}
+-- Cache character references
+local cachedChar = nil
+local cachedHumanoid = nil
+local cachedAnimate = nil
+
+local function updateCharacterCache()
+    local char = player.Character
+    if char ~= cachedChar then
+        cachedChar = char
+        cachedHumanoid = char and char:FindFirstChildOfClass("Humanoid")
+        cachedAnimate = char and char:FindFirstChild("Animate")
+    end
+    return cachedChar, cachedHumanoid, cachedAnimate
+end
 
 local function checkR15()
-    local char = player.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    return hum and hum.RigType == Enum.HumanoidRigType.R15
+    updateCharacterCache()
+    return cachedHumanoid and cachedHumanoid.RigType == Enum.HumanoidRigType.R15
+end
+
+local function stopAnims()
+    updateCharacterCache()
+    if cachedHumanoid then
+        local tracks = cachedHumanoid:GetPlayingAnimationTracks()
+        for i = 1, #tracks do
+            tracks[i]:Stop(0)
+        end
+    end
+end
+
+local function refresh()
+    updateCharacterCache()
+    if cachedHumanoid then
+        cachedHumanoid:ChangeState(Enum.HumanoidStateType.Landed)
+        task.wait(0.03)
+        cachedHumanoid:ChangeState(Enum.HumanoidStateType.Running)
+    end
+end
+
+local function setAnim(aType, aId)
+    updateCharacterCache()
+    if not cachedAnimate then return false end
+    
+    local ok = pcall(function()
+        stopAnims()
+        local m = ANIM_MAP[aType]
+        if m then
+            local folder = cachedAnimate:FindFirstChild(m[1])
+            if folder then
+                if aType == "Idle" and typeof(aId) == "table" then
+                    for i, name in ipairs(m[2]) do
+                        local a = folder:FindFirstChild(name)
+                        if a and aId[i] then
+                            a.AnimationId = "rbxassetid://" .. aId[i]
+                        end
+                    end
+                else
+                    local a = folder:FindFirstChild(m[2][1])
+                    if a then
+                        a.AnimationId = "rbxassetid://" .. tostring(aId)
+                    end
+                end
+            end
+        end
+        refresh()
+    end)
+    return ok
+end
+
+local function resetAnims()
+    updateCharacterCache()
+    if not cachedAnimate then return false end
+    
+    pcall(function()
+        stopAnims()
+        local idle = cachedAnimate:FindFirstChild("idle")
+        if idle then
+            local a1 = idle:FindFirstChild("Animation1")
+            local a2 = idle:FindFirstChild("Animation2")
+            if a1 then a1.AnimationId = "rbxassetid://" .. DEFAULT_ANIMS.idle[1] end
+            if a2 then a2.AnimationId = "rbxassetid://" .. DEFAULT_ANIMS.idle[2] end
+        end
+        
+        local folderMap = {
+            walk = "WalkAnim", run = "RunAnim", jump = "JumpAnim",
+            fall = "FallAnim", climb = "ClimbAnim", swim = "Swim", swimidle = "SwimIdle"
+        }
+        
+        for k, v in pairs(folderMap) do
+            local f = cachedAnimate:FindFirstChild(k)
+            if f then
+                local a = f:FindFirstChild(v)
+                if a then
+                    a.AnimationId = "rbxassetid://" .. DEFAULT_ANIMS[k]
+                end
+            end
+        end
+        refresh()
+    end)
+    
+    table.clear(currentAnimations)
+    return true
 end
 
 local function createGui()
@@ -354,27 +469,28 @@ local function createGui()
     mf.Name = "Main"
     mf.Size = UDim2.new(0, 380, 0, 520)
     mf.Position = UDim2.new(0.5, -190, 0.5, -260)
-    mf.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    mf.BackgroundColor3 = COLORS.BG_DARK
     mf.BorderSizePixel = 0
     mf.Active = true
     mf.Draggable = true
     mf.Visible = false
     mf.Parent = sg
     Instance.new("UICorner", mf).CornerRadius = UDim.new(0, 12)
-    Instance.new("UIStroke", mf).Color = Color3.fromRGB(80, 80, 120)
-    mf:FindFirstChildOfClass("UIStroke").Thickness = 2
+    local mfStroke = Instance.new("UIStroke", mf)
+    mfStroke.Color = Color3.fromRGB(80, 80, 120)
+    mfStroke.Thickness = 2
 
     local tb = Instance.new("Frame", mf)
     tb.Name = "TitleBar"
     tb.Size = UDim2.new(1, 0, 0, 50)
-    tb.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    tb.BackgroundColor3 = COLORS.BG_MEDIUM
     tb.BorderSizePixel = 0
     Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 12)
     
     local tbFix = Instance.new("Frame", tb)
     tbFix.Size = UDim2.new(1, 0, 0, 15)
     tbFix.Position = UDim2.new(0, 0, 1, -15)
-    tbFix.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    tbFix.BackgroundColor3 = COLORS.BG_MEDIUM
     tbFix.BorderSizePixel = 0
 
     local title = Instance.new("TextLabel", tb)
@@ -383,16 +499,16 @@ local function createGui()
     title.BackgroundTransparency = 1
     title.Font = Enum.Font.GothamBold
     title.TextSize = 20
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextColor3 = COLORS.TEXT_WHITE
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Text = "🎭 Animation Changer"
 
     local closeBtn = Instance.new("TextButton", tb)
     closeBtn.Size = UDim2.new(0, 36, 0, 36)
     closeBtn.Position = UDim2.new(1, -44, 0, 7)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+    closeBtn.BackgroundColor3 = COLORS.ACCENT_RED
     closeBtn.Text = "✕"
-    closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.TextColor3 = COLORS.TEXT_WHITE
     closeBtn.Font = Enum.Font.GothamBold
     closeBtn.TextSize = 18
     closeBtn.AutoButtonColor = false
@@ -403,7 +519,7 @@ local function createGui()
     resetBtn.Position = UDim2.new(1, -86, 0, 7)
     resetBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 100)
     resetBtn.Text = "↺"
-    resetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    resetBtn.TextColor3 = COLORS.TEXT_WHITE
     resetBtn.Font = Enum.Font.GothamBold
     resetBtn.TextSize = 20
     resetBtn.AutoButtonColor = false
@@ -416,9 +532,9 @@ local function createGui()
 
     local animsTab = Instance.new("TextButton", tabFrame)
     animsTab.Size = UDim2.new(0.5, -4, 1, 0)
-    animsTab.BackgroundColor3 = Color3.fromRGB(70, 130, 210)
+    animsTab.BackgroundColor3 = COLORS.ACCENT_BLUE
     animsTab.Text = "🎬 Animations"
-    animsTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+    animsTab.TextColor3 = COLORS.TEXT_WHITE
     animsTab.Font = Enum.Font.GothamBold
     animsTab.TextSize = 16
     animsTab.AutoButtonColor = false
@@ -429,7 +545,7 @@ local function createGui()
     savesTab.Position = UDim2.new(0.5, 4, 0, 0)
     savesTab.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
     savesTab.Text = "💾 Saved Sets"
-    savesTab.TextColor3 = Color3.fromRGB(150, 150, 175)
+    savesTab.TextColor3 = COLORS.TEXT_GRAY
     savesTab.Font = Enum.Font.GothamBold
     savesTab.TextSize = 16
     savesTab.AutoButtonColor = false
@@ -458,9 +574,9 @@ local function createGui()
     searchBox.BackgroundTransparency = 1
     searchBox.Font = Enum.Font.GothamSemibold
     searchBox.TextSize = 16
-    searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchBox.TextColor3 = COLORS.TEXT_WHITE
     searchBox.PlaceholderText = "Search animations..."
-    searchBox.PlaceholderColor3 = Color3.fromRGB(120, 120, 140)
+    searchBox.PlaceholderColor3 = COLORS.TEXT_DARK
     searchBox.Text = ""
     searchBox.TextXAlignment = Enum.TextXAlignment.Left
     searchBox.ClearTextOnFocus = false
@@ -527,7 +643,7 @@ local function createGui()
     csTitle.BackgroundTransparency = 1
     csTitle.Font = Enum.Font.GothamBold
     csTitle.TextSize = 16
-    csTitle.TextColor3 = Color3.fromRGB(100, 180, 255)
+    csTitle.TextColor3 = COLORS.INFO
     csTitle.TextXAlignment = Enum.TextXAlignment.Left
     csTitle.Text = "📦 Current Animation Set"
 
@@ -556,9 +672,9 @@ local function createGui()
     local saveBtn = Instance.new("TextButton", loadoutContent)
     saveBtn.Size = UDim2.new(1, 0, 0, 48)
     saveBtn.Position = UDim2.new(0, 0, 0, 128)
-    saveBtn.BackgroundColor3 = Color3.fromRGB(60, 170, 90)
+    saveBtn.BackgroundColor3 = COLORS.ACCENT_GREEN
     saveBtn.Text = "💾 Save Current Set to Slot"
-    saveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    saveBtn.TextColor3 = COLORS.TEXT_WHITE
     saveBtn.Font = Enum.Font.GothamBold
     saveBtn.TextSize = 17
     saveBtn.AutoButtonColor = false
@@ -607,14 +723,14 @@ local function createGui()
     }
 end
 
-local function notify(title, msg, dur, col)
+local function notify(titleText, msg, dur, col)
     if not gui then return end
     dur = dur or 2
-    col = col or Color3.fromRGB(80, 160, 80)
+    col = col or COLORS.SUCCESS
     
     local n = Instance.new("Frame")
     n.Size = UDim2.new(1, 0, 0, 64)
-    n.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+    n.BackgroundColor3 = COLORS.BG_MEDIUM
     n.Position = UDim2.new(1, 20, 0, 0)
     n.Parent = gui.nf
     Instance.new("UICorner", n).CornerRadius = UDim.new(0, 12)
@@ -636,7 +752,7 @@ local function notify(title, msg, dur, col)
     tl.TextSize = 16
     tl.TextColor3 = col
     tl.TextXAlignment = Enum.TextXAlignment.Left
-    tl.Text = title
+    tl.Text = titleText
     
     local ml = Instance.new("TextLabel", n)
     ml.Size = UDim2.new(1, -24, 0, 22)
@@ -648,115 +764,47 @@ local function notify(title, msg, dur, col)
     ml.TextXAlignment = Enum.TextXAlignment.Left
     ml.Text = msg
     
-    TweenService:Create(n, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 0)}):Play()
+    TweenService:Create(n, TWEEN_POPUP_IN, {Position = UDim2.new(0, 0, 0, 0)}):Play()
+    
     task.delay(dur, function()
-        TweenService:Create(n, TweenInfo.new(0.25), {Position = UDim2.new(1, 20, 0, 0)}):Play()
-        task.delay(0.25, function() if n and n.Parent then n:Destroy() end end)
+        TweenService:Create(n, TWEEN_SMOOTH, {Position = UDim2.new(1, 20, 0, 0)}):Play()
+        task.delay(0.25, function()
+            if n and n.Parent then n:Destroy() end
+        end)
     end)
-end
-
-local function stopAnims()
-    local char = player.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then for _, t in ipairs(hum:GetPlayingAnimationTracks()) do t:Stop(0) end end
-end
-
-local function refresh()
-    local char = player.Character
-    if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum:ChangeState(Enum.HumanoidStateType.Landed)
-        task.wait(0.03)
-        hum:ChangeState(Enum.HumanoidStateType.Running)
-    end
-end
-
-local function setAnim(aType, aId)
-    local char = player.Character
-    if not char then return false end
-    local anim = char:FindFirstChild("Animate")
-    if not anim then return false end
-    
-    local ok = pcall(function()
-        stopAnims()
-        local map = {
-            Idle = {"idle", {"Animation1", "Animation2"}},
-            Walk = {"walk", {"WalkAnim"}},
-            Run = {"run", {"RunAnim"}},
-            Jump = {"jump", {"JumpAnim"}},
-            Fall = {"fall", {"FallAnim"}},
-            Climb = {"climb", {"ClimbAnim"}},
-            Swim = {"swim", {"Swim"}},
-            SwimIdle = {"swimidle", {"SwimIdle"}},
-        }
-        local m = map[aType]
-        if m then
-            local folder = anim:FindFirstChild(m[1])
-            if folder then
-                if aType == "Idle" and typeof(aId) == "table" then
-                    for i, name in ipairs(m[2]) do
-                        local a = folder:FindFirstChild(name)
-                        if a and aId[i] then a.AnimationId = "rbxassetid://" .. aId[i] end
-                    end
-                else
-                    local a = folder:FindFirstChild(m[2][1])
-                    if a then a.AnimationId = "rbxassetid://" .. tostring(aId) end
-                end
-            end
-        end
-        refresh()
-    end)
-    return ok
-end
-
-local function resetAnims()
-    local char = player.Character
-    if not char then return false end
-    local anim = char:FindFirstChild("Animate")
-    if not anim then return false end
-    
-    local def = {idle = {"507766388", "507766666"}, walk = "507777826", run = "507767714", jump = "507765000", fall = "507767968", climb = "507765644", swim = "507784897", swimidle = "507785072"}
-    
-    pcall(function()
-        stopAnims()
-        local idle = anim:FindFirstChild("idle")
-        if idle then
-            local a1, a2 = idle:FindFirstChild("Animation1"), idle:FindFirstChild("Animation2")
-            if a1 then a1.AnimationId = "rbxassetid://" .. def.idle[1] end
-            if a2 then a2.AnimationId = "rbxassetid://" .. def.idle[2] end
-        end
-        for k, v in pairs({walk = "WalkAnim", run = "RunAnim", jump = "JumpAnim", fall = "FallAnim", climb = "ClimbAnim", swim = "Swim", swimidle = "SwimIdle"}) do
-            local f = anim:FindFirstChild(k)
-            if f then local a = f:FindFirstChild(v) if a then a.AnimationId = "rbxassetid://" .. def[k] end end
-        end
-        refresh()
-    end)
-    currentAnimations = {}
-    return true
 end
 
 local function updateInfo()
     if not gui then return end
+    
     local lines = {}
-    local order = {"Idle", "Walk", "Run", "Jump", "Fall", "Climb", "Swim", "SwimIdle"}
-    for _, aType in ipairs(order) do
+    for i = 1, #ANIM_ORDER do
+        local aType = ANIM_ORDER[i]
         local data = currentAnimations[aType]
-        if data then table.insert(lines, "• " .. aType .. ": " .. data.name) end
+        if data then
+            lines[#lines + 1] = "• " .. aType .. ": " .. data.name
+        end
     end
+    
     if #lines > 0 then
         gui.csi.Text = table.concat(lines, "\n")
         gui.csi.TextColor3 = Color3.fromRGB(150, 230, 160)
     else
         gui.csi.Text = "No animations applied yet\nGo to Animations tab to apply some!"
-        gui.csi.TextColor3 = Color3.fromRGB(150, 150, 175)
+        gui.csi.TextColor3 = COLORS.TEXT_GRAY
     end
 end
 
 local function refreshSlots()
     if not gui then return end
-    for _, c in pairs(gui.ss:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+    
+    -- Clear existing slots
+    local children = gui.ss:GetChildren()
+    for i = 1, #children do
+        if children[i]:IsA("Frame") then
+            children[i]:Destroy()
+        end
+    end
     
     for i = 1, MAX_SLOTS do
         local data = SavedLoadouts[i]
@@ -787,7 +835,7 @@ local function refreshSlots()
         sn.BackgroundTransparency = 1
         sn.Font = Enum.Font.GothamBold
         sn.TextSize = 22
-        sn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        sn.TextColor3 = COLORS.TEXT_WHITE
         sn.Text = tostring(i)
         
         if empty then
@@ -807,18 +855,19 @@ local function refreshSlots()
             titleLabel.BackgroundTransparency = 1
             titleLabel.Font = Enum.Font.GothamBold
             titleLabel.TextSize = 16
-            titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            titleLabel.TextColor3 = COLORS.TEXT_WHITE
             titleLabel.TextXAlignment = Enum.TextXAlignment.Left
             titleLabel.Text = "Saved Set #" .. i
             
             local details = {}
             local animCount = 0
-            local order = {"Idle", "Walk", "Run", "Jump", "Fall", "Climb", "Swim", "SwimIdle"}
-            for _, aType in ipairs(order) do
+            
+            for j = 1, #ANIM_ORDER do
+                local aType = ANIM_ORDER[j]
                 local aData = data.animations[aType]
                 if aData then
-                    animCount = animCount + 1
-                    table.insert(details, aType .. ": " .. aData.name)
+                    animCount += 1
+                    details[#details + 1] = aType .. ": " .. aData.name
                 end
             end
             
@@ -828,7 +877,7 @@ local function refreshSlots()
             countBadge.BackgroundColor3 = Color3.fromRGB(60, 140, 80)
             countBadge.Font = Enum.Font.GothamBold
             countBadge.TextSize = 12
-            countBadge.TextColor3 = Color3.fromRGB(255, 255, 255)
+            countBadge.TextColor3 = COLORS.TEXT_WHITE
             countBadge.Text = tostring(animCount)
             Instance.new("UICorner", countBadge).CornerRadius = UDim.new(0, 5)
             
@@ -849,29 +898,37 @@ local function refreshSlots()
             lb.Position = UDim2.new(1, -68, 0.5, -22)
             lb.BackgroundColor3 = Color3.fromRGB(60, 160, 100)
             lb.Text = "▶"
-            lb.TextColor3 = Color3.fromRGB(255, 255, 255)
+            lb.TextColor3 = COLORS.TEXT_WHITE
             lb.Font = Enum.Font.GothamBold
             lb.TextSize = 24
             lb.AutoButtonColor = false
             Instance.new("UICorner", lb).CornerRadius = UDim.new(0, 10)
             
-            lb.MouseEnter:Connect(function() TweenService:Create(lb, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(80, 210, 130)}):Play() end)
-            lb.MouseLeave:Connect(function() TweenService:Create(lb, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(60, 160, 100)}):Play() end)
+            lb.MouseEnter:Connect(function()
+                TweenService:Create(lb, TWEEN_FAST, {BackgroundColor3 = Color3.fromRGB(80, 210, 130)}):Play()
+            end)
+            lb.MouseLeave:Connect(function()
+                TweenService:Create(lb, TWEEN_FAST, {BackgroundColor3 = Color3.fromRGB(60, 160, 100)}):Play()
+            end)
             
+            local slotIndex = i -- Capture for closure
             lb.MouseButton1Click:Connect(function()
                 if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then
-                    SavedLoadouts[i] = nil
+                    SavedLoadouts[slotIndex] = nil
                     saveData()
                     refreshSlots()
-                    notify("🗑️ Deleted", "Slot " .. i .. " cleared", 2, Color3.fromRGB(255, 100, 100))
+                    notify("🗑️ Deleted", "Slot " .. slotIndex .. " cleared", 2, COLORS.ERROR)
                 else
-                    currentAnimations = {}
+                    table.clear(currentAnimations)
                     local loadedCount = 0
                     for t, d in pairs(data.animations) do
-                        if setAnim(t, d.id) then currentAnimations[t] = d loadedCount = loadedCount + 1 end
+                        if setAnim(t, d.id) then
+                            currentAnimations[t] = d
+                            loadedCount += 1
+                        end
                     end
                     updateInfo()
-                    notify("✅ Loaded!", loadedCount .. " animations from Slot " .. i, 2.5, Color3.fromRGB(100, 220, 130))
+                    notify("✅ Loaded!", loadedCount .. " animations from Slot " .. slotIndex, 2.5, COLORS.SUCCESS)
                 end
             end)
         end
@@ -879,17 +936,21 @@ local function refreshSlots()
     
     task.defer(function()
         local l = gui.ss:FindFirstChild("Layout")
-        if l then gui.ss.CanvasSize = UDim2.new(0, 0, 0, l.AbsoluteContentSize.Y + 20) end
+        if l then
+            gui.ss.CanvasSize = UDim2.new(0, 0, 0, l.AbsoluteContentSize.Y + 20)
+        end
     end)
 end
 
 local function createAnimBtn(name, aType, aId)
     if not gui then return end
     
+    local typeColor = typeColors[aType] or Color3.fromRGB(150, 150, 150)
+    
     local b = Instance.new("TextButton")
     b.Name = name .. "_" .. aType
     b.Size = UDim2.new(1, -10, 0, 48)
-    b.BackgroundColor3 = Color3.fromRGB(45, 45, 62)
+    b.BackgroundColor3 = COLORS.BG_LIGHT
     b.Text = ""
     b.AutoButtonColor = false
     b.Parent = gui.sf
@@ -898,7 +959,7 @@ local function createAnimBtn(name, aType, aId)
     local accent = Instance.new("Frame", b)
     accent.Size = UDim2.new(0, 5, 1, -14)
     accent.Position = UDim2.new(0, 7, 0, 7)
-    accent.BackgroundColor3 = typeColors[aType] or Color3.fromRGB(150, 150, 150)
+    accent.BackgroundColor3 = typeColor
     Instance.new("UICorner", accent).CornerRadius = UDim.new(0, 3)
     
     local nl = Instance.new("TextLabel", b)
@@ -907,7 +968,7 @@ local function createAnimBtn(name, aType, aId)
     nl.BackgroundTransparency = 1
     nl.Font = Enum.Font.GothamSemibold
     nl.TextSize = 16
-    nl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nl.TextColor3 = COLORS.TEXT_WHITE
     nl.TextXAlignment = Enum.TextXAlignment.Left
     nl.Text = name
     nl.TextTruncate = Enum.TextTruncate.AtEnd
@@ -915,144 +976,190 @@ local function createAnimBtn(name, aType, aId)
     local tb = Instance.new("Frame", b)
     tb.Size = UDim2.new(0, 65, 0, 28)
     tb.Position = UDim2.new(1, -75, 0.5, -14)
-    tb.BackgroundColor3 = typeColors[aType] or Color3.fromRGB(150, 150, 150)
+    tb.BackgroundColor3 = typeColor
     tb.BackgroundTransparency = 0.6
     Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 8)
-    Instance.new("UIStroke", tb).Color = typeColors[aType] or Color3.fromRGB(150, 150, 150)
+    Instance.new("UIStroke", tb).Color = typeColor
     
     local tbText = Instance.new("TextLabel", tb)
     tbText.Size = UDim2.new(1, 0, 1, 0)
     tbText.BackgroundTransparency = 1
     tbText.Font = Enum.Font.GothamBold
     tbText.TextSize = 12
-    tbText.TextColor3 = typeColors[aType] or Color3.fromRGB(255, 255, 255)
+    tbText.TextColor3 = typeColor
     tbText.Text = aType:sub(1, 5)
     
-    b.MouseEnter:Connect(function() TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(60, 60, 82)}):Play() end)
-    b.MouseLeave:Connect(function() TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(45, 45, 62)}):Play() end)
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, TWEEN_FAST, {BackgroundColor3 = COLORS.BG_HOVER}):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, TWEEN_FAST, {BackgroundColor3 = COLORS.BG_LIGHT}):Play()
+    end)
     
     b.MouseButton1Click:Connect(function()
         if setAnim(aType, aId) then
             currentAnimations[aType] = {name = name, id = aId}
             updateInfo()
             b.BackgroundColor3 = Color3.fromRGB(60, 160, 80)
-            task.delay(0.2, function() TweenService:Create(b, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 45, 62)}):Play() end)
-            notify("✓ Applied", name .. " → " .. aType, 1.8, Color3.fromRGB(100, 220, 130))
+            task.delay(0.2, function()
+                TweenService:Create(b, TWEEN_NORMAL, {BackgroundColor3 = COLORS.BG_LIGHT}):Play()
+            end)
+            notify("✓ Applied", name .. " → " .. aType, 1.8, COLORS.SUCCESS)
         else
             b.BackgroundColor3 = Color3.fromRGB(160, 60, 60)
-            task.delay(0.2, function() TweenService:Create(b, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 45, 62)}):Play() end)
-            notify("✗ Failed", "Could not apply", 1.8, Color3.fromRGB(255, 100, 100))
+            task.delay(0.2, function()
+                TweenService:Create(b, TWEEN_NORMAL, {BackgroundColor3 = COLORS.BG_LIGHT}):Play()
+            end)
+            notify("✗ Failed", "Could not apply", 1.8, COLORS.ERROR)
         end
     end)
     
-    table.insert(buttons, b)
+    buttons[#buttons + 1] = b
 end
 
 local function createCatBtn(cat, sel)
     if not gui then return end
     local displayName = cat == "SwimI" and "SwimIdle" or cat
+    local catColor = typeColors[displayName] or Color3.fromRGB(150, 150, 150)
+    
     local b = Instance.new("TextButton")
     b.Name = displayName
     b.Size = UDim2.new(0, 72, 0, 32)
-    b.BackgroundColor3 = sel and typeColors[displayName] or Color3.fromRGB(50, 50, 68)
+    b.BackgroundColor3 = sel and catColor or Color3.fromRGB(50, 50, 68)
     b.BackgroundTransparency = sel and 0.2 or 0
     b.Font = Enum.Font.GothamBold
     b.TextSize = 13
-    b.TextColor3 = sel and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 175)
+    b.TextColor3 = sel and COLORS.TEXT_WHITE or COLORS.TEXT_GRAY
     b.Text = cat == "SwimI" and "SwimI" or cat
     b.AutoButtonColor = false
     b.Parent = gui.cf
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    
     if sel then
         local stroke = Instance.new("UIStroke", b)
         stroke.Name = "SelectStroke"
-        stroke.Color = typeColors[displayName]
+        stroke.Color = catColor
         stroke.Thickness = 2
     end
+    
     return b
 end
 
 local function populate(cat, search)
     if not gui then return end
-    for _, b in ipairs(buttons) do if b and b.Parent then b:Destroy() end end
-    buttons = {}
+    
+    -- Clear existing buttons
+    for i = 1, #buttons do
+        if buttons[i] and buttons[i].Parent then
+            buttons[i]:Destroy()
+        end
+    end
+    table.clear(buttons)
+    
     search = search and search:lower() or ""
-    local order = {"Idle", "Walk", "Run", "Jump", "Fall", "Climb", "Swim", "SwimIdle"}
     local count = 0
-    for _, aType in ipairs(order) do
+    
+    for i = 1, #ANIM_ORDER do
+        local aType = ANIM_ORDER[i]
         if cat == "All" or cat == aType then
             local anims = AnimationData[aType]
             if anims then
                 for name, id in pairs(anims) do
                     if search == "" or name:lower():find(search, 1, true) then
                         createAnimBtn(name, aType, id)
-                        count = count + 1
+                        count += 1
                     end
                 end
             end
         end
     end
+    
     gui.cnt.Text = count .. " animation" .. (count ~= 1 and "s" or "") .. " found"
+    
     task.defer(function()
         local l = gui.sf:FindFirstChild("Layout")
-        if l then gui.sf.CanvasSize = UDim2.new(0, 0, 0, l.AbsoluteContentSize.Y + 20) end
+        if l then
+            gui.sf.CanvasSize = UDim2.new(0, 0, 0, l.AbsoluteContentSize.Y + 20)
+        end
     end)
 end
 
 local function setupCats()
     if not gui then return end
     local cats = {"All", "Idle", "Walk", "Run", "Jump", "Fall", "Climb", "Swim", "SwimI"}
-    for _, cat in ipairs(cats) do
+    
+    for i = 1, #cats do
+        local cat = cats[i]
         local displayCat = cat == "SwimI" and "SwimIdle" or cat
         local b = createCatBtn(cat, cat == "All")
         categoryButtons[displayCat] = b
+        
         b.MouseButton1Click:Connect(function()
             local targetCat = cat == "SwimI" and "SwimIdle" or cat
+            
             for c, cb in pairs(categoryButtons) do
                 local sel = c == targetCat
+                local catColor = typeColors[c] or Color3.fromRGB(150, 150, 150)
+                
                 local oldStroke = cb:FindFirstChild("SelectStroke")
                 if oldStroke then oldStroke:Destroy() end
+                
                 if sel then
-                    cb.BackgroundColor3 = typeColors[c]
+                    cb.BackgroundColor3 = catColor
                     cb.BackgroundTransparency = 0.2
-                    cb.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    cb.TextColor3 = COLORS.TEXT_WHITE
                     local stroke = Instance.new("UIStroke", cb)
                     stroke.Name = "SelectStroke"
-                    stroke.Color = typeColors[c]
+                    stroke.Color = catColor
                     stroke.Thickness = 2
                 else
                     cb.BackgroundColor3 = Color3.fromRGB(50, 50, 68)
                     cb.BackgroundTransparency = 0
-                    cb.TextColor3 = Color3.fromRGB(150, 150, 175)
+                    cb.TextColor3 = COLORS.TEXT_GRAY
                 end
             end
+            
             currentCategory = targetCat
             populate(targetCat, gui.sb.Text)
         end)
     end
+    
     gui.cf.CanvasSize = UDim2.new(0, #cats * 80, 0, 0)
 end
+
+-- Cache toggle positions
+local TOGGLE_OPEN_SIZE = UDim2.new(0, 380, 0, 520)
+local TOGGLE_OPEN_POS = UDim2.new(0.5, -190, 0.5, -260)
+local TOGGLE_CLOSED_SIZE = UDim2.new(0, 0, 0, 0)
+local TOGGLE_CLOSED_POS = UDim2.new(0.5, 0, 0.5, 0)
 
 local function toggle()
     if not gui or not gui.mf then return end
     isGuiVisible = not isGuiVisible
+    
     if isGuiVisible then
         gui.mf.Visible = true
-        gui.mf.Size = UDim2.new(0, 0, 0, 0)
-        gui.mf.Position = UDim2.new(0.5, 0, 0.5, 0)
+        gui.mf.Size = TOGGLE_CLOSED_SIZE
+        gui.mf.Position = TOGGLE_CLOSED_POS
         gui.mf.BackgroundTransparency = 1
-        TweenService:Create(gui.mf, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-            Size = UDim2.new(0, 380, 0, 520),
-            Position = UDim2.new(0.5, -190, 0.5, -260),
+        
+        TweenService:Create(gui.mf, TWEEN_POPUP_OUT, {
+            Size = TOGGLE_OPEN_SIZE,
+            Position = TOGGLE_OPEN_POS,
             BackgroundTransparency = 0
         }):Play()
     else
         TweenService:Create(gui.mf, TweenInfo.new(0.2, Enum.EasingStyle.Quart), {
-            Size = UDim2.new(0, 0, 0, 0),
-            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = TOGGLE_CLOSED_SIZE,
+            Position = TOGGLE_CLOSED_POS,
             BackgroundTransparency = 1
         }):Play()
-        task.delay(0.2, function() if gui and gui.mf then gui.mf.Visible = false end end)
+        
+        task.delay(0.2, function()
+            if gui and gui.mf then
+                gui.mf.Visible = false
+            end
+        end)
     end
 end
 
@@ -1061,35 +1168,49 @@ local function switchTab(tab)
     currentTab = tab
     gui.ac.Visible = tab == "Anims"
     gui.lc.Visible = tab == "Saves"
+    
     if tab == "Anims" then
-        gui.atb.BackgroundColor3 = Color3.fromRGB(70, 130, 210)
-        gui.atb.TextColor3 = Color3.fromRGB(255, 255, 255)
+        gui.atb.BackgroundColor3 = COLORS.ACCENT_BLUE
+        gui.atb.TextColor3 = COLORS.TEXT_WHITE
         gui.ltb.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-        gui.ltb.TextColor3 = Color3.fromRGB(150, 150, 175)
+        gui.ltb.TextColor3 = COLORS.TEXT_GRAY
     else
         gui.atb.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
-        gui.atb.TextColor3 = Color3.fromRGB(150, 150, 175)
-        gui.ltb.BackgroundColor3 = Color3.fromRGB(70, 130, 210)
-        gui.ltb.TextColor3 = Color3.fromRGB(255, 255, 255)
+        gui.atb.TextColor3 = COLORS.TEXT_GRAY
+        gui.ltb.BackgroundColor3 = COLORS.ACCENT_BLUE
+        gui.ltb.TextColor3 = COLORS.TEXT_WHITE
         refreshSlots()
         updateInfo()
     end
 end
 
 local function onCharacterAdded(char)
+    -- Reset cache
+    cachedChar = nil
+    cachedHumanoid = nil
+    cachedAnimate = nil
+    
     task.wait(1.5)
+    
     local anim = char:WaitForChild("Animate", 10)
     if not anim then return end
+    
     local hasAnims = false
     local count = 0
+    
     for t, d in pairs(currentAnimations) do
         if d and d.id then
             task.wait(0.05)
-            if setAnim(t, d.id) then count = count + 1 end
+            if setAnim(t, d.id) then
+                count += 1
+            end
             hasAnims = true
         end
     end
-    if hasAnims then notify("🔄 Restored", count .. " animations reapplied", 2, Color3.fromRGB(100, 180, 255)) end
+    
+    if hasAnims then
+        notify("🔄 Restored", count .. " animations reapplied", 2, COLORS.INFO)
+    end
 end
 
 local function setup()
@@ -1102,7 +1223,6 @@ local function setup()
         return
     end
     
-    -- Load animation database
     local dbLoaded = loadAnimations()
     
     gui = createGui()
@@ -1111,57 +1231,82 @@ local function setup()
     refreshSlots()
     updateInfo()
     
-    gui.sb:GetPropertyChangedSignal("Text"):Connect(function() populate(currentCategory, gui.sb.Text) end)
+    -- Connect events
+    gui.sb:GetPropertyChangedSignal("Text"):Connect(function()
+        populate(currentCategory, gui.sb.Text)
+    end)
+    
     gui.atb.MouseButton1Click:Connect(function() switchTab("Anims") end)
     gui.ltb.MouseButton1Click:Connect(function() switchTab("Saves") end)
     
-    gui.cb.MouseEnter:Connect(function() gui.cb.BackgroundColor3 = Color3.fromRGB(240, 80, 80) end)
-    gui.cb.MouseLeave:Connect(function() gui.cb.BackgroundColor3 = Color3.fromRGB(200, 60, 60) end)
+    gui.cb.MouseEnter:Connect(function()
+        gui.cb.BackgroundColor3 = COLORS.ACCENT_RED_HOVER
+    end)
+    gui.cb.MouseLeave:Connect(function()
+        gui.cb.BackgroundColor3 = COLORS.ACCENT_RED
+    end)
     gui.cb.MouseButton1Click:Connect(toggle)
     
-    gui.rb.MouseEnter:Connect(function() gui.rb.BackgroundColor3 = Color3.fromRGB(90, 90, 130) end)
-    gui.rb.MouseLeave:Connect(function() gui.rb.BackgroundColor3 = Color3.fromRGB(70, 70, 100) end)
+    gui.rb.MouseEnter:Connect(function()
+        gui.rb.BackgroundColor3 = Color3.fromRGB(90, 90, 130)
+    end)
+    gui.rb.MouseLeave:Connect(function()
+        gui.rb.BackgroundColor3 = Color3.fromRGB(70, 70, 100)
+    end)
     gui.rb.MouseButton1Click:Connect(function()
         resetAnims()
         updateInfo()
         notify("↺ Reset", "All animations restored to default", 2, Color3.fromRGB(160, 160, 200))
     end)
     
-    gui.svb.MouseEnter:Connect(function() gui.svb.BackgroundColor3 = Color3.fromRGB(80, 210, 120) end)
-    gui.svb.MouseLeave:Connect(function() gui.svb.BackgroundColor3 = Color3.fromRGB(60, 170, 90) end)
+    gui.svb.MouseEnter:Connect(function()
+        gui.svb.BackgroundColor3 = COLORS.ACCENT_GREEN_HOVER
+    end)
+    gui.svb.MouseLeave:Connect(function()
+        gui.svb.BackgroundColor3 = COLORS.ACCENT_GREEN
+    end)
     gui.svb.MouseButton1Click:Connect(function()
-        local hasAnims = false
-        for _ in pairs(currentAnimations) do hasAnims = true break end
+        local hasAnims = next(currentAnimations) ~= nil
         if not hasAnims then
-            notify("⚠️ Empty", "Apply animations first!", 2, Color3.fromRGB(255, 180, 60))
+            notify("⚠️ Empty", "Apply animations first!", 2, COLORS.WARNING)
             return
         end
+        
         local slot
-        for i = 1, MAX_SLOTS do if not SavedLoadouts[i] then slot = i break end end
+        for i = 1, MAX_SLOTS do
+            if not SavedLoadouts[i] then
+                slot = i
+                break
+            end
+        end
+        
         if not slot then
-            notify("❌ Full", "All slots used! Shift+Click to delete", 2.5, Color3.fromRGB(255, 100, 100))
+            notify("❌ Full", "All slots used! Shift+Click to delete", 2.5, COLORS.ERROR)
             return
         end
+        
         SavedLoadouts[slot] = {name = "Slot" .. slot, animations = {}}
         for t, d in pairs(currentAnimations) do
             SavedLoadouts[slot].animations[t] = {name = d.name, id = d.id}
         end
         saveData()
         refreshSlots()
+        
         local animCount = 0
-        for _ in pairs(currentAnimations) do animCount = animCount + 1 end
-        notify("💾 Saved!", animCount .. " animations to Slot " .. slot, 2, Color3.fromRGB(100, 220, 130))
+        for _ in pairs(currentAnimations) do animCount += 1 end
+        notify("💾 Saved!", animCount .. " animations to Slot " .. slot, 2, COLORS.SUCCESS)
     end)
     
     player.CharacterAdded:Connect(onCharacterAdded)
     
+    -- Count total animations
     local totalAnims = 0
     for _, anims in pairs(AnimationData) do
-        for _ in pairs(anims) do totalAnims = totalAnims + 1 end
+        for _ in pairs(anims) do totalAnims += 1 end
     end
     
     print("═══════════════════════════════════════════════════")
-    print("🎭 Animation Changer v3.6 Loaded!")
+    print("🎭 Animation Changer v3.6 Loaded! (OPTIMIZED)")
     print("📊 Total Animations: " .. totalAnims)
     print("🌐 Database: " .. (dbLoaded and "External" or "Fallback"))
     print("⌨️ Press RIGHT CONTROL to toggle")
@@ -1169,13 +1314,15 @@ local function setup()
     
     task.delay(0.5, function()
         local dbStatus = dbLoaded and "External DB" or "Fallback DB"
-        notify("🎭 Ready!", totalAnims .. " anims • " .. dbStatus .. " • RCtrl", 3, Color3.fromRGB(100, 180, 255))
+        notify("🎭 Ready!", totalAnims .. " anims • " .. dbStatus .. " • RCtrl", 3, COLORS.INFO)
     end)
 end
 
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
-    if input.KeyCode == Enum.KeyCode.RightControl then toggle() end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        toggle()
+    end
 end)
 
 setup()
