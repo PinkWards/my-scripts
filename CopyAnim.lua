@@ -10,7 +10,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Settings
 local CONFIG = {
-    ToggleKey = Enum.KeyCode.H,
+    ToggleKey = Enum.KeyCode.G,
     MaxDistance = 150,
     PopupTimeout = 10,
     BlackFadeTime = 0.3,
