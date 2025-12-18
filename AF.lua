@@ -1,10 +1,12 @@
 --[[
-    Anti-Fling v11 - Maximum Protection + Teleport Compatible
-    Immune to all fling types, allows intentional teleports
+    Anti-Fling v12 - Ultimate Protection
+    Immune to ALL flings including spinning parts/rings
+    Teleport compatible
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 
 local Enabled = false
@@ -46,6 +48,10 @@ Button.Active = true
 Button.Draggable = true
 Button.Parent = Gui
 Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 4)
+
+-- Store dangerous parts we already processed
+local ProcessedParts = {}
+local DangerousParts = {}
 
 local function SetCharacterCollision(char, enabled)
     if not char then return end
@@ -106,9 +112,33 @@ Players.PlayerAdded:Connect(function(player)
     end)
 end)
 
-local HRP, Humanoid, RootJoint
+local HRP, Humanoid, RootJoint, Character
+
+local function SetupCharacterProtection(char)
+    if not char then return end
+    
+    -- Make your own parts unable to be pushed
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CustomPhysicalProperties = PhysicalProperties.new(
+                100,    -- Density (heavy so hard to push)
+                0,      -- Friction
+                0,      -- Elasticity (no bounce)
+                0,      -- FrictionWeight
+                0       -- ElasticityWeight
+            )
+        end
+    end
+    
+    char.DescendantAdded:Connect(function(part)
+        if part:IsA("BasePart") and Enabled then
+            part.CustomPhysicalProperties = PhysicalProperties.new(100, 0, 0, 0, 0)
+        end
+    end)
+end
 
 local function Setup(char)
+    Character = char
     HRP = char:WaitForChild("HumanoidRootPart", 5)
     Humanoid = char:WaitForChild("Humanoid", 5)
     local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
@@ -120,13 +150,12 @@ local function Setup(char)
         SafeCFrame = HRP.CFrame
         LastGroundedPos = HRP.Position
         
-        -- Detect intentional teleports by hooking CFrame changes
+        SetupCharacterProtection(char)
+        
         HRP:GetPropertyChangedSignal("CFrame"):Connect(function()
             if Enabled and HRP then
                 local newPos = HRP.Position
                 local vel = HRP.AssemblyLinearVelocity
-                
-                -- If position changed but velocity is low = intentional teleport
                 if SafePosition and (newPos - SafePosition).Magnitude > 50 and vel.Magnitude < 30 then
                     TeleportCooldown = true
                     SafePosition = newPos
@@ -158,10 +187,14 @@ Button.MouseButton1Click:Connect(function()
         SafePosition = HRP.Position
         SafeCFrame = HRP.CFrame
         LastGroundedPos = HRP.Position
+        SetupCharacterProtection(Character)
     end
+    
+    -- Clear processed parts when toggling
+    ProcessedParts = {}
+    DangerousParts = {}
 end)
 
--- Global function to allow teleports from other scripts
 getgenv().AllowTeleport = function()
     TeleportCooldown = true
     task.delay(0.5, function()
@@ -181,29 +214,125 @@ local MAX_VELOCITY = 60
 local MAX_ANGULAR = 12
 local MAX_DISPLACEMENT = 50
 local TELEPORT_THRESHOLD = 200
+local DANGEROUS_VELOCITY = 50
+local DANGEROUS_ANGULAR = 30
+local SCAN_RADIUS = 35
 local frameCount = 0
+local scanCount = 0
 
 local function IsFlung()
     if not HRP then return false end
     local vel = HRP.AssemblyLinearVelocity
     local ang = HRP.AssemblyAngularVelocity
-    -- Fling = high velocity + high angular (spinning while moving fast)
-    if vel.Magnitude > 100 and ang.Magnitude > 20 then
+    if vel.Magnitude > 80 and ang.Magnitude > 15 then
         return true
     end
-    -- Or extreme velocity alone
-    if vel.Magnitude > 200 then
+    if vel.Magnitude > 150 then
+        return true
+    end
+    if ang.Magnitude > 40 then
         return true
     end
     return false
+end
+
+local function IsPartDangerous(part)
+    if not part:IsA("BasePart") then return false end
+    if part.Anchored then return false end
+    if part:IsDescendantOf(Character) then return false end
+    
+    -- Check if part belongs to any player's character
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and part:IsDescendantOf(player.Character) then
+            return false -- Already handled by player noclip
+        end
+    end
+    
+    local vel = part.AssemblyLinearVelocity
+    local ang = part.AssemblyAngularVelocity
+    
+    -- Fast moving part
+    if vel.Magnitude > DANGEROUS_VELOCITY then
+        return true
+    end
+    
+    -- Spinning part (ring fling)
+    if ang.Magnitude > DANGEROUS_ANGULAR then
+        return true
+    end
+    
+    -- Part with high velocity AND spinning
+    if vel.Magnitude > 30 and ang.Magnitude > 15 then
+        return true
+    end
+    
+    return false
+end
+
+local function NeutralizePart(part)
+    if not part or not part.Parent then return end
+    if ProcessedParts[part] then return end
+    
+    ProcessedParts[part] = true
+    DangerousParts[part] = true
+    
+    pcall(function()
+        if groupCreated then
+            part.CollisionGroup = CollisionGroup
+        end
+        part.CanCollide = false
+        part.CanTouch = false
+    end)
+end
+
+local function ScanNearbyParts()
+    if not HRP or not HRP.Parent then return end
+    
+    local pos = HRP.Position
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {Character}
+    
+    local parts = Workspace:GetPartBoundsInRadius(pos, SCAN_RADIUS, params)
+    
+    for _, part in ipairs(parts) do
+        if not ProcessedParts[part] then
+            if IsPartDangerous(part) then
+                NeutralizePart(part)
+            end
+        end
+    end
+end
+
+local function CleanupProcessedParts()
+    for part, _ in pairs(ProcessedParts) do
+        if not part or not part.Parent then
+            ProcessedParts[part] = nil
+            DangerousParts[part] = nil
+        end
+    end
 end
 
 RunService.Heartbeat:Connect(function(dt)
     if not Enabled then return end
     if not HRP or not HRP.Parent then return end
     if Humanoid and Humanoid.Health <= 0 then return end
+    
+    -- Scan for dangerous parts every 5 frames
+    scanCount = scanCount + 1
+    if scanCount >= 5 then
+        scanCount = 0
+        ScanNearbyParts()
+    end
+    
+    -- Cleanup every 100 frames
+    frameCount = frameCount + 1
+    if frameCount >= 100 then
+        frameCount = 0
+        CleanupProcessedParts()
+    end
+    
     if TeleportCooldown then
-        -- Update safe position during cooldown
         SafePosition = HRP.Position
         SafeCFrame = HRP.CFrame
         return
@@ -215,30 +344,15 @@ RunService.Heartbeat:Connect(function(dt)
     local velMag = vel.Magnitude
     local angMag = ang.Magnitude
     
-    -- Only snap back if actually being flung (high velocity + spinning)
-    if SafePosition and (pos - SafePosition).Magnitude > TELEPORT_THRESHOLD then
-        if IsFlung() then
-            HRP.CFrame = SafeCFrame
-            HRP.AssemblyLinearVelocity = Vector3.zero
-            HRP.AssemblyAngularVelocity = Vector3.zero
-            return
-        else
-            -- Intentional teleport, update safe position
-            SafePosition = pos
-            SafeCFrame = HRP.CFrame
-        end
-    end
-    
+    -- Instant velocity correction
     if velMag > MAX_VELOCITY then
-        -- Only clamp if also spinning (fling signature)
-        if angMag > 5 or velMag > 150 then
-            local clampedVel = Vector3.new(
+        if angMag > 5 or velMag > 100 then
+            HRP.AssemblyLinearVelocity = Vector3.new(
                 math.clamp(vel.X, -MAX_VELOCITY, MAX_VELOCITY),
                 math.clamp(vel.Y, -120, 80),
                 math.clamp(vel.Z, -MAX_VELOCITY, MAX_VELOCITY)
             )
-            HRP.AssemblyLinearVelocity = clampedVel
-            LastValidVelocity = clampedVel
+            LastValidVelocity = HRP.AssemblyLinearVelocity
         else
             LastValidVelocity = vel
         end
@@ -246,17 +360,32 @@ RunService.Heartbeat:Connect(function(dt)
         LastValidVelocity = vel
     end
     
+    -- Instant angular correction
     if angMag > MAX_ANGULAR then
         HRP.AssemblyAngularVelocity = Vector3.zero
     end
     
+    -- Teleport protection
+    if SafePosition and (pos - SafePosition).Magnitude > TELEPORT_THRESHOLD then
+        if IsFlung() then
+            HRP.CFrame = SafeCFrame
+            HRP.AssemblyLinearVelocity = Vector3.zero
+            HRP.AssemblyAngularVelocity = Vector3.zero
+            return
+        else
+            SafePosition = pos
+            SafeCFrame = HRP.CFrame
+        end
+    end
+    
+    -- Displacement protection
     if SafePosition then
         local displacement = (pos - SafePosition).Magnitude
         local expectedDisplacement = velMag * dt * 2
         if displacement > MAX_DISPLACEMENT and displacement > expectedDisplacement + 30 then
             if IsFlung() then
                 HRP.CFrame = SafeCFrame
-                HRP.AssemblyLinearVelocity = LastValidVelocity * 0.5
+                HRP.AssemblyLinearVelocity = LastValidVelocity * 0.3
                 HRP.AssemblyAngularVelocity = Vector3.zero
                 return
             else
@@ -266,15 +395,12 @@ RunService.Heartbeat:Connect(function(dt)
         end
     end
     
-    frameCount = frameCount + 1
-    if frameCount >= 3 then
-        frameCount = 0
-        if velMag < MAX_VELOCITY and angMag < MAX_ANGULAR then
-            SafePosition = pos
-            SafeCFrame = HRP.CFrame
-            if Humanoid and Humanoid.FloorMaterial ~= Enum.Material.Air then
-                LastGroundedPos = pos
-            end
+    -- Update safe position when stable
+    if velMag < MAX_VELOCITY and angMag < MAX_ANGULAR then
+        SafePosition = pos
+        SafeCFrame = HRP.CFrame
+        if Humanoid and Humanoid.FloorMaterial ~= Enum.Material.Air then
+            LastGroundedPos = pos
         end
     end
 end)
@@ -285,22 +411,48 @@ RunService.RenderStepped:Connect(function()
     if Humanoid and Humanoid.Health <= 0 then return end
     if TeleportCooldown then return end
     
+    local vel = HRP.AssemblyLinearVelocity
     local ang = HRP.AssemblyAngularVelocity
-    if ang.Magnitude > MAX_ANGULAR * 1.5 then
+    
+    -- Instant spin cancel
+    if ang.Magnitude > MAX_ANGULAR then
         HRP.AssemblyAngularVelocity = Vector3.zero
     end
     
-    local vel = HRP.AssemblyLinearVelocity
-    if vel.Magnitude > MAX_VELOCITY * 2 then
+    -- Instant extreme velocity cancel
+    if vel.Magnitude > MAX_VELOCITY * 1.5 then
         if IsFlung() then
             HRP.AssemblyLinearVelocity = Vector3.new(
                 math.clamp(vel.X, -MAX_VELOCITY, MAX_VELOCITY),
                 math.clamp(vel.Y, -100, 60),
                 math.clamp(vel.Z, -MAX_VELOCITY, MAX_VELOCITY)
             )
+            HRP.AssemblyAngularVelocity = Vector3.zero
         end
     end
 end)
 
-print("[Anti-Fling v11] Loaded - Teleport compatible!")
-print("Tip: Teleports are auto-detected. If issues occur, run: AllowTeleport()")
+-- Extra protection: Stepped runs before physics
+RunService.Stepped:Connect(function()
+    if not Enabled then return end
+    if not HRP or not HRP.Parent then return end
+    if Humanoid and Humanoid.Health <= 0 then return end
+    if TeleportCooldown then return end
+    
+    local ang = HRP.AssemblyAngularVelocity
+    if ang.Magnitude > MAX_ANGULAR * 2 then
+        HRP.AssemblyAngularVelocity = Vector3.zero
+    end
+    
+    local vel = HRP.AssemblyLinearVelocity
+    if vel.Magnitude > MAX_VELOCITY * 2.5 then
+        HRP.AssemblyLinearVelocity = Vector3.new(
+            math.clamp(vel.X, -MAX_VELOCITY, MAX_VELOCITY),
+            math.clamp(vel.Y, -100, 60),
+            math.clamp(vel.Z, -MAX_VELOCITY, MAX_VELOCITY)
+        )
+    end
+end)
+
+print("[Anti-Fling v12] Loaded - Full protection against all flings!")
+print("Tip: Teleports auto-detected. If blocked, run: AllowTeleport()")
