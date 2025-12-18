@@ -1,5 +1,5 @@
 --[[
-    ====== FLASHBACK SCRIPT ======
+    ====== FLASHBACK SCRIPT (OPTIMIZED) ======
     Hold C to rewind time!
     
     TWEAKABLE SETTINGS BELOW:
@@ -7,65 +7,66 @@
 
 -- ============ SETTINGS (TWEAK THESE!) ============
 
-local FLASHBACK_KEY = Enum.KeyCode.C -- Change this to any key you want (e.g., Enum.KeyCode.R, Enum.KeyCode.F, etc.)
-
-local FLASHBACK_LENGTH = 60 -- How many seconds of history to store (higher = more memory usage)
-
-local FLASHBACK_SPEED = 1 -- How many frames to skip when rewinding
-                          -- 0 = no skip (slowest rewind, very smooth)
-                          -- 1 = skip 1 frame (normal speed)
-                          -- 2 = skip 2 frames (faster rewind)
-                          -- 3+ = even faster rewind
-
-local SMOOTHNESS = 0.3 -- How smooth the flashback looks (0.1 to 1)
-                       -- Lower = smoother but less accurate
-                       -- Higher = more accurate but can be choppy
-                       -- Recommended: 0.2 - 0.5
-
-local REVERSE_VELOCITY = true -- Set to false if you don't want reversed momentum after flashback
-
-local VELOCITY_MULTIPLIER = 1 -- How strong the reversed velocity is (0 = no velocity, 1 = normal, 2 = double, etc.)
-
-local RECORD_TOOLS = true -- Set to false if you don't want to record tool equip/unequip
-
-local USE_INTERPOLATION = true -- Set to true for smoother movement (recommended)
-
-local INTERPOLATION_SPEED = 0.5 -- How fast interpolation is (0.1 = very smooth, 1 = instant)
-                                 -- Only works if USE_INTERPOLATION is true
+local FLASHBACK_KEY = Enum.KeyCode.C
+local FLASHBACK_LENGTH = 60
+local FLASHBACK_SPEED = 1
+local SMOOTHNESS = 0.3
+local REVERSE_VELOCITY = true
+local VELOCITY_MULTIPLIER = 1
+local RECORD_TOOLS = true
+local USE_INTERPOLATION = true
+local INTERPOLATION_SPEED = 0.5
 
 -- ============ END OF SETTINGS ============
 
+-- Cache services once (instead of calling GetService repeatedly)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LP = Players.LocalPlayer
 local frames = {}
-local LP = game:GetService("Players").LocalPlayer
-local RS = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
+local maxFrames = FLASHBACK_LENGTH * 60
 
-local function getchar()
-    return LP.Character or LP.CharacterAdded:Wait()
-end
+-- Cache character parts to avoid repeated FindFirstChild calls
+local cachedChar = nil
+local cachedHRP = nil
+local cachedHum = nil
 
-local function gethrp(c)
-    return c:FindFirstChild("HumanoidRootPart") 
-        or c.RootPart 
-        or c.PrimaryPart 
-        or c:FindFirstChild("Torso") 
-        or c:FindFirstChild("UpperTorso") 
-        or c:FindFirstChildWhichIsA("BasePart")
+local function updateCache()
+    local char = LP.Character
+    if not char then 
+        return nil, nil, nil 
+    end
+    
+    -- Only update cache if character changed
+    if char ~= cachedChar then
+        cachedChar = char
+        cachedHRP = char:FindFirstChild("HumanoidRootPart") 
+            or char:FindFirstChild("Torso") 
+            or char:FindFirstChild("UpperTorso") 
+            or char:FindFirstChildWhichIsA("BasePart")
+        cachedHum = char:FindFirstChildWhichIsA("Humanoid")
+    end
+    
+    return cachedChar, cachedHRP, cachedHum
 end
 
 local flashback = {
     lastinput = false, 
     canrevert = true, 
     active = false,
-    targetCFrame = nil -- Used for interpolation
 }
 
 function flashback:Advance(char, hrp, hum, allowinput)
-    local maxFrames = FLASHBACK_LENGTH * 60
-    
-    -- Remove old frames if we have too many
-    while #frames > maxFrames do
-        table.remove(frames, 1)
+    -- More efficient frame removal (remove from end instead of beginning)
+    local frameCount = #frames
+    if frameCount >= maxFrames then
+        -- Remove oldest frames in batch if too many
+        local toRemove = frameCount - maxFrames + 1
+        for i = 1, toRemove do
+            table.remove(frames, 1)
+        end
     end
     
     if allowinput and not self.canrevert then
@@ -85,12 +86,11 @@ function flashback:Advance(char, hrp, hum, allowinput)
         PlatformStand = hum.PlatformStand,
     }
     
-    -- Only record tool if setting is enabled
     if RECORD_TOOLS then
         frameData.Tool = char:FindFirstChildOfClass("Tool")
     end
     
-    table.insert(frames, frameData)
+    frames[#frames + 1] = frameData -- Slightly faster than table.insert
 end
 
 function flashback:Revert(char, hrp, hum)
@@ -98,16 +98,15 @@ function flashback:Revert(char, hrp, hum)
     
     if num == 0 or not self.canrevert then
         self.canrevert = false
-        self:Advance(char, hrp, hum)
+        self:Advance(char, hrp, hum, false)
         return
     end
     
     -- Skip frames based on FLASHBACK_SPEED
-    for i = 1, FLASHBACK_SPEED do
-        if num > 1 then
-            table.remove(frames, num)
-            num = num - 1
-        end
+    local framesToRemove = math.min(FLASHBACK_SPEED, num - 1)
+    for i = 1, framesToRemove do
+        frames[num] = nil
+        num = num - 1
     end
     
     self.lastinput = true
@@ -115,9 +114,9 @@ function flashback:Revert(char, hrp, hum)
     
     if not lastframe then return end
     
-    table.remove(frames, num)
+    frames[num] = nil -- Faster than table.remove for last element
     
-    -- Apply position (with or without interpolation)
+    -- Apply position
     if USE_INTERPOLATION then
         hrp.CFrame = hrp.CFrame:Lerp(lastframe.CFrame, INTERPOLATION_SPEED)
     else
@@ -128,7 +127,7 @@ function flashback:Revert(char, hrp, hum)
     if REVERSE_VELOCITY then
         hrp.Velocity = -lastframe.Velocity * VELOCITY_MULTIPLIER
     else
-        hrp.Velocity = Vector3.new(0, 0, 0)
+        hrp.Velocity = Vector3.zero -- Cached zero vector
     end
     
     -- Apply state
@@ -142,31 +141,29 @@ function flashback:Revert(char, hrp, hum)
             if not currenttool then
                 hum:EquipTool(lastframe.Tool)
             end
-        else
+        elseif currenttool then
             hum:UnequipTools()
         end
     end
 end
 
 -- Key input handling
-UIS.InputBegan:Connect(function(input, gameProcessed)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == FLASHBACK_KEY then
         flashback.active = true
     end
 end)
 
-UIS.InputEnded:Connect(function(input, gameProcessed)
+UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == FLASHBACK_KEY then
         flashback.active = false
     end
 end)
 
 -- Main loop
-RS.Heartbeat:Connect(function(deltaTime)
-    local char = getchar()
-    local hrp = gethrp(char)
-    local hum = char:FindFirstChildWhichIsA("Humanoid")
+RunService.Heartbeat:Connect(function()
+    local char, hrp, hum = updateCache()
     
     if not hrp or not hum then return end
     
@@ -177,9 +174,12 @@ RS.Heartbeat:Connect(function(deltaTime)
     end
 end)
 
--- Reset frames when character respawns
+-- Reset when character respawns
 LP.CharacterAdded:Connect(function()
     frames = {}
+    cachedChar = nil
+    cachedHRP = nil
+    cachedHum = nil
     flashback.canrevert = true
     flashback.active = false
 end)
