@@ -7,7 +7,7 @@
 
 -- ============ SETTINGS (TWEAK THESE!) ============
 
-local FLASHBACK_KEY = Enum.KeyCode.G -- Change this to any key you want (e.g., Enum.KeyCode.R, Enum.KeyCode.F, etc.)
+local FLASHBACK_KEY = Enum.KeyCode.C -- Change this to any key you want (e.g., Enum.KeyCode.R, Enum.KeyCode.F, etc.)
 
 local FLASHBACK_LENGTH = 60 -- How many seconds of history to store (higher = more memory usage)
 
