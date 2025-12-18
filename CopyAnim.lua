@@ -1,6 +1,7 @@
--- Ultra-Clean Animation Copy Script v5.3 (Perfect Sync)
+-- Ultra-Clean Animation Copy Script v5.3 (OPTIMIZED)
 -- With Respawn Position Feature
 
+-- Cache services once
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -23,14 +24,53 @@ local targetPlayer = nil
 local mainConnection = nil
 local savedCFrame = nil
 local isRespawning = false
+local animateScriptDisabled = false
 
--- Animation storage
+-- Animation storage (use table.create for pre-allocation hint)
 local loadedAnims = {}
 local playingTracks = {}
 local lastSyncTime = {}
 
--- Store original animate script
-local animateScriptDisabled = false
+-- Cache commonly used values
+local ZERO_VECTOR = Vector3.zero
+local ANIMATION_PRIORITY = Enum.AnimationPriority.Action4
+
+-- Reusable TweenInfo objects (avoid creating new ones each time)
+local TWEEN_FADE_IN = TweenInfo.new(CONFIG.BlackFadeTime)
+local TWEEN_FADE_OUT = TweenInfo.new(CONFIG.FadeOutTime)
+local TWEEN_HOVER = TweenInfo.new(0.15)
+local TWEEN_POPUP_IN = TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TWEEN_POPUP_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+
+-- Cache character references
+local cachedChar = nil
+local cachedHumanoid = nil
+local cachedAnimator = nil
+local cachedRoot = nil
+
+-- ═══════════════════════════════════════════════════════════════════
+-- CHARACTER CACHE
+-- ═══════════════════════════════════════════════════════════════════
+
+local function updateCharacterCache()
+    local char = LocalPlayer.Character
+    if not char then
+        cachedChar = nil
+        cachedHumanoid = nil
+        cachedAnimator = nil
+        cachedRoot = nil
+        return false
+    end
+    
+    if char ~= cachedChar then
+        cachedChar = char
+        cachedHumanoid = char:FindFirstChild("Humanoid")
+        cachedRoot = char:FindFirstChild("HumanoidRootPart")
+        cachedAnimator = cachedHumanoid and cachedHumanoid:FindFirstChildOfClass("Animator")
+    end
+    
+    return cachedHumanoid ~= nil and cachedRoot ~= nil
+end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- MINIMAL UI (Only for respawn popup)
@@ -168,11 +208,17 @@ buttonLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 buttonLayout.Padding = UDim.new(0, 10)
 buttonLayout.Parent = buttonContainer
 
+-- Cache button colors
+local YES_COLOR_NORMAL = Color3.fromRGB(0, 170, 127)
+local YES_COLOR_HOVER = Color3.fromRGB(0, 200, 150)
+local NO_COLOR_NORMAL = Color3.fromRGB(60, 60, 65)
+local NO_COLOR_HOVER = Color3.fromRGB(80, 80, 85)
+
 -- Yes button
 local yesButton = Instance.new("TextButton")
 yesButton.Name = "YesButton"
 yesButton.Size = UDim2.new(0, 130, 0, 40)
-yesButton.BackgroundColor3 = Color3.fromRGB(0, 170, 127)
+yesButton.BackgroundColor3 = YES_COLOR_NORMAL
 yesButton.BorderSizePixel = 0
 yesButton.TextColor3 = Color3.new(1, 1, 1)
 yesButton.TextSize = 15
@@ -181,15 +227,13 @@ yesButton.Text = "✓  Yes, Teleport"
 yesButton.AutoButtonColor = true
 yesButton.Parent = buttonContainer
 
-local yesCorner = Instance.new("UICorner")
-yesCorner.CornerRadius = UDim.new(0, 8)
-yesCorner.Parent = yesButton
+Instance.new("UICorner", yesButton).CornerRadius = UDim.new(0, 8)
 
 -- No button
 local noButton = Instance.new("TextButton")
 noButton.Name = "NoButton"
 noButton.Size = UDim2.new(0, 130, 0, 40)
-noButton.BackgroundColor3 = Color3.fromRGB(60, 60, 65)
+noButton.BackgroundColor3 = NO_COLOR_NORMAL
 noButton.BorderSizePixel = 0
 noButton.TextColor3 = Color3.new(1, 1, 1)
 noButton.TextSize = 15
@@ -198,9 +242,7 @@ noButton.Text = "✕  No, Stay"
 noButton.AutoButtonColor = true
 noButton.Parent = buttonContainer
 
-local noCorner = Instance.new("UICorner")
-noCorner.CornerRadius = UDim.new(0, 8)
-noCorner.Parent = noButton
+Instance.new("UICorner", noButton).CornerRadius = UDim.new(0, 8)
 
 screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
@@ -211,22 +253,18 @@ screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 local popupResult = nil
 local popupActive = false
 
+-- Cache popup positions
+local POPUP_POS_CENTER = UDim2.new(0.5, -160, 0.5, -90)
+local POPUP_POS_BELOW = UDim2.new(0.5, -160, 0.6, -90)
+
 local function showPopup()
     popupResult = nil
     popupActive = true
     
-    popupBox.Position = UDim2.new(0.5, -160, 0.5, -90)
-    popupBox.Size = UDim2.new(0, 320, 0, 180)
+    popupBox.Position = POPUP_POS_BELOW
     popupContainer.Visible = true
     
-    popupBox.Position = UDim2.new(0.5, -160, 0.6, -90)
-    popupBox:TweenPosition(
-        UDim2.new(0.5, -160, 0.5, -90),
-        Enum.EasingDirection.Out,
-        Enum.EasingStyle.Back,
-        0.3,
-        true
-    )
+    TweenService:Create(popupBox, TWEEN_POPUP_IN, {Position = POPUP_POS_CENTER}):Play()
     
     local timeLeft = CONFIG.PopupTimeout
     
@@ -234,7 +272,7 @@ local function showPopup()
         while popupActive and timeLeft > 0 do
             timerText.Text = "Auto-closing in " .. timeLeft .. "s..."
             task.wait(1)
-            timeLeft = timeLeft - 1
+            timeLeft -= 1
         end
         
         if popupActive then
@@ -247,13 +285,7 @@ local function showPopup()
         task.wait(0.1)
     end
     
-    popupBox:TweenPosition(
-        UDim2.new(0.5, -160, 0.6, -90),
-        Enum.EasingDirection.In,
-        Enum.EasingStyle.Back,
-        0.2,
-        true
-    )
+    TweenService:Create(popupBox, TWEEN_POPUP_OUT, {Position = POPUP_POS_BELOW}):Play()
     task.wait(0.2)
     popupContainer.Visible = false
     
@@ -265,19 +297,22 @@ local function closePopup(result)
     popupActive = false
 end
 
--- Button hover effects
-local function addHoverEffect(button, normalColor, hoverColor)
-    button.MouseEnter:Connect(function()
-        TweenService:Create(button, TweenInfo.new(0.15), {BackgroundColor3 = hoverColor}):Play()
-    end)
-    
-    button.MouseLeave:Connect(function()
-        TweenService:Create(button, TweenInfo.new(0.15), {BackgroundColor3 = normalColor}):Play()
-    end)
-end
+-- Button hover effects (optimized with cached tweens)
+yesButton.MouseEnter:Connect(function()
+    TweenService:Create(yesButton, TWEEN_HOVER, {BackgroundColor3 = YES_COLOR_HOVER}):Play()
+end)
 
-addHoverEffect(yesButton, Color3.fromRGB(0, 170, 127), Color3.fromRGB(0, 200, 150))
-addHoverEffect(noButton, Color3.fromRGB(60, 60, 65), Color3.fromRGB(80, 80, 85))
+yesButton.MouseLeave:Connect(function()
+    TweenService:Create(yesButton, TWEEN_HOVER, {BackgroundColor3 = YES_COLOR_NORMAL}):Play()
+end)
+
+noButton.MouseEnter:Connect(function()
+    TweenService:Create(noButton, TWEEN_HOVER, {BackgroundColor3 = NO_COLOR_HOVER}):Play()
+end)
+
+noButton.MouseLeave:Connect(function()
+    TweenService:Create(noButton, TWEEN_HOVER, {BackgroundColor3 = NO_COLOR_NORMAL}):Play()
+end)
 
 yesButton.MouseButton1Click:Connect(function()
     closePopup(true)
@@ -293,14 +328,14 @@ end)
 
 local function fadeToBlack()
     loadingText.Text = "⟳ Teleporting..."
-    TweenService:Create(blackFrame, TweenInfo.new(CONFIG.BlackFadeTime), {BackgroundTransparency = 0}):Play()
-    TweenService:Create(loadingText, TweenInfo.new(CONFIG.BlackFadeTime), {TextTransparency = 0}):Play()
+    TweenService:Create(blackFrame, TWEEN_FADE_IN, {BackgroundTransparency = 0}):Play()
+    TweenService:Create(loadingText, TWEEN_FADE_IN, {TextTransparency = 0}):Play()
     task.wait(CONFIG.BlackFadeTime)
 end
 
 local function fadeFromBlack()
-    TweenService:Create(blackFrame, TweenInfo.new(CONFIG.FadeOutTime), {BackgroundTransparency = 1}):Play()
-    TweenService:Create(loadingText, TweenInfo.new(CONFIG.FadeOutTime), {TextTransparency = 1}):Play()
+    TweenService:Create(blackFrame, TWEEN_FADE_OUT, {BackgroundTransparency = 1}):Play()
+    TweenService:Create(loadingText, TWEEN_FADE_OUT, {TextTransparency = 1}):Play()
     task.wait(CONFIG.FadeOutTime)
     loadingText.Text = ""
 end
@@ -310,33 +345,28 @@ end
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimateScript()
-    local char = LocalPlayer.Character
-    if not char then return end
+    if not cachedChar then return end
     
-    local animate = char:FindFirstChild("Animate")
+    local animate = cachedChar:FindFirstChild("Animate")
     if animate then
         animate.Disabled = true
         animateScriptDisabled = true
     end
     
-    local humanoid = char:FindFirstChild("Humanoid")
-    if humanoid then
-        local animator = humanoid:FindFirstChildOfClass("Animator")
-        if animator then
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                pcall(function()
-                    track:Stop(0)
-                end)
-            end
+    if cachedAnimator then
+        local tracks = cachedAnimator:GetPlayingAnimationTracks()
+        for i = 1, #tracks do
+            pcall(function()
+                tracks[i]:Stop(0)
+            end)
         end
     end
 end
 
 local function enableAnimateScript()
-    local char = LocalPlayer.Character
-    if not char then return end
+    if not cachedChar then return end
     
-    local animate = char:FindFirstChild("Animate")
+    local animate = cachedChar:FindFirstChild("Animate")
     if animate then
         animate.Disabled = false
     end
@@ -345,20 +375,19 @@ local function enableAnimateScript()
 end
 
 local function getNearestPlayer()
-    local myChar = LocalPlayer.Character
-    if not myChar then return nil end
+    if not cachedRoot then return nil end
     
-    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-    
+    local myPos = cachedRoot.Position
     local nearest = nil
     local nearestDist = CONFIG.MaxDistance
     
-    for _, player in ipairs(Players:GetPlayers()) do
+    local players = Players:GetPlayers()
+    for i = 1, #players do
+        local player = players[i]
         if player ~= LocalPlayer and player.Character then
             local root = player.Character:FindFirstChild("HumanoidRootPart")
             if root then
-                local dist = (myRoot.Position - root.Position).Magnitude
+                local dist = (myPos - root.Position).Magnitude
                 if dist < nearestDist then
                     nearestDist = dist
                     nearest = player
@@ -371,70 +400,67 @@ local function getNearestPlayer()
 end
 
 local function completeCleanup()
+    -- Stop and destroy playing tracks
     for animId, track in pairs(playingTracks) do
         pcall(function()
             track:Stop(0)
             track:Destroy()
         end)
     end
-    playingTracks = {}
-    lastSyncTime = {}
+    table.clear(playingTracks)
+    table.clear(lastSyncTime)
     
+    -- Destroy loaded animations
     for animId, anim in pairs(loadedAnims) do
         pcall(function()
             anim:Destroy()
         end)
     end
-    loadedAnims = {}
+    table.clear(loadedAnims)
     
-    local char = LocalPlayer.Character
-    if char then
-        local humanoid = char:FindFirstChild("Humanoid")
-        if humanoid then
-            local animator = humanoid:FindFirstChildOfClass("Animator")
-            if animator then
-                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                    pcall(function()
-                        track:Stop(0)
-                    end)
-                end
-            end
+    -- Stop all animator tracks
+    if cachedAnimator then
+        local tracks = cachedAnimator:GetPlayingAnimationTracks()
+        for i = 1, #tracks do
+            pcall(function()
+                tracks[i]:Stop(0)
+            end)
         end
     end
     
     task.wait(0.1)
 end
 
-local function getAnimator()
-    local char = LocalPlayer.Character
-    if not char then return nil end
+local function getOrCreateAnimator()
+    if cachedAnimator then return cachedAnimator end
     
-    local humanoid = char:FindFirstChild("Humanoid")
-    if not humanoid then return nil end
+    if not cachedHumanoid then return nil end
     
-    local animator = humanoid:FindFirstChildOfClass("Animator")
-    if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = humanoid
+    cachedAnimator = cachedHumanoid:FindFirstChildOfClass("Animator")
+    if not cachedAnimator then
+        cachedAnimator = Instance.new("Animator")
+        cachedAnimator.Parent = cachedHumanoid
     end
     
-    return animator
+    return cachedAnimator
 end
 
 local function copyAnimation(animId, targetTrack)
-    local animator = getAnimator()
+    local animator = getOrCreateAnimator()
     if not animator then return end
     
+    -- Create animation if not exists
     if not loadedAnims[animId] then
         local anim = Instance.new("Animation")
         anim.AnimationId = animId
         loadedAnims[animId] = anim
     end
     
+    -- Load and play track if not exists
     if not playingTracks[animId] then
         local success = pcall(function()
             local track = animator:LoadAnimation(loadedAnims[animId])
-            track.Priority = Enum.AnimationPriority.Action4
+            track.Priority = ANIMATION_PRIORITY
             track:Play(0, 1, targetTrack.Speed)
             track.TimePosition = targetTrack.TimePosition
             playingTracks[animId] = track
@@ -447,9 +473,11 @@ local function copyAnimation(animId, targetTrack)
     local myTrack = playingTracks[animId]
     if not myTrack then return end
     
+    -- Sync track properties
     pcall(function()
-        if math.abs(myTrack.Speed - targetTrack.Speed) > 0.001 then
-            myTrack:AdjustSpeed(targetTrack.Speed)
+        local targetSpeed = targetTrack.Speed
+        if math.abs(myTrack.Speed - targetSpeed) > 0.001 then
+            myTrack:AdjustSpeed(targetSpeed)
         end
         
         if myTrack.WeightCurrent < 0.999 then
@@ -457,12 +485,13 @@ local function copyAnimation(animId, targetTrack)
         end
         
         if targetTrack.Length > 0 then
-            local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
+            local targetTime = targetTrack.TimePosition
+            local timeDiff = math.abs(myTrack.TimePosition - targetTime)
             local now = tick()
             local lastSync = lastSyncTime[animId] or 0
             
             if timeDiff > 0.016 or (now - lastSync) > 0.5 then
-                myTrack.TimePosition = targetTrack.TimePosition
+                myTrack.TimePosition = targetTime
                 lastSyncTime[animId] = now
             end
         end
@@ -474,31 +503,31 @@ end
 -- ═══════════════════════════════════════════════════════════════════
 
 local function saveCurrentPosition()
-    local char = LocalPlayer.Character
-    if char then
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if root then
-            savedCFrame = root.CFrame
-            return true
-        end
+    if cachedRoot then
+        savedCFrame = cachedRoot.CFrame
+        return true
     end
     return false
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- MAIN UPDATE LOOP
+-- MAIN UPDATE LOOP (OPTIMIZED)
 -- ═══════════════════════════════════════════════════════════════════
+
+-- Reusable table for active animations (avoid creating new table each frame)
+local activeAnims = {}
+local toRemove = {}
 
 local function update()
     if not isCopying or isRespawning then return end
     
-    local char = LocalPlayer.Character
-    if not char then return end
+    if not updateCharacterCache() then return end
     
     if not animateScriptDisabled then
         disableAnimateScript()
     end
     
+    -- Find new target if needed
     if not targetPlayer or not targetPlayer.Character then
         local newTarget = getNearestPlayer()
         if newTarget and newTarget ~= targetPlayer then
@@ -509,10 +538,14 @@ local function update()
         end
     end
     
-    if targetPlayer and (not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("Humanoid")) then
-        completeCleanup()
-        targetPlayer = nil
-        return
+    -- Validate target
+    if targetPlayer then
+        local targetChar = targetPlayer.Character
+        if not targetChar or not targetChar:FindFirstChild("Humanoid") then
+            completeCleanup()
+            targetPlayer = nil
+            return
+        end
     end
     
     if not targetPlayer then return end
@@ -529,9 +562,12 @@ local function update()
     
     if not success or not targetTracks then return end
     
-    local activeAnims = {}
+    -- Clear and reuse activeAnims table
+    table.clear(activeAnims)
     
-    for _, track in ipairs(targetTracks) do
+    -- Copy active animations
+    for i = 1, #targetTracks do
+        local track = targetTracks[i]
         if track.IsPlaying and track.Animation then
             local animId = track.Animation.AnimationId
             if animId and animId ~= "" then
@@ -541,14 +577,17 @@ local function update()
         end
     end
     
-    local toRemove = {}
+    -- Find tracks to remove (reuse table)
+    table.clear(toRemove)
     for animId, track in pairs(playingTracks) do
         if not activeAnims[animId] then
-            table.insert(toRemove, animId)
+            toRemove[#toRemove + 1] = animId
         end
     end
     
-    for _, animId in ipairs(toRemove) do
+    -- Remove inactive tracks
+    for i = 1, #toRemove do
+        local animId = toRemove[i]
         pcall(function()
             playingTracks[animId]:Stop(0)
             playingTracks[animId]:Destroy()
@@ -566,9 +605,9 @@ local function startCopying()
     if isCopying then return end
     isCopying = true
     
+    updateCharacterCache()
     completeCleanup()
     disableAnimateScript()
-    
     saveCurrentPosition()
     
     targetPlayer = getNearestPlayer()
@@ -630,15 +669,28 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 LocalPlayer.CharacterAdded:Connect(function(char)
-    playingTracks = {}
-    loadedAnims = {}
-    lastSyncTime = {}
+    -- Clear caches
+    table.clear(playingTracks)
+    table.clear(loadedAnims)
+    table.clear(lastSyncTime)
     animateScriptDisabled = false
+    
+    -- Reset character cache
+    cachedChar = nil
+    cachedHumanoid = nil
+    cachedAnimator = nil
+    cachedRoot = nil
     
     local hum = char:WaitForChild("Humanoid", 10)
     local root = char:WaitForChild("HumanoidRootPart", 10)
     
     if not hum or not root then return end
+    
+    -- Update cache
+    cachedChar = char
+    cachedHumanoid = hum
+    cachedRoot = root
+    cachedAnimator = hum:FindFirstChildOfClass("Animator")
     
     if savedCFrame then
         isRespawning = true
@@ -649,13 +701,12 @@ LocalPlayer.CharacterAdded:Connect(function(char)
         
         if wantsTeleport then
             fadeToBlack()
-            
             task.wait(0.2)
             
             pcall(function()
                 root.CFrame = savedCFrame
-                root.Velocity = Vector3.zero
-                root.RotVelocity = Vector3.zero
+                root.AssemblyLinearVelocity = ZERO_VECTOR
+                root.AssemblyAngularVelocity = ZERO_VECTOR
             end)
             
             task.wait(0.2)
@@ -665,7 +716,6 @@ LocalPlayer.CharacterAdded:Connect(function(char)
             end
             
             fadeFromBlack()
-            
             print("📍 Teleported to saved location")
         else
             savedCFrame = root.CFrame
@@ -703,13 +753,14 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 print("═══════════════════════════════════════════")
-print("    🎭 Animation Copy v5.3 (Perfect Sync)")
+print("    🎭 Animation Copy v5.3 (OPTIMIZED)")
 print("═══════════════════════════════════════════")
-print("    Press [H] to toggle")
+print("    Press [G] to toggle")
 print("")
 print("    Features:")
 print("    ✓ 100% frame-perfect sync")
 print("    ✓ No twisted arms/legs")
 print("    ✓ Auto-targets nearest player")
 print("    ✓ Respawn position confirmation")
+print("    ✓ Optimized performance")
 print("═══════════════════════════════════════════")
