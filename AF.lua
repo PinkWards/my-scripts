@@ -1,295 +1,127 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
-local Workspace = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+local WS = game:GetService("Workspace")
 
--- ==================== CONFIG ====================
-local MAX_LIN = 55
-local MAX_ANG = 30
-local FLING_THRESHOLD = 150
-local EXTREME_THRESHOLD = 300
+-- CONFIG
+local MAX_VEL = 55
+local FLING_VEL = 150
 
--- ==================== STATE (cached) ====================
-local ghostEnabled = true
-local lastSafeCFrame = nil
-local flingCount = 0
-local cachedRoot = nil
-local cachedChar = nil
-local isProtecting = false
+-- STATE (minimal)
+local root, safeCF, flings, protecting = nil, nil, 0, false
+local V3Zero = Vector3.zero
 
--- ==================== DANGEROUS CLASSES (fast lookup) ====================
-local DANGEROUS = {
-	BodyVelocity = true, BodyAngularVelocity = true, BodyForce = true,
-	BodyThrust = true, BodyPosition = true, BodyGyro = true,
-	RocketPropulsion = true, VectorForce = true, LineForce = true,
-	Torque = true, LinearVelocity = true, AngularVelocity = true,
-	AlignPosition = true, AlignOrientation = true
+-- DANGEROUS CLASSES (hash)
+local BAD = {
+	BodyVelocity=1,BodyAngularVelocity=1,BodyForce=1,BodyThrust=1,
+	BodyPosition=1,BodyGyro=1,VectorForce=1,LinearVelocity=1,
+	AngularVelocity=1,AlignPosition=1,AlignOrientation=1,LineForce=1
 }
 
--- ==================== CORE FUNCTIONS ====================
-local function updateCache()
-	cachedChar = LocalPlayer.Character
-	cachedRoot = cachedChar and cachedChar:FindFirstChild("HumanoidRootPart")
-end
-
-local function setGhost(char, enabled)
-	if not char then return end
-	for _, p in ipairs(char:GetDescendants()) do
-		if p:IsA("BasePart") then
-			p.CanCollide = not enabled
-		end
-	end
-end
-
-local function disablePlayerCollision(player)
-	if player == LocalPlayer then return end
-	local char = player.Character
-	if not char then return end
-	for _, p in ipairs(char:GetDescendants()) do
-		if p:IsA("BasePart") then
-			p.CanCollide = false
-			p.CanTouch = false
-		end
-	end
-end
-
--- ==================== MAIN PROTECTION (single loop) ====================
-local frameCount = 0
-local lastCleanup = 0
-
+-- MAIN LOOP (ultra minimal)
 RunService.RenderStepped:Connect(function()
-	if not cachedRoot then
-		updateCache()
-		return
-	end
-	
-	-- Velocity protection (every frame - critical)
-	local lv = cachedRoot.AssemblyLinearVelocity
-	local av = cachedRoot.AssemblyAngularVelocity
-	local linMag = lv.Magnitude
-	local angMag = av.Magnitude
-	
-	-- Extreme fling - instant freeze + teleport
-	if linMag > EXTREME_THRESHOLD then
-		cachedRoot.AssemblyLinearVelocity = Vector3.zero
-		cachedRoot.AssemblyAngularVelocity = Vector3.zero
-		if lastSafeCFrame then
-			cachedRoot.CFrame = lastSafeCFrame
-		end
-		flingCount += 1
-		isProtecting = true
-	-- High velocity - clamp hard
-	elseif linMag > FLING_THRESHOLD then
-		cachedRoot.AssemblyLinearVelocity = lv.Unit * (MAX_LIN * 0.5)
-		cachedRoot.AssemblyAngularVelocity = Vector3.zero
-		flingCount += 1
-		isProtecting = true
-	-- Normal clamp
-	else
-		if linMag > MAX_LIN then
-			cachedRoot.AssemblyLinearVelocity = lv.Unit * MAX_LIN
-		end
-		if angMag > MAX_ANG then
-			cachedRoot.AssemblyAngularVelocity = av.Unit * MAX_ANG
-		end
-		
-		-- Save safe position when stable
-		if linMag < 20 then
-			lastSafeCFrame = cachedRoot.CFrame
-		end
-		isProtecting = false
-	end
-	
-	-- Throttled tasks (every 6 frames = ~10Hz)
-	frameCount += 1
-	if frameCount >= 6 then
-		frameCount = 0
-		
-		-- Ghost enforcement
-		if ghostEnabled and cachedChar then
-			for _, p in ipairs(cachedChar:GetChildren()) do
-				if p:IsA("BasePart") and p.CanCollide then
-					p.CanCollide = false
-				end
-			end
-		end
-	end
-end)
-
--- ==================== LIGHTWEIGHT PART DETECTION ====================
-local function isBadPart(part)
-	if not part:IsA("BasePart") or part.Anchored then return false end
-	
-	local cpp = part.CustomPhysicalProperties
-	if cpp and cpp.Density == 0 and cpp.Friction == 0 then
-		return true
-	end
-	
-	if part.AssemblyLinearVelocity.Magnitude > 500 then
-		return true
-	end
-	
-	return false
-end
-
--- ==================== EVENT-BASED DETECTION (no polling) ====================
-Workspace.DescendantAdded:Connect(function(obj)
-	-- Quick class check first (fastest)
-	local className = obj.ClassName
-	
-	-- Dangerous movers on player
-	if DANGEROUS[className] then
-		task.defer(function()
-			if obj.Parent and cachedChar and obj:IsDescendantOf(cachedChar) then
-				obj:Destroy()
-			end
-		end)
-		return
-	end
-	
-	-- Suspicious parts
-	if className == "Part" or className == "MeshPart" or className == "UnionOperation" then
-		task.defer(function()
-			if obj.Parent and isBadPart(obj) then
-				obj:Destroy()
-			end
-		end)
-	end
-end)
-
--- ==================== CHARACTER HANDLING ====================
-local function onCharacterAdded(char)
-	cachedChar = char
-	local root = char:WaitForChild("HumanoidRootPart", 5)
 	if not root then return end
 	
-	cachedRoot = root
-	lastSafeCFrame = root.CFrame
-	setGhost(char, ghostEnabled)
+	local lv = root.AssemblyLinearVelocity
+	local m = lv.X*lv.X + lv.Y*lv.Y + lv.Z*lv.Z -- faster than .Magnitude
 	
-	-- Remove existing dangerous objects
-	for _, obj in ipairs(char:GetDescendants()) do
-		if DANGEROUS[obj.ClassName] then
-			obj:Destroy()
-		end
+	if m > 90000 then -- 300^2 extreme
+		root.AssemblyLinearVelocity = V3Zero
+		root.AssemblyAngularVelocity = V3Zero
+		if safeCF then root.CFrame = safeCF end
+		flings += 1
+		protecting = true
+	elseif m > 22500 then -- 150^2 high
+		root.AssemblyLinearVelocity = V3Zero
+		root.AssemblyAngularVelocity = V3Zero
+		flings += 1
+		protecting = true
+	elseif m > 3025 then -- 55^2 clamp
+		root.AssemblyLinearVelocity = lv.Unit * MAX_VEL
+		protecting = false
+	else
+		if m < 400 then safeCF = root.CFrame end -- save when slow
+		protecting = false
 	end
+end)
+
+-- CHARACTER SETUP
+local function onChar(c)
+	root = c:WaitForChild("HumanoidRootPart", 5)
+	if root then safeCF = root.CFrame end
 	
-	-- Fast listener for new parts
-	char.DescendantAdded:Connect(function(obj)
-		if DANGEROUS[obj.ClassName] then
-			task.defer(obj.Destroy, obj)
-		elseif obj:IsA("BasePart") and ghostEnabled then
-			obj.CanCollide = false
+	c.DescendantAdded:Connect(function(o)
+		if BAD[o.ClassName] then
+			task.defer(o.Destroy, o)
 		end
 	end)
 end
 
-if LocalPlayer.Character then
-	task.spawn(onCharacterAdded, LocalPlayer.Character)
-end
-LocalPlayer.CharacterAdded:Connect(onCharacterAdded)
+LP.CharacterAdded:Connect(onChar)
+if LP.Character then task.spawn(onChar, LP.Character) end
 
--- ==================== PLAYER COLLISION (event-based) ====================
-local function setupPlayer(player)
-	if player == LocalPlayer then return end
-	
-	local function handleChar(char)
-		task.wait()
-		disablePlayerCollision(player)
-		char.DescendantAdded:Connect(function(p)
-			if p:IsA("BasePart") then
-				p.CanCollide = false
-				p.CanTouch = false
-			end
-		end)
+-- OTHER PLAYERS (event-only, no loop)
+local function noCollide(c)
+	if not c then return end
+	for _,p in c:GetChildren() do
+		if p:IsA("BasePart") then p.CanCollide = false end
 	end
-	
-	if player.Character then handleChar(player.Character) end
-	player.CharacterAdded:Connect(handleChar)
-end
-
-for _, p in ipairs(Players:GetPlayers()) do
-	task.spawn(setupPlayer, p)
-end
-Players.PlayerAdded:Connect(setupPlayer)
-
--- ==================== SIMULATION RADIUS (throttled) ====================
-if typeof(sethiddenproperty) == "function" then
-	task.spawn(function()
-		while task.wait(1) do
-			pcall(sethiddenproperty, LocalPlayer, "SimulationRadius", 0)
-		end
+	c.DescendantAdded:Connect(function(p)
+		if p:IsA("BasePart") then p.CanCollide = false end
 	end)
 end
 
--- ==================== MINIMAL GUI ====================
+local function onPlayer(p)
+	if p == LP then return end
+	if p.Character then noCollide(p.Character) end
+	p.CharacterAdded:Connect(noCollide)
+end
+
+for _,p in Players:GetPlayers() do task.spawn(onPlayer, p) end
+Players.PlayerAdded:Connect(onPlayer)
+
+-- SUSPICIOUS PARTS (simple check)
+WS.DescendantAdded:Connect(function(o)
+	if not o:IsA("BasePart") then return end
+	
+	task.defer(function()
+		if not o.Parent then return end
+		
+		local cpp = o.CustomPhysicalProperties
+		if cpp and cpp.Density == 0 and cpp.Friction == 0 then
+			o.CanCollide = false
+			pcall(o.Destroy, o)
+			return
+		end
+		
+		local v = o.AssemblyLinearVelocity
+		if v.X*v.X + v.Y*v.Y + v.Z*v.Z > 160000 then -- 400^2
+			o.CanCollide = false
+			pcall(o.Destroy, o)
+		end
+	end)
+end)
+
+-- TINY GUI
 local gui = Instance.new("ScreenGui")
-gui.Name = "AntiFling"
 gui.ResetOnSpawn = false
-gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+gui.Parent = LP:WaitForChild("PlayerGui")
 
-local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(145, 70)
-frame.Position = UDim2.new(0, 10, 0.5, -35)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
-frame.BorderSizePixel = 0
-frame.Parent = gui
+local lbl = Instance.new("TextLabel")
+lbl.Size = UDim2.fromOffset(100, 24)
+lbl.Position = UDim2.new(0, 10, 0.5, -12)
+lbl.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+lbl.TextColor3 = Color3.new(0.5, 1, 0.5)
+lbl.Font = Enum.Font.GothamBold
+lbl.TextSize = 11
+lbl.Text = "🛡️ 0"
+lbl.Parent = gui
+Instance.new("UICorner", lbl).CornerRadius = UDim.new(0, 4)
 
-local corner = Instance.new("UICorner", frame)
-corner.CornerRadius = UDim.new(0, 6)
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 20)
-title.BackgroundTransparency = 1
-title.Text = "🛡️ ANTI-FLING"
-title.TextColor3 = Color3.fromRGB(100, 200, 255)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 12
-title.Parent = frame
-
-local btn = Instance.new("TextButton")
-btn.Size = UDim2.new(0.9, 0, 0, 22)
-btn.Position = UDim2.new(0.05, 0, 0, 22)
-btn.BackgroundColor3 = Color3.fromRGB(40, 120, 40)
-btn.Font = Enum.Font.GothamSemibold
-btn.TextSize = 11
-btn.TextColor3 = Color3.new(1, 1, 1)
-btn.Text = "Ghost: ON"
-btn.BorderSizePixel = 0
-btn.Parent = frame
-
-Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
-
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, 0, 0, 16)
-status.Position = UDim2.new(0, 0, 0, 48)
-status.BackgroundTransparency = 1
-status.Font = Enum.Font.Gotham
-status.TextSize = 10
-status.TextColor3 = Color3.fromRGB(120, 255, 120)
-status.Text = "Blocked: 0"
-status.Parent = frame
-
-btn.MouseButton1Click:Connect(function()
-	ghostEnabled = not ghostEnabled
-	btn.Text = ghostEnabled and "Ghost: ON" or "Ghost: OFF"
-	btn.BackgroundColor3 = ghostEnabled and Color3.fromRGB(40, 120, 40) or Color3.fromRGB(120, 40, 40)
-	setGhost(cachedChar, ghostEnabled)
-end)
-
--- Status update (very slow - 2Hz)
+-- GUI UPDATE (1Hz)
 task.spawn(function()
-	while task.wait(0.5) do
-		status.Text = "Blocked: " .. flingCount
-		status.TextColor3 = isProtecting and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(120, 255, 120)
+	while task.wait(1) do
+		lbl.Text = protecting and "⚠️ "..flings or "🛡️ "..flings
+		lbl.TextColor3 = protecting and Color3.new(1,0.4,0.4) or Color3.new(0.5,1,0.5)
 	end
-end)
-
--- ==================== DONE ====================
-pcall(function()
-	game.StarterGui:SetCore("SendNotification", {
-		Title = "Anti-Fling",
-		Text = "Zero-lag protection active!",
-		Duration = 3
-	})
 end)
