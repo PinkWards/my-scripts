@@ -63,37 +63,25 @@ end)
 -- Detect and Remove Malicious Parts
 -- ====================
 local function isSuspiciousPart(part)
-    if part:IsA("BasePart") and not part.Anchored and part:IsDescendantOf(Workspace) then
-        if part.CustomPhysicalProperties.Density == 0 and part.CustomPhysicalProperties.Friction == 0 and part.CustomPhysicalProperties.Elasticity == 0 and part.CustomPhysicalProperties.FrictionWeight == 0 and part.CustomPhysicalProperties.ElasticityWeight == 0 then
-            return true
-        end
+    if not part:IsA("BasePart") or part.Anchored or not part:IsDescendantOf(Workspace) then
+        return false
     end
-    return false
+
+    local cpp = part.CustomPhysicalProperties
+    if not cpp then return false end
+
+    return cpp.Density == 0 and
+           cpp.Friction == 0 and
+           cpp.Elasticity == 0 and
+           cpp.FrictionWeight == 0 and
+           cpp.ElasticityWeight == 0
 end
 
-local function checkForSuspiciousParts()
-    local count = 0
-    for _, part in ipairs(Workspace:GetDescendants()) do
-        if isSuspiciousPart(part) then
-            if not table.find(suspiciousParts, part) then
-                table.insert(suspiciousParts, part)
-                count = count + 1
-                if count > MAX_PARTS then
-                    warn("Detected excessive suspicious parts. Removing them.")
-                    for _, suspiciousPart in ipairs(suspiciousParts) do
-                        suspiciousPart:Destroy()
-                    end
-                    suspiciousParts = {}
-                    break
-                end
-            end
-        end
-    end
-end
-
-RunService.Stepped:Connect(function()
-    if #suspiciousParts < MAX_PARTS then
-        checkForSuspiciousParts()
+-- Only check new parts as they're added (much more efficient)
+Workspace.DescendantAdded:Connect(function(part)
+    if isSuspiciousPart(part) then
+        part:Destroy()
+        print("[Anti-SuperRings] Destroyed suspicious part:", part:GetFullName())
     end
 end)
 
@@ -135,12 +123,6 @@ local function logSuspiciousActivity(message)
     print("[Anti-SuperRings] " .. message)
     -- Optionally, send logs to a server or another service for further analysis
 end
-
-RunService.Stepped:Connect(function()
-    if #suspiciousParts > MAX_PARTS then
-        logSuspiciousActivity("Excessive suspicious parts detected and removed.")
-    end
-end)
 
 -- ====================
 -- Additional Checks
