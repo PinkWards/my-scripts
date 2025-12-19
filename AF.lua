@@ -1,29 +1,19 @@
 local Players = game:GetService("Players")
-local PhysicsService = game:GetService("PhysicsService")
-
 local player = Players.LocalPlayer
-local GROUP_NAME = "LocalPlayerGhost"
-local DEFAULT_GROUP = "Default"
 
 local ghostEnabled = true
 
-pcall(function()
-	PhysicsService:CreateCollisionGroup(GROUP_NAME)
-end)
-
-PhysicsService:CollisionGroupSetCollidable(GROUP_NAME, GROUP_NAME, false)
-
-local function setCharacterCollision(character, enabled)
-	for _, part in ipairs(character:GetDescendants()) do
-		if part:IsA("BasePart") then
-			PhysicsService:SetPartCollisionGroup(part, enabled and GROUP_NAME or DEFAULT_GROUP)
+local function setGhost(character, enabled)
+	for _, v in ipairs(character:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.CanCollide = not enabled
 		end
 	end
 end
 
 local function onCharacterAdded(character)
 	character:WaitForChild("HumanoidRootPart")
-	setCharacterCollision(character, ghostEnabled)
+	setGhost(character, ghostEnabled)
 end
 
 if player.Character then
@@ -56,6 +46,6 @@ button.MouseButton1Click:Connect(function()
 	ghostEnabled = not ghostEnabled
 	updateButton()
 	if player.Character then
-		setCharacterCollision(player.Character, ghostEnabled)
+		setGhost(player.Character, ghostEnabled)
 	end
 end)
