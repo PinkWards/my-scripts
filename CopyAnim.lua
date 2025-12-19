@@ -1,5 +1,5 @@
--- Animation Copy v6.0 - PERFECT SYNC EDITION
--- Zero delay, frame-perfect synchronization
+-- Animation Copy v7.0 - ABSOLUTE SYNC EDITION
+-- No auto-target, multi-layer sync, zero ping dependency
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,22 +16,23 @@ local copying = false
 local target = nil
 local savedCF = nil
 local respawning = false
+local hasTarget = false
 
 -- CACHE
 local char, hum, animator, root = nil, nil, nil, nil
-local targetChar, targetHum, targetAnimator = nil, nil, nil
+local targetAnimator = nil
 
--- ANIMATION STORAGE (arrays for faster iteration)
-local anims = {}      -- [animId] = Animation instance
-local tracks = {}     -- [animId] = AnimationTrack
-local trackIds = {}   -- array of active animIds for fast iteration
+-- STORAGE
+local anims = {}
+local tracks = {}
+local trackIds = {}
 
 -- CONSTANTS
 local V3_ZERO = Vector3.zero
 local PRIORITY = Enum.AnimationPriority.Action4
 
 -- ═══════════════════════════════════════════════════════════════════
--- CACHE FUNCTIONS
+-- CACHE
 -- ═══════════════════════════════════════════════════════════════════
 
 local function cacheLocal()
@@ -54,20 +55,29 @@ local function cacheLocal()
 end
 
 local function cacheTarget()
-    if not target or not target.Character then
-        targetChar, targetHum, targetAnimator = nil, nil, nil
+    if not target then
+        targetAnimator = nil
         return false
     end
-    targetChar = target.Character
-    targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-    if targetHum then
-        targetAnimator = targetHum:FindFirstChildOfClass("Animator")
+    
+    local tc = target.Character
+    if not tc then
+        targetAnimator = nil
+        return false
     end
-    return targetHum ~= nil and targetAnimator ~= nil
+    
+    local th = tc:FindFirstChildOfClass("Humanoid")
+    if not th then
+        targetAnimator = nil
+        return false
+    end
+    
+    targetAnimator = th:FindFirstChildOfClass("Animator")
+    return targetAnimator ~= nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- ANIMATE SCRIPT CONTROL
+-- ANIMATE SCRIPT
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimate()
@@ -119,7 +129,6 @@ local function stopTrack(animId)
     end
     tracks[animId] = nil
     
-    -- Remove from trackIds array
     for i = #trackIds, 1, -1 do
         if trackIds[i] == animId then
             trackIds[i] = trackIds[#trackIds]
@@ -153,7 +162,7 @@ local function stopAll()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- FIND TARGET
+-- FIND NEAREST (only called manually)
 -- ═══════════════════════════════════════════════════════════════════
 
 local function findNearest()
@@ -176,24 +185,20 @@ local function findNearest()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- SYNC LOOP (ULTRA OPTIMIZED - RUNS EVERY FRAME)
+-- ULTRA SYNC FUNCTION (called multiple times per frame)
 -- ═══════════════════════════════════════════════════════════════════
 
 local activeThisFrame = {}
-local conn = nil
 
-local function sync()
-    if not copying or respawning then return end
+local function ultraSync()
+    if not copying or respawning or not hasTarget then return end
     if not animator or not targetAnimator then return end
     
-    -- Get target tracks directly
     local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
-    if not ok then return end
+    if not ok or not targetTracks then return end
     
-    -- Clear active set
     table.clear(activeThisFrame)
     
-    -- Sync each target track
     for i = 1, #targetTracks do
         local tt = targetTracks[i]
         if tt.IsPlaying and tt.Animation then
@@ -203,7 +208,6 @@ local function sync()
                 
                 local myTrack = tracks[id]
                 
-                -- Start track if needed
                 if not myTrack then
                     myTrack = getTrack(id)
                     if myTrack then
@@ -211,26 +215,32 @@ local function sync()
                     end
                 end
                 
-                -- INSTANT SYNC - no thresholds, every frame
                 if myTrack then
-                    -- Direct sync TimePosition
+                    -- FORCE SYNC - absolute position match
                     myTrack.TimePosition = tt.TimePosition
                     
-                    -- Speed sync
-                    if myTrack.Speed ~= tt.Speed then
-                        myTrack:AdjustSpeed(tt.Speed)
+                    -- FORCE SPEED
+                    local ts = tt.Speed
+                    if myTrack.Speed ~= ts then
+                        myTrack:AdjustSpeed(ts)
                     end
                     
-                    -- Ensure full weight
-                    if myTrack.WeightCurrent < 0.99 then
+                    -- FORCE WEIGHT
+                    if myTrack.WeightCurrent < 1 then
                         myTrack:AdjustWeight(1, 0)
+                    end
+                    
+                    -- FORCE PLAYING
+                    if not myTrack.IsPlaying then
+                        myTrack:Play(0, 1, ts)
+                        myTrack.TimePosition = tt.TimePosition
                     end
                 end
             end
         end
     end
     
-    -- Stop tracks no longer playing on target
+    -- Stop inactive
     for i = #trackIds, 1, -1 do
         local id = trackIds[i]
         if not activeThisFrame[id] then
@@ -240,35 +250,110 @@ local function sync()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- HEARTBEAT - Target validation & finding (slower, off render thread)
+-- MULTI-LAYER SYNC (200% SYNC - runs on ALL render events)
 -- ═══════════════════════════════════════════════════════════════════
 
-local validateCounter = 0
+-- Layer 1: PreRender (earliest, before physics)
+RunService.PreRender:Connect(ultraSync)
 
+-- Layer 2: PreAnimation (before animation update)
+RunService.PreAnimation:Connect(ultraSync)
+
+-- Layer 3: RenderStepped (standard render)
+RunService.RenderStepped:Connect(ultraSync)
+
+-- ═══════════════════════════════════════════════════════════════════
+-- TARGET VALIDATION (check if target died/left)
+-- ═══════════════════════════════════════════════════════════════════
+
+local function validateTarget()
+    if not hasTarget or not target then return end
+    
+    -- Check if player left
+    if not target.Parent then
+        print("⚠️ Target left the game")
+        print("💡 Press [G] again to select new target")
+        hasTarget = false
+        target = nil
+        targetAnimator = nil
+        stopAll()
+        enableAnimate()
+        return
+    end
+    
+    -- Check if character exists
+    local tc = target.Character
+    if not tc then
+        print("⚠️ Target died/respawning - waiting...")
+        targetAnimator = nil
+        return
+    end
+    
+    -- Check if humanoid exists and alive
+    local th = tc:FindFirstChildOfClass("Humanoid")
+    if not th then
+        targetAnimator = nil
+        return
+    end
+    
+    -- Re-cache animator
+    cacheTarget()
+end
+
+-- Validation runs slower (every 5 frames)
+local validateCounter = 0
 RunService.Heartbeat:Connect(function()
-    if not copying or respawning then return end
+    if not copying then return end
     
     validateCounter += 1
-    if validateCounter < 3 then return end -- Every 3 frames
+    if validateCounter < 5 then return end
     validateCounter = 0
     
-    -- Check target validity
-    if not target or not target.Character or not target.Character:FindFirstChild("Humanoid") then
-        local newTarget = findNearest()
-        if newTarget and newTarget ~= target then
-            stopAll()
-            target = newTarget
-            cacheTarget()
-            disableAnimate()
-            print("📌 Copying: " .. target.Name)
-        elseif not newTarget then
-            target = nil
-            targetChar, targetHum, targetAnimator = nil, nil, nil
-        end
-    else
-        cacheTarget()
-    end
+    validateTarget()
 end)
+
+-- ═══════════════════════════════════════════════════════════════════
+-- TARGET DEATH DETECTION
+-- ═══════════════════════════════════════════════════════════════════
+
+local deathConnection = nil
+
+local function connectTargetDeath()
+    if deathConnection then
+        deathConnection:Disconnect()
+        deathConnection = nil
+    end
+    
+    if not target then return end
+    
+    local function onCharacter(newChar)
+        if not newChar then return end
+        
+        local newHum = newChar:WaitForChild("Humanoid", 5)
+        if not newHum then return end
+        
+        -- Wait for animator
+        task.wait(0.2)
+        cacheTarget()
+        
+        if copying and hasTarget then
+            disableAnimate()
+            print("✅ Target respawned - syncing resumed")
+        end
+    end
+    
+    if target.Character then
+        local h = target.Character:FindFirstChildOfClass("Humanoid")
+        if h then
+            h.Died:Connect(function()
+                print("⚠️ Target died - waiting for respawn...")
+                stopAll()
+            end)
+        end
+    end
+    
+    deathConnection = target.CharacterAdded:Connect(onCharacter)
+end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- START / STOP
@@ -276,40 +361,59 @@ end)
 
 local function start()
     if copying then return end
-    copying = true
     
     cacheLocal()
+    if not root then
+        print("❌ No character found")
+        return
+    end
+    
+    local nearest = findNearest()
+    if not nearest then
+        print("❌ No player nearby to copy")
+        return
+    end
+    
+    copying = true
+    hasTarget = true
+    target = nearest
+    
     stopAll()
     disableAnimate()
+    cacheTarget()
+    connectTargetDeath()
     
     if root then savedCF = root.CFrame end
     
-    target = findNearest()
-    cacheTarget()
-    
-    print("═════════════════════════════════")
+    print("═════════════════════════════════════")
     print("✅ Animation Copy: ON")
-    if target then print("📌 Copying: " .. target.Name) end
-    print("═════════════════════════════════")
-    
-    -- Use PreRender for smoothest visual sync
-    conn = RunService.PreRender:Connect(sync)
+    print("📌 Copying: " .. target.Name)
+    print("═════════════════════════════════════")
+    print("⚡ 200% SYNC ACTIVE")
+    print("  • PreRender sync")
+    print("  • PreAnimation sync")
+    print("  • RenderStepped sync")
+    print("═════════════════════════════════════")
 end
 
 local function stop()
     if not copying then return end
     copying = false
+    hasTarget = false
     
-    if conn then conn:Disconnect() conn = nil end
+    if deathConnection then
+        deathConnection:Disconnect()
+        deathConnection = nil
+    end
     
     stopAll()
     enableAnimate()
     target = nil
-    targetChar, targetHum, targetAnimator = nil, nil, nil
+    targetAnimator = nil
     
-    print("═════════════════════════════════")
+    print("═════════════════════════════════════")
     print("❌ Animation Copy: OFF")
-    print("═════════════════════════════════")
+    print("═════════════════════════════════════")
 end
 
 local function toggle()
@@ -326,7 +430,27 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- MINIMAL GUI (Popup only)
+-- PLAYER REMOVING (target left game)
+-- ═══════════════════════════════════════════════════════════════════
+
+Players.PlayerRemoving:Connect(function(p)
+    if p == target then
+        print("═════════════════════════════════════")
+        print("⚠️ Target left the game!")
+        print("💡 Press [G] to stop, then [G] for new target")
+        print("═════════════════════════════════════")
+        
+        hasTarget = false
+        target = nil
+        targetAnimator = nil
+        stopAll()
+        enableAnimate()
+        -- Keep copying = true so user knows to press G to reset
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════
+-- GUI (Minimal popup only)
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
@@ -439,7 +563,6 @@ noBtn.Text = "✕ No"
 noBtn.Parent = btnCont
 Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0,8)
 
--- Popup logic
 local result, active = nil, false
 
 local function showPopup()
@@ -464,7 +587,6 @@ end
 yesBtn.MouseButton1Click:Connect(function() result, active = true, false end)
 noBtn.MouseButton1Click:Connect(function() result, active = false, false end)
 
--- Fade functions
 local TI = TweenInfo.new(0.3)
 local function fadeIn()
     loadTxt.Text = "⟳ Teleporting..."
@@ -522,19 +644,49 @@ LP.CharacterAdded:Connect(function(c)
     end
     
     task.wait(0.2)
-    if copying then disableAnimate() end
+    if copying and hasTarget then
+        disableAnimate()
+        cacheTarget()
+    end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- CLEANUP
+-- STATUS INDICATOR (tiny, shows sync status)
 -- ═══════════════════════════════════════════════════════════════════
 
-Players.PlayerRemoving:Connect(function(p)
-    if p == target then
-        stopAll()
-        target = nil
-        targetChar, targetHum, targetAnimator = nil, nil, nil
-        print("⚠️ Target left")
+local status = Instance.new("TextLabel")
+status.Size = UDim2.fromOffset(120, 20)
+status.Position = UDim2.new(0, 10, 0, 10)
+status.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+status.BackgroundTransparency = 0.3
+status.TextColor3 = Color3.fromRGB(100, 255, 100)
+status.Font = Enum.Font.GothamBold
+status.TextSize = 11
+status.Text = ""
+status.Visible = false
+status.Parent = gui
+Instance.new("UICorner", status).CornerRadius = UDim.new(0, 4)
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        
+        if copying then
+            status.Visible = true
+            
+            if not hasTarget or not target then
+                status.Text = "⚠️ No Target"
+                status.TextColor3 = Color3.fromRGB(255, 100, 100)
+            elseif not targetAnimator then
+                status.Text = "⏳ Waiting..."
+                status.TextColor3 = Color3.fromRGB(255, 200, 100)
+            else
+                status.Text = "⚡ SYNCED"
+                status.TextColor3 = Color3.fromRGB(100, 255, 100)
+            end
+        else
+            status.Visible = false
+        end
     end
 end)
 
@@ -542,12 +694,18 @@ end)
 -- INIT
 -- ═══════════════════════════════════════════════════════════════════
 
-print("═══════════════════════════════════")
-print("  🎭 Animation Copy v6.0")
-print("  PERFECT SYNC EDITION")
-print("═══════════════════════════════════")
+print("═══════════════════════════════════════════")
+print("  🎭 Animation Copy v7.0")
+print("  ABSOLUTE SYNC EDITION")
+print("═══════════════════════════════════════════")
 print("  Press [G] to toggle")
-print("  ✓ Frame-perfect sync")
-print("  ✓ Zero delay while moving")
-print("  ✓ PreRender for smoothest visuals")
-print("═══════════════════════════════════")
+print("")
+print("  ⚡ 200% SYNC:")
+print("    • PreRender")
+print("    • PreAnimation")
+print("    • RenderStepped")
+print("")
+print("  ✓ NO auto-target on death/leave")
+print("  ✓ Waits for target respawn")
+print("  ✓ Zero ping dependency")
+print("═══════════════════════════════════════════")
