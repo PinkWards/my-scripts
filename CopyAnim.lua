@@ -1,5 +1,6 @@
--- Animation Copy v7.0 - ABSOLUTE SYNC EDITION
--- No auto-target, multi-layer sync, zero ping dependency
+-- Animation Copy v8.0 - ULTIMATE SYNC EDITION
+-- Copies animations + body parts ONLY (you stay where you are)
+-- Zero lag, zero buggy body parts
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -20,30 +21,53 @@ local hasTarget = false
 
 -- CACHE
 local char, hum, animator, root = nil, nil, nil, nil
-local targetAnimator = nil
+local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
 
--- STORAGE
+-- MOTOR6D CACHE
+local myMotors = {}
+local targetMotors = {}
+
+-- ANIMATION STORAGE
 local anims = {}
 local tracks = {}
 local trackIds = {}
+local activeThisFrame = {}
 
 -- CONSTANTS
 local V3_ZERO = Vector3.zero
 local PRIORITY = Enum.AnimationPriority.Action4
 
 -- ═══════════════════════════════════════════════════════════════════
--- CACHE
+-- MOTOR6D CACHING (for perfect body part sync)
+-- ═══════════════════════════════════════════════════════════════════
+
+local function cacheMotors(character, motorTable)
+    table.clear(motorTable)
+    if not character then return end
+    
+    for _, desc in character:GetDescendants() do
+        if desc:IsA("Motor6D") then
+            motorTable[desc.Name] = desc
+        end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- CACHE FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════
 
 local function cacheLocal()
     local c = LP.Character
     if not c then
         char, hum, animator, root = nil, nil, nil, nil
+        table.clear(myMotors)
         return false
     end
+    
     char = c
     hum = c:FindFirstChildOfClass("Humanoid")
     root = c:FindFirstChild("HumanoidRootPart")
+    
     if hum then
         animator = hum:FindFirstChildOfClass("Animator")
         if not animator then
@@ -51,37 +75,44 @@ local function cacheLocal()
             animator.Parent = hum
         end
     end
+    
+    cacheMotors(char, myMotors)
     return hum ~= nil and root ~= nil and animator ~= nil
 end
 
 local function cacheTarget()
     if not target then
-        targetAnimator = nil
+        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        table.clear(targetMotors)
         return false
     end
     
     local tc = target.Character
     if not tc then
-        targetAnimator = nil
+        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        table.clear(targetMotors)
         return false
     end
     
-    local th = tc:FindFirstChildOfClass("Humanoid")
-    if not th then
-        targetAnimator = nil
-        return false
+    targetChar = tc
+    targetHum = tc:FindFirstChildOfClass("Humanoid")
+    targetRoot = tc:FindFirstChild("HumanoidRootPart")
+    
+    if targetHum then
+        targetAnimator = targetHum:FindFirstChildOfClass("Animator")
     end
     
-    targetAnimator = th:FindFirstChildOfClass("Animator")
-    return targetAnimator ~= nil
+    cacheMotors(targetChar, targetMotors)
+    return targetHum ~= nil and targetAnimator ~= nil and targetRoot ~= nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- ANIMATE SCRIPT
+-- DISABLE ANIMATE SCRIPT ONLY
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimate()
     if not char then return end
+    
     local a = char:FindFirstChild("Animate")
     if a then a.Disabled = true end
     
@@ -94,6 +125,7 @@ end
 
 local function enableAnimate()
     if not char then return end
+    
     local a = char:FindFirstChild("Animate")
     if a then a.Disabled = false end
 end
@@ -162,7 +194,7 @@ local function stopAll()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- FIND NEAREST (only called manually)
+-- FIND NEAREST
 -- ═══════════════════════════════════════════════════════════════════
 
 local function findNearest()
@@ -185,14 +217,29 @@ local function findNearest()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- ULTRA SYNC FUNCTION (called multiple times per frame)
+-- ULTIMATE SYNC (ANIMATION + MOTOR6D ONLY - NO POSITION)
 -- ═══════════════════════════════════════════════════════════════════
 
-local activeThisFrame = {}
-
-local function ultraSync()
+local function ultimateSync()
     if not copying or respawning or not hasTarget then return end
     if not animator or not targetAnimator then return end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- LAYER 1: COPY MOTOR6D TRANSFORMS (perfect body part poses)
+    -- This makes arms, legs, head match exactly
+    -- ═══════════════════════════════════════════════════════════════
+    
+    for name, targetMotor in targetMotors do
+        local myMotor = myMotors[name]
+        if myMotor and name ~= "RootJoint" and name ~= "Root" then
+            -- Copy joint transforms (NOT position, just rotation/pose)
+            myMotor.Transform = targetMotor.Transform
+        end
+    end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- LAYER 2: COPY ANIMATIONS (timing + speed + weight)
+    -- ═══════════════════════════════════════════════════════════════
     
     local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
     if not ok or not targetTracks then return end
@@ -211,28 +258,28 @@ local function ultraSync()
                 if not myTrack then
                     myTrack = getTrack(id)
                     if myTrack then
-                        myTrack:Play(0, 1, tt.Speed)
+                        myTrack:Play(0, tt.WeightTarget, tt.Speed)
                     end
                 end
                 
                 if myTrack then
-                    -- FORCE SYNC - absolute position match
+                    -- FORCE TIME SYNC
                     myTrack.TimePosition = tt.TimePosition
                     
                     -- FORCE SPEED
-                    local ts = tt.Speed
-                    if myTrack.Speed ~= ts then
-                        myTrack:AdjustSpeed(ts)
+                    if myTrack.Speed ~= tt.Speed then
+                        myTrack:AdjustSpeed(tt.Speed)
                     end
                     
                     -- FORCE WEIGHT
-                    if myTrack.WeightCurrent < 1 then
-                        myTrack:AdjustWeight(1, 0)
+                    local tw = tt.WeightCurrent
+                    if math.abs(myTrack.WeightCurrent - tw) > 0.01 then
+                        myTrack:AdjustWeight(tw, 0)
                     end
                     
                     -- FORCE PLAYING
                     if not myTrack.IsPlaying then
-                        myTrack:Play(0, 1, ts)
+                        myTrack:Play(0, tw, tt.Speed)
                         myTrack.TimePosition = tt.TimePosition
                     end
                 end
@@ -240,7 +287,7 @@ local function ultraSync()
         end
     end
     
-    -- Stop inactive
+    -- Stop tracks not on target
     for i = #trackIds, 1, -1 do
         local id = trackIds[i]
         if not activeThisFrame[id] then
@@ -250,109 +297,74 @@ local function ultraSync()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- MULTI-LAYER SYNC (200% SYNC - runs on ALL render events)
+-- MULTI-LAYER SYNC (runs multiple times per frame for 100% accuracy)
 -- ═══════════════════════════════════════════════════════════════════
 
--- Layer 1: PreRender (earliest, before physics)
-RunService.PreRender:Connect(ultraSync)
-
--- Layer 2: PreAnimation (before animation update)
-RunService.PreAnimation:Connect(ultraSync)
-
--- Layer 3: RenderStepped (standard render)
-RunService.RenderStepped:Connect(ultraSync)
+RunService.PreSimulation:Connect(ultimateSync)
+RunService.PreRender:Connect(ultimateSync)
+RunService.PreAnimation:Connect(ultimateSync)
+RunService.RenderStepped:Connect(ultimateSync)
 
 -- ═══════════════════════════════════════════════════════════════════
--- TARGET VALIDATION (check if target died/left)
+-- MOTOR RECACHE (keep motors updated)
 -- ═══════════════════════════════════════════════════════════════════
 
-local function validateTarget()
-    if not hasTarget or not target then return end
-    
-    -- Check if player left
-    if not target.Parent then
-        print("⚠️ Target left the game")
-        print("💡 Press [G] again to select new target")
-        hasTarget = false
-        target = nil
-        targetAnimator = nil
-        stopAll()
-        enableAnimate()
-        return
-    end
-    
-    -- Check if character exists
-    local tc = target.Character
-    if not tc then
-        print("⚠️ Target died/respawning - waiting...")
-        targetAnimator = nil
-        return
-    end
-    
-    -- Check if humanoid exists and alive
-    local th = tc:FindFirstChildOfClass("Humanoid")
-    if not th then
-        targetAnimator = nil
-        return
-    end
-    
-    -- Re-cache animator
-    cacheTarget()
-end
-
--- Validation runs slower (every 5 frames)
-local validateCounter = 0
+local cacheCounter = 0
 RunService.Heartbeat:Connect(function()
     if not copying then return end
     
-    validateCounter += 1
-    if validateCounter < 5 then return end
-    validateCounter = 0
+    cacheCounter += 1
+    if cacheCounter < 30 then return end
+    cacheCounter = 0
     
-    validateTarget()
+    if char then cacheMotors(char, myMotors) end
+    if targetChar then cacheMotors(targetChar, targetMotors) end
+    
+    -- Validate target
+    if hasTarget and target then
+        if not target.Parent then
+            print("⚠️ Target left the game")
+            print("💡 Press [G] to stop, then [G] for new target")
+            hasTarget = false
+            target = nil
+            stopAll()
+            enableAnimate()
+        elseif target.Character then
+            cacheTarget()
+        end
+    end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- TARGET DEATH DETECTION
+-- TARGET DEATH HANDLING
 -- ═══════════════════════════════════════════════════════════════════
 
-local deathConnection = nil
+local deathConn, charConn = nil, nil
 
-local function connectTargetDeath()
-    if deathConnection then
-        deathConnection:Disconnect()
-        deathConnection = nil
-    end
+local function connectTarget()
+    if deathConn then deathConn:Disconnect() end
+    if charConn then charConn:Disconnect() end
     
     if not target then return end
     
-    local function onCharacter(newChar)
-        if not newChar then return end
-        
-        local newHum = newChar:WaitForChild("Humanoid", 5)
-        if not newHum then return end
-        
-        -- Wait for animator
-        task.wait(0.2)
+    charConn = target.CharacterAdded:Connect(function(newChar)
+        task.wait(0.3)
         cacheTarget()
-        
         if copying and hasTarget then
             disableAnimate()
             print("✅ Target respawned - syncing resumed")
         end
-    end
+    end)
     
     if target.Character then
         local h = target.Character:FindFirstChildOfClass("Humanoid")
         if h then
-            h.Died:Connect(function()
-                print("⚠️ Target died - waiting for respawn...")
+            deathConn = h.Died:Connect(function()
+                print("⏳ Target died - waiting for respawn...")
                 stopAll()
             end)
         end
     end
-    
-    deathConnection = target.CharacterAdded:Connect(onCharacter)
 end
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -379,21 +391,22 @@ local function start()
     target = nearest
     
     stopAll()
-    disableAnimate()
     cacheTarget()
-    connectTargetDeath()
+    disableAnimate()
+    connectTarget()
     
     if root then savedCF = root.CFrame end
     
-    print("═════════════════════════════════════")
-    print("✅ Animation Copy: ON")
-    print("📌 Copying: " .. target.Name)
-    print("═════════════════════════════════════")
-    print("⚡ 200% SYNC ACTIVE")
-    print("  • PreRender sync")
-    print("  • PreAnimation sync")
-    print("  • RenderStepped sync")
-    print("═════════════════════════════════════")
+    print("═══════════════════════════════════════")
+    print("  ✅ ANIMATION COPY: ON")
+    print("  📌 Copying: " .. target.Name)
+    print("═══════════════════════════════════════")
+    print("  ⚡ SYNC ACTIVE:")
+    print("    ✓ Animation sync")
+    print("    ✓ Motor6D sync (body parts)")
+    print("    ✓ You stay in YOUR position")
+    print("    ✓ You can move freely")
+    print("═══════════════════════════════════════")
 end
 
 local function stop()
@@ -401,19 +414,19 @@ local function stop()
     copying = false
     hasTarget = false
     
-    if deathConnection then
-        deathConnection:Disconnect()
-        deathConnection = nil
-    end
+    if deathConn then deathConn:Disconnect() deathConn = nil end
+    if charConn then charConn:Disconnect() charConn = nil end
     
     stopAll()
     enableAnimate()
-    target = nil
-    targetAnimator = nil
     
-    print("═════════════════════════════════════")
-    print("❌ Animation Copy: OFF")
-    print("═════════════════════════════════════")
+    target = nil
+    targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+    table.clear(targetMotors)
+    
+    print("═══════════════════════════════════════")
+    print("  ❌ ANIMATION COPY: OFF")
+    print("═══════════════════════════════════════")
 end
 
 local function toggle()
@@ -430,36 +443,35 @@ UserInputService.InputBegan:Connect(function(input, gpe)
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- PLAYER REMOVING (target left game)
+-- PLAYER LEFT
 -- ═══════════════════════════════════════════════════════════════════
 
 Players.PlayerRemoving:Connect(function(p)
     if p == target then
-        print("═════════════════════════════════════")
-        print("⚠️ Target left the game!")
-        print("💡 Press [G] to stop, then [G] for new target")
-        print("═════════════════════════════════════")
+        print("═══════════════════════════════════════")
+        print("  ⚠️ Target left the game!")
+        print("  💡 Press [G] to stop, then [G] for new target")
+        print("═══════════════════════════════════════")
         
         hasTarget = false
         target = nil
-        targetAnimator = nil
         stopAll()
         enableAnimate()
-        -- Keep copying = true so user knows to press G to reset
     end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- GUI (Minimal popup only)
+-- GUI
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "AnimSync"
+gui.Name = "AnimCopy"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
 gui.Parent = LP:WaitForChild("PlayerGui")
 
+-- Fade overlay
 local black = Instance.new("Frame")
 black.Size = UDim2.new(1,0,1,0)
 black.BackgroundColor3 = Color3.new(0,0,0)
@@ -478,6 +490,7 @@ loadTxt.Text = ""
 loadTxt.TextTransparency = 1
 loadTxt.Parent = black
 
+-- Popup
 local popup = Instance.new("Frame")
 popup.Size = UDim2.new(1,0,1,0)
 popup.BackgroundTransparency = 1
@@ -492,114 +505,144 @@ dim.BorderSizePixel = 0
 dim.Parent = popup
 
 local box = Instance.new("Frame")
-box.Size = UDim2.fromOffset(320, 160)
-box.Position = UDim2.new(0.5,-160,0.5,-80)
-box.BackgroundColor3 = Color3.fromRGB(30,30,35)
+box.Size = UDim2.fromOffset(300,140)
+box.Position = UDim2.new(0.5,-150,0.5,-70)
+box.BackgroundColor3 = Color3.fromRGB(25,25,30)
 box.BorderSizePixel = 0
 box.Parent = popup
-Instance.new("UICorner", box).CornerRadius = UDim.new(0,12)
+Instance.new("UICorner", box).CornerRadius = UDim.new(0,10)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1,-20,0,30)
-title.Position = UDim2.new(0,10,0,15)
+title.Size = UDim2.new(1,0,0,30)
+title.Position = UDim2.new(0,0,0,10)
 title.BackgroundTransparency = 1
 title.TextColor3 = Color3.new(1,1,1)
-title.TextSize = 18
+title.TextSize = 16
 title.Font = Enum.Font.GothamBold
 title.Text = "📍 Teleport Back?"
 title.Parent = box
 
-local desc = Instance.new("TextLabel")
-desc.Size = UDim2.new(1,-20,0,20)
-desc.Position = UDim2.new(0,10,0,50)
-desc.BackgroundTransparency = 1
-desc.TextColor3 = Color3.fromRGB(180,180,180)
-desc.TextSize = 14
-desc.Font = Enum.Font.Gotham
-desc.Text = "Return to previous location?"
-desc.Parent = box
+local timerLbl = Instance.new("TextLabel")
+timerLbl.Size = UDim2.new(1,0,0,20)
+timerLbl.Position = UDim2.new(0,0,0,40)
+timerLbl.BackgroundTransparency = 1
+timerLbl.TextColor3 = Color3.fromRGB(150,150,150)
+timerLbl.TextSize = 12
+timerLbl.Font = Enum.Font.Gotham
+timerLbl.Text = "10s..."
+timerLbl.Parent = box
 
-local timer = Instance.new("TextLabel")
-timer.Size = UDim2.new(1,-20,0,15)
-timer.Position = UDim2.new(0,10,0,72)
-timer.BackgroundTransparency = 1
-timer.TextColor3 = Color3.fromRGB(120,120,120)
-timer.TextSize = 12
-timer.Font = Enum.Font.Gotham
-timer.Text = "Auto-close in 10s..."
-timer.Parent = box
+local btnFrame = Instance.new("Frame")
+btnFrame.Size = UDim2.new(1,-20,0,40)
+btnFrame.Position = UDim2.new(0,10,1,-50)
+btnFrame.BackgroundTransparency = 1
+btnFrame.Parent = box
 
-local btnCont = Instance.new("Frame")
-btnCont.Size = UDim2.new(1,-20,0,40)
-btnCont.Position = UDim2.new(0,10,1,-50)
-btnCont.BackgroundTransparency = 1
-btnCont.Parent = box
-
-local layout = Instance.new("UIListLayout")
-layout.FillDirection = Enum.FillDirection.Horizontal
-layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-layout.Padding = UDim.new(0,10)
-layout.Parent = btnCont
+local btnLayout = Instance.new("UIListLayout")
+btnLayout.FillDirection = Enum.FillDirection.Horizontal
+btnLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+btnLayout.Padding = UDim.new(0,10)
+btnLayout.Parent = btnFrame
 
 local yesBtn = Instance.new("TextButton")
-yesBtn.Size = UDim2.fromOffset(130,40)
-yesBtn.BackgroundColor3 = Color3.fromRGB(0,170,127)
+yesBtn.Size = UDim2.fromOffset(120,36)
+yesBtn.BackgroundColor3 = Color3.fromRGB(0,150,110)
 yesBtn.BorderSizePixel = 0
 yesBtn.TextColor3 = Color3.new(1,1,1)
-yesBtn.TextSize = 15
+yesBtn.TextSize = 14
 yesBtn.Font = Enum.Font.GothamBold
 yesBtn.Text = "✓ Yes"
-yesBtn.Parent = btnCont
-Instance.new("UICorner", yesBtn).CornerRadius = UDim.new(0,8)
+yesBtn.Parent = btnFrame
+Instance.new("UICorner", yesBtn).CornerRadius = UDim.new(0,6)
 
 local noBtn = Instance.new("TextButton")
-noBtn.Size = UDim2.fromOffset(130,40)
-noBtn.BackgroundColor3 = Color3.fromRGB(60,60,65)
+noBtn.Size = UDim2.fromOffset(120,36)
+noBtn.BackgroundColor3 = Color3.fromRGB(50,50,55)
 noBtn.BorderSizePixel = 0
 noBtn.TextColor3 = Color3.new(1,1,1)
-noBtn.TextSize = 15
+noBtn.TextSize = 14
 noBtn.Font = Enum.Font.GothamBold
 noBtn.Text = "✕ No"
-noBtn.Parent = btnCont
-Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0,8)
+noBtn.Parent = btnFrame
+Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0,6)
 
-local result, active = nil, false
+-- Status indicator
+local status = Instance.new("TextLabel")
+status.Size = UDim2.fromOffset(160,24)
+status.Position = UDim2.new(0,10,0,10)
+status.BackgroundColor3 = Color3.fromRGB(20,20,25)
+status.BackgroundTransparency = 0.2
+status.TextColor3 = Color3.fromRGB(100,255,100)
+status.Font = Enum.Font.GothamBold
+status.TextSize = 11
+status.Text = ""
+status.Visible = false
+status.Parent = gui
+Instance.new("UICorner", status).CornerRadius = UDim.new(0,4)
+Instance.new("UIStroke", status).Color = Color3.fromRGB(60,60,60)
+
+-- Popup logic
+local popupResult, popupActive = nil, false
 
 local function showPopup()
-    result, active = nil, true
+    popupResult, popupActive = nil, true
     popup.Visible = true
     
     local t = 10
     task.spawn(function()
-        while active and t > 0 do
-            timer.Text = "Auto-close in " .. t .. "s..."
+        while popupActive and t > 0 do
+            timerLbl.Text = t .. "s..."
             task.wait(1)
             t -= 1
         end
-        if active then result, active = false, false end
+        if popupActive then popupResult, popupActive = false, false end
     end)
     
-    while active do task.wait(0.05) end
+    while popupActive do task.wait(0.05) end
     popup.Visible = false
-    return result
+    return popupResult
 end
 
-yesBtn.MouseButton1Click:Connect(function() result, active = true, false end)
-noBtn.MouseButton1Click:Connect(function() result, active = false, false end)
+yesBtn.MouseButton1Click:Connect(function() popupResult, popupActive = true, false end)
+noBtn.MouseButton1Click:Connect(function() popupResult, popupActive = false, false end)
 
-local TI = TweenInfo.new(0.3)
+local TI = TweenInfo.new(0.25)
 local function fadeIn()
     loadTxt.Text = "⟳ Teleporting..."
     TweenService:Create(black, TI, {BackgroundTransparency = 0}):Play()
     TweenService:Create(loadTxt, TI, {TextTransparency = 0}):Play()
-    task.wait(0.3)
+    task.wait(0.25)
 end
 
 local function fadeOut()
     TweenService:Create(black, TI, {BackgroundTransparency = 1}):Play()
     TweenService:Create(loadTxt, TI, {TextTransparency = 1}):Play()
-    task.wait(0.3)
+    task.wait(0.25)
 end
+
+-- Status update
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        
+        if copying then
+            status.Visible = true
+            
+            if not hasTarget or not target then
+                status.Text = "⚠️ No Target [G]"
+                status.TextColor3 = Color3.fromRGB(255,80,80)
+            elseif not targetAnimator then
+                status.Text = "⏳ Waiting..."
+                status.TextColor3 = Color3.fromRGB(255,180,80)
+            else
+                status.Text = "⚡ Copying: " .. target.Name
+                status.TextColor3 = Color3.fromRGB(80,255,120)
+            end
+        else
+            status.Visible = false
+        end
+    end
+end)
 
 -- ═══════════════════════════════════════════════════════════════════
 -- CHARACTER RESPAWN
@@ -609,6 +652,7 @@ LP.CharacterAdded:Connect(function(c)
     table.clear(tracks)
     table.clear(trackIds)
     table.clear(anims)
+    table.clear(myMotors)
     char, hum, animator, root = nil, nil, nil, nil
     
     local h = c:WaitForChild("Humanoid", 10)
@@ -621,6 +665,8 @@ LP.CharacterAdded:Connect(function(c)
         animator = Instance.new("Animator")
         animator.Parent = h
     end
+    
+    cacheMotors(char, myMotors)
     
     if savedCF then
         respawning = true
@@ -637,7 +683,7 @@ LP.CharacterAdded:Connect(function(c)
             print("📍 Teleported back")
         else
             savedCF = r.CFrame
-            print("📍 Staying here")
+            print("📍 Staying at spawn")
         end
         
         respawning = false
@@ -645,48 +691,8 @@ LP.CharacterAdded:Connect(function(c)
     
     task.wait(0.2)
     if copying and hasTarget then
-        disableAnimate()
         cacheTarget()
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- STATUS INDICATOR (tiny, shows sync status)
--- ═══════════════════════════════════════════════════════════════════
-
-local status = Instance.new("TextLabel")
-status.Size = UDim2.fromOffset(120, 20)
-status.Position = UDim2.new(0, 10, 0, 10)
-status.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-status.BackgroundTransparency = 0.3
-status.TextColor3 = Color3.fromRGB(100, 255, 100)
-status.Font = Enum.Font.GothamBold
-status.TextSize = 11
-status.Text = ""
-status.Visible = false
-status.Parent = gui
-Instance.new("UICorner", status).CornerRadius = UDim.new(0, 4)
-
-task.spawn(function()
-    while true do
-        task.wait(0.25)
-        
-        if copying then
-            status.Visible = true
-            
-            if not hasTarget or not target then
-                status.Text = "⚠️ No Target"
-                status.TextColor3 = Color3.fromRGB(255, 100, 100)
-            elseif not targetAnimator then
-                status.Text = "⏳ Waiting..."
-                status.TextColor3 = Color3.fromRGB(255, 200, 100)
-            else
-                status.Text = "⚡ SYNCED"
-                status.TextColor3 = Color3.fromRGB(100, 255, 100)
-            end
-        else
-            status.Visible = false
-        end
+        disableAnimate()
     end
 end)
 
@@ -694,18 +700,23 @@ end)
 -- INIT
 -- ═══════════════════════════════════════════════════════════════════
 
-print("═══════════════════════════════════════════")
-print("  🎭 Animation Copy v7.0")
-print("  ABSOLUTE SYNC EDITION")
-print("═══════════════════════════════════════════")
+print("═══════════════════════════════════════════════")
+print("  🎭 Animation Copy v8.0")
+print("  PERFECT SYNC EDITION")
+print("═══════════════════════════════════════════════")
 print("  Press [G] to toggle")
 print("")
-print("  ⚡ 200% SYNC:")
-print("    • PreRender")
-print("    • PreAnimation")
-print("    • RenderStepped")
+print("  ✅ WHAT IT COPIES:")
+print("    • All animations (walk, run, jump, etc)")
+print("    • Body part positions (arms, legs, head)")
+print("    • Animation timing (frame-perfect)")
 print("")
-print("  ✓ NO auto-target on death/leave")
-print("  ✓ Waits for target respawn")
-print("  ✓ Zero ping dependency")
-print("═══════════════════════════════════════════")
+print("  ✅ WHAT IT DOESN'T COPY:")
+print("    • Your position (you stay where you are)")
+print("    • You can walk around freely")
+print("    • You can go anywhere you want")
+print("")
+print("  🔧 No buggy body parts")
+print("  🚀 No lag")
+print("  🎯 No auto-target switch")
+print("═══════════════════════════════════════════════")
