@@ -22,7 +22,7 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 
 -- Database URL
-local DATABASE_URL = "https://raw.githubusercontent.com/PinkWards/emote-sniper/main/EmoteSniper.json"
+local DATABASE_URL = "https://raw.githubusercontent.com/PinkWards/emote-sniper/refs/heads/main/EmoteSniper.json"
 
 -- State variables
 local emoteClickConnections = {}
