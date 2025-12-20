@@ -1,6 +1,6 @@
--- [ Anti-TPUA v8.0 | CLEAN REWRITE ] --
--- Completely rewritten - NO velocity manipulation on self
--- Only blocks INCOMING attacks, never touches your physics
+-- [ Anti-TPUA v9.0 | ATTACK BLOCKER ONLY ] --
+-- ONLY stops other players' parts from hitting you
+-- NEVER touches your own velocity/physics AT ALL
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -15,10 +15,6 @@ local ATTACK_SPIN = 10
 local blockCount = 0
 local attackingParts = {}
 local ghostedPlayers = {}
-local lastSafePosition = nil
-local lastSafeTime = 0
-local wasBeingFlung = false
-local flingStartTime = 0
 
 -- [ Cache ] --
 local char, root, hum = nil, nil, nil
@@ -27,9 +23,15 @@ local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 overlapParams.MaxParts = 100
 
--- [ GUI ] --
+-- [ Player Cache ] --
+local playerCharacters = {}
+
+-- ═══════════════════════════════════════════════════════════════════
+-- GUI
+-- ═══════════════════════════════════════════════════════════════════
+
 local gui = Instance.new("ScreenGui")
-gui.Name = "AntiTPUA_v8"
+gui.Name = "AntiTPUA_v9"
 gui.ResetOnSpawn = false
 gui.Parent = LP:WaitForChild("PlayerGui")
 
@@ -54,7 +56,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 16)
 title.Position = UDim2.fromOffset(18, 2)
 title.BackgroundTransparency = 1
-title.Text = "AntiTPUA v8"
+title.Text = "AntiTPUA v9"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextSize = 10
 title.Font = Enum.Font.GothamBold
@@ -89,7 +91,10 @@ local function incrementBlock()
     flash()
 end
 
--- [ Character Cache ] --
+-- ═══════════════════════════════════════════════════════════════════
+-- CHARACTER & PLAYER CACHE
+-- ═══════════════════════════════════════════════════════════════════
+
 local function cacheCharacter(c)
     if not c then
         char, root, hum = nil, nil, nil
@@ -106,9 +111,6 @@ local function cacheCharacter(c)
     
     return root ~= nil and hum ~= nil
 end
-
--- [ Player Cache ] --
-local playerCharacters = {}
 
 local function updatePlayerCache()
     table.clear(playerCharacters)
@@ -130,12 +132,15 @@ local function getPartOwner(part)
     return nil
 end
 
--- [ Neutralize attacking part - THIS is the protection ] --
+-- ═══════════════════════════════════════════════════════════════════
+-- NEUTRALIZE ATTACKING PARTS (only OTHER players' parts)
+-- ═══════════════════════════════════════════════════════════════════
+
 local function neutralize(part)
     if attackingParts[part] then return end
     attackingParts[part] = tick()
     
-    -- Stop the ATTACKING PART, not ourselves
+    -- Stop the attacking part
     part.CanCollide = false
     part.CanTouch = false
     part.AssemblyLinearVelocity = V3_ZERO
@@ -144,22 +149,30 @@ local function neutralize(part)
     incrementBlock()
 end
 
--- [ Check if part is attacking ] --
+-- ═══════════════════════════════════════════════════════════════════
+-- CHECK IF A PART IS ATTACKING (only checks OTHER players' parts)
+-- ═══════════════════════════════════════════════════════════════════
+
 local function isAttacking(part, myPos)
+    -- Ignore anchored parts
     if part.Anchored then return false end
     
+    -- Get owner - MUST be another player
     local owner = getPartOwner(part)
-    if owner == LP then return false end
+    if not owner then return false end  -- Not a player's part
+    if owner == LP then return false end  -- Our own part
     
+    -- Check distance
     local partPos = part.Position
     local dist = (partPos - myPos).Magnitude
-    
     if dist > 30 then return false end
     
+    -- Check velocity
     local vel = part.AssemblyLinearVelocity
     local speed = vel.Magnitude
     local spin = part.AssemblyAngularVelocity.Magnitude
     
+    -- Not moving fast enough to be an attack
     if speed < ATTACK_SPEED and spin < ATTACK_SPIN then return false end
     
     -- Super Ring: Spinning fast near you
@@ -175,13 +188,16 @@ local function isAttacking(part, myPos)
         if dotProduct > 0.4 then return true end
     end
     
-    -- Very close + moving fast
+    -- Very close + moving
     if dist < 8 and speed > 20 then return true end
     
     return false
 end
 
--- [ Ghost other players' parts ] --
+-- ═══════════════════════════════════════════════════════════════════
+-- GHOST OTHER PLAYERS (make their parts not collide with you)
+-- ═══════════════════════════════════════════════════════════════════
+
 local function ghostPlayer(character)
     if not character or ghostedPlayers[character] then return end
     ghostedPlayers[character] = true
@@ -201,7 +217,10 @@ local function ghostPlayer(character)
     character.DescendantAdded:Connect(disable)
 end
 
--- [ Cleanup old parts ] --
+-- ═══════════════════════════════════════════════════════════════════
+-- CLEANUP
+-- ═══════════════════════════════════════════════════════════════════
+
 local function cleanupParts()
     local now = tick()
     for part, time in pairs(attackingParts) do
@@ -211,33 +230,8 @@ local function cleanupParts()
     end
 end
 
--- [ Check if grounded ] --
-local function isGrounded()
-    if not hum then return false end
-    return hum.FloorMaterial ~= Enum.Material.Air
-end
-
--- [ Detect if we're being flung by checking for impossible movement ] --
-local function detectFling()
-    if not root or not hum then return false end
-    
-    local vel = root.AssemblyLinearVelocity
-    local spin = root.AssemblyAngularVelocity.Magnitude
-    local horizontalSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-    
-    -- Only extreme cases count as fling
-    -- Normal max run speed is ~16-20, jump gives ~50 Y velocity
-    -- Flings typically cause 500+ horizontal or 100+ spin
-    
-    if horizontalSpeed > 500 then return true end
-    if spin > 80 then return true end
-    if horizontalSpeed > 300 and spin > 40 then return true end
-    
-    return false
-end
-
 -- ═══════════════════════════════════════════════════════════════════
--- MAIN LOOP - MINIMAL SELF INTERFERENCE
+-- MAIN LOOP - ONLY SCANS FOR ATTACKS, NEVER TOUCHES YOUR PHYSICS
 -- ═══════════════════════════════════════════════════════════════════
 
 local frameCounter = 0
@@ -247,55 +241,6 @@ RunService.Heartbeat:Connect(function()
     if not root or not root.Parent then return end
     
     local myPos = root.Position
-    local now = tick()
-    
-    -- ═══════════════════════════════════════════════════════════════
-    -- SAVE SAFE POSITION (only when stable on ground)
-    -- ═══════════════════════════════════════════════════════════════
-    
-    if isGrounded() then
-        local vel = root.AssemblyLinearVelocity
-        local speed = vel.Magnitude
-        if speed < 30 then
-            lastSafePosition = root.CFrame
-            lastSafeTime = now
-        end
-    end
-    
-    -- ═══════════════════════════════════════════════════════════════
-    -- FLING RECOVERY (only for EXTREME cases)
-    -- ═══════════════════════════════════════════════════════════════
-    
-    local beingFlung = detectFling()
-    
-    if beingFlung then
-        if not wasBeingFlung then
-            flingStartTime = now
-            wasBeingFlung = true
-        end
-        
-        -- Only intervene after 0.3 seconds of continuous fling
-        -- This prevents false positives from normal gameplay
-        if now - flingStartTime > 0.3 then
-            local vel = root.AssemblyLinearVelocity
-            
-            -- ONLY stop horizontal, KEEP vertical exactly as is
-            root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
-            root.AssemblyAngularVelocity = V3_ZERO
-            
-            incrementBlock()
-            
-            -- Teleport back if extremely far flung
-            if lastSafePosition and now - lastSafeTime < 5 then
-                local dist = (myPos - lastSafePosition.Position).Magnitude
-                if dist > 100 then
-                    root.CFrame = lastSafePosition
-                end
-            end
-        end
-    else
-        wasBeingFlung = false
-    end
     
     -- ═══════════════════════════════════════════════════════════════
     -- SCAN FOR ATTACKING PARTS (every 6 frames)
@@ -329,7 +274,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- TOUCH PROTECTION
+-- TOUCH PROTECTION (backup - catches fast attacks)
 -- ═══════════════════════════════════════════════════════════════════
 
 local function setupTouchProtection()
@@ -358,7 +303,9 @@ local function setupTouchProtection()
         if part.Anchored then return end
         if attackingParts[part] then return end
         
+        -- ONLY care about other players' parts
         local owner = getPartOwner(part)
+        if not owner then return end
         if owner == LP then return end
         
         local speed = part.AssemblyLinearVelocity.Magnitude
@@ -371,33 +318,15 @@ local function setupTouchProtection()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- HUMANOID PROTECTION (minimal - no state changes that affect physics)
+-- SIMPLE HUMANOID PROTECTION (just anti-ragdoll)
 -- ═══════════════════════════════════════════════════════════════════
 
 local function setupHumanoidProtection()
     if not hum then return end
     
-    -- Only prevent ragdoll, nothing else
+    -- Only prevent ragdoll states
     hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
     hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-    
-    local lastHealth = hum.Health
-    hum.HealthChanged:Connect(function(newHealth)
-        if root and newHealth < lastHealth then
-            local horizontalSpeed = Vector3.new(
-                root.AssemblyLinearVelocity.X, 
-                0, 
-                root.AssemblyLinearVelocity.Z
-            ).Magnitude
-            
-            -- Only block damage during extreme fling
-            if horizontalSpeed > 400 then
-                hum.Health = lastHealth
-                return
-            end
-        end
-        lastHealth = newHealth
-    end)
 end
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -408,10 +337,6 @@ local function onCharacterAdded(c)
     task.wait(0.1)
     
     if not cacheCharacter(c) then return end
-    
-    lastSafePosition = root.CFrame
-    lastSafeTime = tick()
-    wasBeingFlung = false
     
     setupHumanoidProtection()
     setupTouchProtection()
@@ -462,12 +387,12 @@ LP.CharacterAdded:Connect(onCharacterAdded)
 updatePlayerCache()
 
 print("═══════════════════════════════════════════════")
-print("  🛡️ AntiTPUA v8.0 - CLEAN REWRITE")
+print("  🛡️ AntiTPUA v9.0 - ATTACK BLOCKER ONLY")
 print("═══════════════════════════════════════════════")
-print("  ✅ Complete rewrite from scratch")
-print("  ✅ NO interference with jumping")
-print("  ✅ NO interference with falling")
-print("  ✅ Only blocks incoming attacks")
-print("  ✅ Only extreme flings trigger protection")
-print("  ✅ Y velocity NEVER touched")
+print("  ✅ ONLY blocks other players' attacks")
+print("  ✅ NEVER touches your velocity")
+print("  ✅ NEVER touches your physics")
+print("  ✅ Normal jumping works 100%")
+print("  ✅ Normal falling works 100%")
+print("  ✅ Zero interference with movement")
 print("═══════════════════════════════════════════════")
