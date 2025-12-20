@@ -1,7 +1,8 @@
 --[[
-    ====== FLASHBACK SCRIPT (FIXED) ======
+    ====== FLASHBACK SCRIPT (WITH HEALTH RESTORE) ======
     Hold C to rewind time!
     ✓ Fixed: Now works after death
+    ✓ NEW: Restores health when rewinding!
 ]]
 
 -- ============ SETTINGS ============
@@ -15,6 +16,7 @@ local VELOCITY_MULTIPLIER = 1
 local RECORD_TOOLS = true
 local USE_INTERPOLATION = true
 local INTERPOLATION_SPEED = 0.5
+local RESTORE_HEALTH = true  -- NEW: Enable health restoration
 
 -- ============ END OF SETTINGS ============
 
@@ -72,12 +74,14 @@ function flashback:Advance(allowinput)
         self.lastinput = false
     end
     
-    -- Record current frame
+    -- Record current frame (now includes health!)
     local frameData = {
         CFrame = HRP.CFrame,
         Velocity = HRP.AssemblyLinearVelocity,
         State = Humanoid:GetState(),
         PlatformStand = Humanoid.PlatformStand,
+        Health = Humanoid.Health,      -- NEW: Record health
+        MaxHealth = Humanoid.MaxHealth -- NEW: Record max health too
     }
     
     if RECORD_TOOLS then
@@ -132,6 +136,14 @@ function flashback:Revert()
     Humanoid:ChangeState(lastframe.State)
     Humanoid.PlatformStand = lastframe.PlatformStand
     
+    -- NEW: Restore health!
+    if RESTORE_HEALTH and lastframe.Health then
+        -- Only restore if past health was higher
+        if lastframe.Health > Humanoid.Health then
+            Humanoid.Health = lastframe.Health
+        end
+    end
+    
     -- Handle tools
     if RECORD_TOOLS then
         local currenttool = Character:FindFirstChildOfClass("Tool")
@@ -183,7 +195,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- THIS IS THE FIX! Reset everything properly on respawn
+-- Reset everything properly on respawn
 LP.CharacterAdded:Connect(function(char)
     -- Wait for character to fully load
     task.wait(0.1)
@@ -226,4 +238,5 @@ end
 
 print("====== FLASHBACK SCRIPT LOADED ======")
 print("Hold [" .. FLASHBACK_KEY.Name .. "] to rewind time!")
+print("✓ Health restoration enabled!")
 print("======================================")
