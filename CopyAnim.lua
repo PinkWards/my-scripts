@@ -1,5 +1,5 @@
--- Animation Copy v9.2 - CLEAN EDITION
--- No buggy body parts, smooth animation copy
+-- Animation Copy v9.3 - FIXED GROUND DETECTION
+-- Only saves position when TRULY on walkable ground
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -23,9 +23,8 @@ local hasTarget = false
 local char, hum, animator, root = nil, nil, nil, nil
 local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
 
--- ANIMATION STORAGE (ONLY animations, no Motor6D fighting)
+-- ANIMATION STORAGE
 local tracks = {}
-local activeAnims = {}
 
 -- CONSTANTS
 local V3_ZERO = Vector3.zero
@@ -36,25 +35,56 @@ local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 -- ═══════════════════════════════════════════════════════════════════
--- GROUND DETECTION
+-- GROUND DETECTION - FIXED
 -- ═══════════════════════════════════════════════════════════════════
 
 local lastGroundSave = 0
+local stableGroundTime = 0
+local STABLE_TIME_REQUIRED = 0.3  -- Must be on ground for 0.3 seconds
 
-local function isOnGround()
+local function isOnSolidGround()
     if not root or not hum then return false end
-    if hum.FloorMaterial ~= Enum.Material.Air then return true end
     
+    -- Check 1: Humanoid must say we're on ground
+    if hum.FloorMaterial == Enum.Material.Air then return false end
+    
+    -- Check 2: Must not be jumping or falling
+    local state = hum:GetState()
+    if state == Enum.HumanoidStateType.Jumping then return false end
+    if state == Enum.HumanoidStateType.Freefall then return false end
+    if state == Enum.HumanoidStateType.Flying then return false end
+    
+    -- Check 3: Y velocity must be near zero (not moving up or down)
+    local yVel = root.AssemblyLinearVelocity.Y
+    if math.abs(yVel) > 5 then return false end
+    
+    -- Check 4: Raycast must hit ground very close (within 3.5 studs)
     rayParams.FilterDescendantsInstances = {char}
-    local result = workspace:Raycast(root.Position, V3_DOWN * 4, rayParams)
-    return result ~= nil
+    local result = workspace:Raycast(root.Position, V3_DOWN * 3.5, rayParams)
+    if not result then return false end
+    
+    -- Check 5: Ground must be walkable (not too steep)
+    local groundNormal = result.Normal
+    local upDot = groundNormal:Dot(Vector3.new(0, 1, 0))
+    if upDot < 0.7 then return false end  -- Too steep
+    
+    -- Check 6: Must not be on another player
+    local hitPart = result.Instance
+    if hitPart then
+        local model = hitPart:FindFirstAncestorOfClass("Model")
+        if model and Players:GetPlayerFromCharacter(model) then
+            return false  -- Standing on a player
+        end
+    end
+    
+    return true
 end
 
 local function getGroundPosition()
     if not root then return nil end
     
     rayParams.FilterDescendantsInstances = {char}
-    local result = workspace:Raycast(root.Position, V3_DOWN * 50, rayParams)
+    local result = workspace:Raycast(root.Position, V3_DOWN * 10, rayParams)
     
     if result then
         local hipHeight = hum and hum.HipHeight or 2
@@ -68,14 +98,25 @@ local function autoSaveGroundPosition()
     if respawning or not root or not hum then return end
     
     local now = tick()
-    if now - lastGroundSave < GROUND_SAVE_INTERVAL then return end
     
-    if isOnGround() then
-        local groundCF = getGroundPosition()
-        if groundCF then
-            savedGroundCF = groundCF
-            lastGroundSave = now
+    -- Check if on solid ground
+    if isOnSolidGround() then
+        -- Increment stable time
+        stableGroundTime += RunService.Heartbeat:Wait()
+        
+        -- Only save if stable for required time AND interval passed
+        if stableGroundTime >= STABLE_TIME_REQUIRED then
+            if now - lastGroundSave >= GROUND_SAVE_INTERVAL then
+                local groundCF = getGroundPosition()
+                if groundCF then
+                    savedGroundCF = groundCF
+                    lastGroundSave = now
+                end
+            end
         end
+    else
+        -- Reset stable time when not on ground
+        stableGroundTime = 0
     end
 end
 
@@ -140,7 +181,6 @@ local function disableAnimate()
         animate.Disabled = true
     end
     
-    -- Stop default animations smoothly
     if animator then
         for _, track in animator:GetPlayingAnimationTracks() do
             track:Stop(0.1)
@@ -158,18 +198,16 @@ local function enableAnimate()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- CLEAN ANIMATION SYNC (NO MOTOR6D = NO BUGS)
+-- CLEAN ANIMATION SYNC
 -- ═══════════════════════════════════════════════════════════════════
 
 local function cleanSync()
     if not copying or respawning or not hasTarget then return end
     if not animator or not targetAnimator then return end
     
-    -- Get target's animations
     local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
     if not ok or not targetTracks then return end
     
-    -- Track what's active this frame
     local currentActive = {}
     
     for _, targetTrack in targetTracks do
@@ -181,7 +219,6 @@ local function cleanSync()
         end
     end
     
-    -- Stop animations that target stopped
     for animId, myTrack in pairs(tracks) do
         if not currentActive[animId] then
             myTrack:Stop(0.1)
@@ -190,11 +227,9 @@ local function cleanSync()
         end
     end
     
-    -- Sync active animations
     for animId, targetTrack in pairs(currentActive) do
         local myTrack = tracks[animId]
         
-        -- Create new track if needed
         if not myTrack then
             local anim = Instance.new("Animation")
             anim.AnimationId = animId
@@ -204,34 +239,27 @@ local function cleanSync()
                 newTrack.Priority = Enum.AnimationPriority.Action4
                 myTrack = newTrack
                 tracks[animId] = myTrack
-                
-                -- Start playing
                 myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
             end
             
             anim:Destroy()
         end
         
-        -- Sync existing track
         if myTrack then
-            -- Sync time (with small tolerance to prevent jitter)
             local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
             if timeDiff > 0.05 then
                 myTrack.TimePosition = targetTrack.TimePosition
             end
             
-            -- Sync speed
             if myTrack.Speed ~= targetTrack.Speed then
                 myTrack:AdjustSpeed(targetTrack.Speed)
             end
             
-            -- Sync weight smoothly
             local weightDiff = math.abs(myTrack.WeightCurrent - targetTrack.WeightCurrent)
             if weightDiff > 0.05 then
                 myTrack:AdjustWeight(targetTrack.WeightCurrent, 0.1)
             end
             
-            -- Ensure playing
             if not myTrack.IsPlaying then
                 myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
             end
@@ -286,7 +314,7 @@ local function findNearest()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- SYNC LOOP (Single, clean loop)
+-- LOOPS
 -- ═══════════════════════════════════════════════════════════════════
 
 RunService.RenderStepped:Connect(function()
@@ -295,12 +323,10 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Ground save loop
 RunService.Heartbeat:Connect(function()
     autoSaveGroundPosition()
 end)
 
--- Cache refresh loop
 local cacheTimer = 0
 RunService.Heartbeat:Connect(function(dt)
     if not copying then return end
@@ -309,7 +335,6 @@ RunService.Heartbeat:Connect(function(dt)
     if cacheTimer < 1 then return end
     cacheTimer = 0
     
-    -- Validate target
     if hasTarget and target then
         if not target.Parent then
             print("⚠️ Target left")
@@ -341,7 +366,6 @@ local function setupTargetConnections()
     
     if not target then return end
     
-    -- Character respawn
     targetConnections.charAdded = target.CharacterAdded:Connect(function()
         task.wait(0.5)
         cacheTarget()
@@ -351,7 +375,6 @@ local function setupTargetConnections()
         end
     end)
     
-    -- Death
     if target.Character then
         local targetHumanoid = target.Character:FindFirstChildOfClass("Humanoid")
         if targetHumanoid then
@@ -396,8 +419,8 @@ local function start()
     disableAnimate()
     setupTargetConnections()
     
-    -- Save position
-    if isOnGround() then
+    -- Only save if truly on ground
+    if isOnSolidGround() then
         savedGroundCF = getGroundPosition()
     end
     
@@ -451,7 +474,7 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- GUI (Minimal, clean)
+-- GUI
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
@@ -461,7 +484,6 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
 gui.Parent = LP:WaitForChild("PlayerGui")
 
--- Status label
 local status = Instance.new("TextLabel")
 status.Size = UDim2.fromOffset(180, 28)
 status.Position = UDim2.fromOffset(10, 10)
@@ -480,7 +502,6 @@ statusStroke.Color = Color3.fromRGB(60, 60, 70)
 statusStroke.Thickness = 1
 statusStroke.Parent = status
 
--- Ground position label
 local groundLabel = Instance.new("TextLabel")
 groundLabel.Size = UDim2.fromOffset(180, 20)
 groundLabel.Position = UDim2.fromOffset(10, 42)
@@ -494,7 +515,18 @@ groundLabel.Visible = false
 groundLabel.Parent = gui
 Instance.new("UICorner", groundLabel).CornerRadius = UDim.new(0, 4)
 
--- Teleport popup
+-- Ground status indicator
+local groundStatus = Instance.new("TextLabel")
+groundStatus.Size = UDim2.fromOffset(180, 16)
+groundStatus.Position = UDim2.fromOffset(10, 64)
+groundStatus.BackgroundTransparency = 1
+groundStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+groundStatus.Font = Enum.Font.Gotham
+groundStatus.TextSize = 9
+groundStatus.Text = ""
+groundStatus.Visible = false
+groundStatus.Parent = gui
+
 local popup = Instance.new("Frame")
 popup.Size = UDim2.new(1, 0, 1, 0)
 popup.BackgroundTransparency = 1
@@ -570,7 +602,6 @@ btnNo.Text = "✕ No"
 btnNo.Parent = popupBox
 Instance.new("UICorner", btnNo).CornerRadius = UDim.new(0, 6)
 
--- Fade screen
 local fadeScreen = Instance.new("Frame")
 fadeScreen.Size = UDim2.new(1, 0, 1, 0)
 fadeScreen.BackgroundColor3 = Color3.new(0, 0, 0)
@@ -578,7 +609,6 @@ fadeScreen.BackgroundTransparency = 1
 fadeScreen.BorderSizePixel = 0
 fadeScreen.Parent = gui
 
--- Popup logic
 local popupResult = nil
 local popupActive = false
 
@@ -621,28 +651,24 @@ btnNo.MouseButton1Click:Connect(function()
     popupActive = false
 end)
 
--- Teleport function
 local function teleportToSaved()
     if not root or not savedGroundCF then return end
     
-    -- Fade in
     TweenService:Create(fadeScreen, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
     task.wait(0.15)
     
-    -- Teleport
     root.CFrame = savedGroundCF
     root.AssemblyLinearVelocity = V3_ZERO
     root.AssemblyAngularVelocity = V3_ZERO
     
-    -- Fade out
     task.wait(0.05)
     TweenService:Create(fadeScreen, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
 end
 
--- Status update
+-- Status update with ground indicator
 task.spawn(function()
     while true do
-        task.wait(0.15)
+        task.wait(0.1)
         
         if copying and hasTarget and target then
             status.Visible = true
@@ -656,14 +682,26 @@ task.spawn(function()
             else
                 groundLabel.Visible = false
             end
+            
+            -- Show ground status
+            groundStatus.Visible = true
+            if isOnSolidGround() then
+                groundStatus.Text = "🟢 On solid ground"
+                groundStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+            else
+                groundStatus.Text = "🔴 In air (not saving)"
+                groundStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
         elseif copying then
             status.Visible = true
             status.Text = "⏳ Waiting..."
             status.TextColor3 = Color3.fromRGB(255, 200, 100)
             groundLabel.Visible = false
+            groundStatus.Visible = false
         else
             status.Visible = false
             groundLabel.Visible = false
+            groundStatus.Visible = false
         end
     end
 end)
@@ -673,11 +711,10 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 LP.CharacterAdded:Connect(function(newChar)
-    -- Reset
     table.clear(tracks)
     char, hum, animator, root = nil, nil, nil, nil
+    stableGroundTime = 0
     
-    -- Wait for load
     local newHum = newChar:WaitForChild("Humanoid", 10)
     local newRoot = newChar:WaitForChild("HumanoidRootPart", 10)
     if not newHum or not newRoot then return end
@@ -692,7 +729,6 @@ LP.CharacterAdded:Connect(function(newChar)
         animator.Parent = newHum
     end
     
-    -- Teleport popup
     if savedGroundCF then
         respawning = true
         task.wait(0.3)
@@ -701,9 +737,8 @@ LP.CharacterAdded:Connect(function(newChar)
             teleportToSaved()
             print("📍 Teleported!")
         else
-            -- Save new position
-            task.wait(0.2)
-            if isOnGround() then
+            task.wait(0.5)
+            if isOnSolidGround() then
                 savedGroundCF = getGroundPosition()
             end
         end
@@ -711,7 +746,6 @@ LP.CharacterAdded:Connect(function(newChar)
         respawning = false
     end
     
-    -- Resume copying
     task.wait(0.2)
     if copying and hasTarget then
         cacheTarget()
@@ -726,12 +760,16 @@ end)
 cacheLocal()
 
 print("═══════════════════════════════════════════════")
-print("  🎭 Animation Copy v9.2 - CLEAN")
+print("  🎭 Animation Copy v9.3 - FIXED GROUND")
 print("═══════════════════════════════════════════════")
 print("  Press [G] to toggle")
 print("")
-print("  ✅ Fixed: No more buggy body parts!")
-print("  ✅ Clean animation-only sync")
-print("  ✅ Smooth transitions")
-print("  ✅ Auto ground position save")
+print("  ✅ Only saves when TRULY on ground:")
+print("    • FloorMaterial not Air")
+print("    • Not jumping/falling")
+print("    • Y velocity near zero")
+print("    • Raycast hits close ground")
+print("    • Ground not too steep")
+print("    • Not standing on players")
+print("    • Stable for 0.3 seconds")
 print("═══════════════════════════════════════════════")
