@@ -1,6 +1,5 @@
--- Animation Copy v9.0 - ZERO LATENCY EDITION
--- 100% frame-perfect sync regardless of ping
--- Pure Motor6D replication (no animation timing dependency)
+-- Animation Copy v9.1 - FIXED EDITION
+-- Actually works now - animations + Motor6D hybrid sync
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -24,18 +23,11 @@ local hasTarget = false
 local char, hum, animator, root = nil, nil, nil, nil
 local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
 
--- MOTOR6D CACHE (THE KEY TO ZERO LATENCY)
+-- MOTOR6D CACHE
 local myMotors = {}
 local targetMotors = {}
 
--- BODY PARTS CACHE (DIRECT CFRAME SYNC)
-local myParts = {}
-local targetParts = {}
-
--- JOINT OFFSETS (for perfect relative positioning)
-local jointOffsets = {}
-
--- ANIMATION STORAGE (backup layer)
+-- ANIMATION STORAGE
 local anims = {}
 local tracks = {}
 local trackIds = {}
@@ -44,37 +36,21 @@ local activeThisFrame = {}
 -- CONSTANTS
 local V3_ZERO = Vector3.zero
 local V3_DOWN = Vector3.new(0, -1, 0)
-local CF_IDENTITY = CFrame.identity
 local PRIORITY = Enum.AnimationPriority.Action4
-
--- BODY PART NAMES TO SYNC
-local SYNC_PARTS = {
-    "Head",
-    "UpperTorso", "LowerTorso",
-    "LeftUpperArm", "LeftLowerArm", "LeftHand",
-    "RightUpperArm", "RightLowerArm", "RightHand",
-    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "RightUpperLeg", "RightLowerLeg", "RightFoot",
-    -- R6 parts
-    "Torso",
-    "Left Arm", "Right Arm",
-    "Left Leg", "Right Leg"
-}
 
 -- ═══════════════════════════════════════════════════════════════════
 -- GROUND DETECTION & AUTO-SAVE
 -- ═══════════════════════════════════════════════════════════════════
 
 local lastGroundSave = 0
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 local function isOnGround()
     if not root or not hum then return false end
     if hum.FloorMaterial ~= Enum.Material.Air then return true end
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
     rayParams.FilterDescendantsInstances = {char}
-    
     local result = workspace:Raycast(root.Position, V3_DOWN * 4, rayParams)
     return result ~= nil
 end
@@ -82,10 +58,7 @@ end
 local function getGroundPosition()
     if not root then return nil end
     
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
     rayParams.FilterDescendantsInstances = {char}
-    
     local result = workspace:Raycast(root.Position, V3_DOWN * 50, rayParams)
     
     if result then
@@ -112,22 +85,6 @@ local function autoSaveGroundPosition()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- CACHE BODY PARTS (for direct CFrame sync)
--- ═══════════════════════════════════════════════════════════════════
-
-local function cacheParts(character, partsTable)
-    table.clear(partsTable)
-    if not character then return end
-    
-    for _, name in SYNC_PARTS do
-        local part = character:FindFirstChild(name)
-        if part and part:IsA("BasePart") then
-            partsTable[name] = part
-        end
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════════
 -- CACHE MOTOR6Ds
 -- ═══════════════════════════════════════════════════════════════════
 
@@ -143,22 +100,6 @@ local function cacheMotors(character, motorTable)
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- CALCULATE RELATIVE OFFSETS (for position-independent sync)
--- ═══════════════════════════════════════════════════════════════════
-
-local function calculateRelativeTransform(targetPart, targetRootPart, myRootPart)
-    if not targetPart or not targetRootPart or not myRootPart then 
-        return nil 
-    end
-    
-    -- Get target part's position relative to target's root
-    local relativeToTargetRoot = targetRootPart.CFrame:ToObjectSpace(targetPart.CFrame)
-    
-    -- Apply that relative position to my root
-    return myRootPart.CFrame:ToWorldSpace(relativeToTargetRoot)
-end
-
--- ═══════════════════════════════════════════════════════════════════
 -- CACHE FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════
 
@@ -167,7 +108,6 @@ local function cacheLocal()
     if not c then
         char, hum, animator, root = nil, nil, nil, nil
         table.clear(myMotors)
-        table.clear(myParts)
         return false
     end
     
@@ -184,8 +124,6 @@ local function cacheLocal()
     end
     
     cacheMotors(char, myMotors)
-    cacheParts(char, myParts)
-    
     return hum ~= nil and root ~= nil and animator ~= nil
 end
 
@@ -193,7 +131,6 @@ local function cacheTarget()
     if not target then
         targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
         table.clear(targetMotors)
-        table.clear(targetParts)
         return false
     end
     
@@ -201,7 +138,6 @@ local function cacheTarget()
     if not tc then
         targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
         table.clear(targetMotors)
-        table.clear(targetParts)
         return false
     end
     
@@ -214,21 +150,23 @@ local function cacheTarget()
     end
     
     cacheMotors(targetChar, targetMotors)
-    cacheParts(targetChar, targetParts)
-    
-    return targetHum ~= nil and targetRoot ~= nil
+    return targetHum ~= nil and targetAnimator ~= nil and targetRoot ~= nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- DISABLE/ENABLE ANIMATE
+-- DISABLE/ENABLE ANIMATE SCRIPT
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimate()
     if not char then return end
     
+    -- Disable the Animate script so it doesn't fight us
     local a = char:FindFirstChild("Animate")
-    if a then a.Disabled = true end
+    if a and a:IsA("LocalScript") then 
+        a.Disabled = true 
+    end
     
+    -- Stop all current animations
     if animator then
         for _, t in animator:GetPlayingAnimationTracks() do
             t:Stop(0)
@@ -240,15 +178,18 @@ local function enableAnimate()
     if not char then return end
     
     local a = char:FindFirstChild("Animate")
-    if a then a.Disabled = false end
+    if a and a:IsA("LocalScript") then 
+        a.Disabled = false 
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- TRACK MANAGEMENT (backup animation layer)
+-- TRACK MANAGEMENT
 -- ═══════════════════════════════════════════════════════════════════
 
-local function getTrack(animId)
+local function getOrCreateTrack(animId)
     if tracks[animId] then return tracks[animId] end
+    if not animator then return nil end
     
     if not anims[animId] then
         local a = Instance.new("Animation")
@@ -276,14 +217,13 @@ local function stopTrack(animId)
     
     for i = #trackIds, 1, -1 do
         if trackIds[i] == animId then
-            trackIds[i] = trackIds[#trackIds]
-            trackIds[#trackIds] = nil
+            table.remove(trackIds, i)
             break
         end
     end
 end
 
-local function stopAll()
+local function stopAllTracks()
     for i = #trackIds, 1, -1 do
         local id = trackIds[i]
         if tracks[id] then
@@ -291,10 +231,10 @@ local function stopAll()
             tracks[id]:Destroy()
         end
         tracks[id] = nil
-        trackIds[i] = nil
     end
+    table.clear(trackIds)
     
-    for id, a in anims do
+    for id, a in pairs(anims) do
         a:Destroy()
     end
     table.clear(anims)
@@ -307,7 +247,7 @@ local function stopAll()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- FIND NEAREST
+-- FIND NEAREST PLAYER
 -- ═══════════════════════════════════════════════════════════════════
 
 local function findNearest()
@@ -330,62 +270,27 @@ local function findNearest()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- ⚡ ZERO LATENCY SYNC - THE MAGIC ⚡
--- Uses Motor6D.Transform which is CLIENT-SIDE (no network delay)
--- This reads the CURRENT VISUAL STATE, not network state
+-- 🔥 HYBRID SYNC - ANIMATIONS + MOTOR6D 🔥
+-- This is the key: We play the SAME animations AND copy Motor6D
 -- ═══════════════════════════════════════════════════════════════════
 
-local function zeroLatencySync()
+local function hybridSync()
     if not copying or respawning or not hasTarget then return end
+    if not animator or not targetAnimator then return end
     if not root or not targetRoot then return end
     
     -- ═══════════════════════════════════════════════════════════════
-    -- LAYER 1: MOTOR6D TRANSFORM COPY (INSTANT - NO PING)
-    -- Motor6D.Transform is the LOCAL animation transform
-    -- This is what you SEE on screen, not what server knows
+    -- STEP 1: GET TARGET'S PLAYING ANIMATIONS
     -- ═══════════════════════════════════════════════════════════════
-    
-    for name, targetMotor in targetMotors do
-        local myMotor = myMotors[name]
-        if myMotor then
-            -- Skip root joints (we don't want position sync)
-            if name ~= "RootJoint" and name ~= "Root" then
-                -- DIRECT TRANSFORM COPY - This is frame-perfect
-                -- Transform is the animated offset from C0/C1
-                myMotor.Transform = targetMotor.Transform
-            end
-        end
-    end
-    
-    -- ═══════════════════════════════════════════════════════════════
-    -- LAYER 2: C0 OFFSET SYNC (for scale/proportion differences)
-    -- Only needed if characters have different sizes
-    -- ═══════════════════════════════════════════════════════════════
-    
-    --[[
-    for name, targetMotor in targetMotors do
-        local myMotor = myMotors[name]
-        if myMotor and name ~= "RootJoint" and name ~= "Root" then
-            -- Match the joint configuration
-            myMotor.C0 = targetMotor.C0
-            myMotor.C1 = targetMotor.C1
-        end
-    end
-    ]]
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- ANIMATION BACKUP LAYER (helps with animation events/sounds)
--- ═══════════════════════════════════════════════════════════════════
-
-local function animationBackup()
-    if not copying or respawning or not hasTarget then return end
-    if not animator or not targetAnimator then return end
     
     local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
     if not ok or not targetTracks then return end
     
     table.clear(activeThisFrame)
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- STEP 2: PLAY SAME ANIMATIONS WITH FULL WEIGHT
+    -- ═══════════════════════════════════════════════════════════════
     
     for _, tt in targetTracks do
         if tt.IsPlaying and tt.Animation then
@@ -394,25 +299,44 @@ local function animationBackup()
                 activeThisFrame[id] = true
                 
                 local myTrack = tracks[id]
+                
+                -- Create track if doesn't exist
                 if not myTrack then
-                    myTrack = getTrack(id)
+                    myTrack = getOrCreateTrack(id)
                     if myTrack then
-                        myTrack:Play(0, 0.001, tt.Speed) -- Near-zero weight
-                        myTrack.TimePosition = tt.TimePosition
+                        -- Start playing with same parameters
+                        myTrack:Play(0, tt.WeightCurrent, tt.Speed)
                     end
                 end
                 
                 if myTrack then
-                    -- Keep time synced for animation events
+                    -- SYNC TIME POSITION (frame-perfect)
                     myTrack.TimePosition = tt.TimePosition
-                    myTrack:AdjustSpeed(tt.Speed)
                     
-                    -- Very low weight so Motor6D takes priority
-                    myTrack:AdjustWeight(0.001, 0)
+                    -- SYNC SPEED
+                    if math.abs(myTrack.Speed - tt.Speed) > 0.01 then
+                        myTrack:AdjustSpeed(tt.Speed)
+                    end
+                    
+                    -- SYNC WEIGHT (full weight, not 0.001)
+                    local targetWeight = tt.WeightCurrent
+                    if math.abs(myTrack.WeightCurrent - targetWeight) > 0.01 then
+                        myTrack:AdjustWeight(targetWeight, 0)
+                    end
+                    
+                    -- Make sure it's playing
+                    if not myTrack.IsPlaying then
+                        myTrack:Play(0, targetWeight, tt.Speed)
+                        myTrack.TimePosition = tt.TimePosition
+                    end
                 end
             end
         end
     end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- STEP 3: STOP ANIMATIONS THAT TARGET STOPPED
+    -- ═══════════════════════════════════════════════════════════════
     
     for i = #trackIds, 1, -1 do
         local id = trackIds[i]
@@ -420,69 +344,71 @@ local function animationBackup()
             stopTrack(id)
         end
     end
+    
+    -- ═══════════════════════════════════════════════════════════════
+    -- STEP 4: MOTOR6D TRANSFORM OVERLAY (extra precision)
+    -- This catches any micro-differences in animation playback
+    -- ═══════════════════════════════════════════════════════════════
+    
+    for name, targetMotor in targetMotors do
+        local myMotor = myMotors[name]
+        if myMotor and name ~= "RootJoint" and name ~= "Root" then
+            myMotor.Transform = targetMotor.Transform
+        end
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- SINGLE OPTIMIZED SYNC LOOP (PreRender = best for visuals)
+-- SYNC LOOPS
 -- ═══════════════════════════════════════════════════════════════════
 
-RunService.PreRender:Connect(function()
+-- Main sync on PreRender (best for visuals)
+RunService.PreRender:Connect(hybridSync)
+
+-- Backup sync on RenderStepped for extra smoothness
+RunService.RenderStepped:Connect(function()
     if not copying or respawning or not hasTarget then return end
     
-    -- Primary sync (Motor6D - zero latency)
-    zeroLatencySync()
+    -- Just do Motor6D sync here for extra smoothness
+    for name, targetMotor in targetMotors do
+        local myMotor = myMotors[name]
+        if myMotor and name ~= "RootJoint" and name ~= "Root" then
+            myMotor.Transform = targetMotor.Transform
+        end
+    end
 end)
 
--- Animation backup runs less frequently
-local animBackupCounter = 0
+-- Ground save + cache refresh
+local cacheCounter = 0
 RunService.Heartbeat:Connect(function()
     autoSaveGroundPosition()
     
     if not copying then return end
     
-    animBackupCounter += 1
-    if animBackupCounter >= 3 then -- Every 3 frames
-        animBackupCounter = 0
-        animationBackup()
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- MOTOR RECACHE
--- ═══════════════════════════════════════════════════════════════════
-
-local cacheCounter = 0
-RunService.Stepped:Connect(function()
-    if not copying then return end
-    
     cacheCounter += 1
-    if cacheCounter < 60 then return end -- Every ~1 second
-    cacheCounter = 0
-    
-    if char then 
-        cacheMotors(char, myMotors)
-        cacheParts(char, myParts)
-    end
-    if targetChar then 
-        cacheMotors(targetChar, targetMotors)
-        cacheParts(targetChar, targetParts)
-    end
-    
-    if hasTarget and target then
-        if not target.Parent then
-            print("⚠️ Target left the game")
-            hasTarget = false
-            target = nil
-            stopAll()
-            enableAnimate()
-        elseif target.Character then
-            cacheTarget()
+    if cacheCounter >= 30 then -- Every 0.5 seconds
+        cacheCounter = 0
+        
+        if char then cacheMotors(char, myMotors) end
+        if targetChar then cacheMotors(targetChar, targetMotors) end
+        
+        -- Check if target is still valid
+        if hasTarget and target then
+            if not target.Parent then
+                print("⚠️ Target left the game")
+                hasTarget = false
+                target = nil
+                stopAllTracks()
+                enableAnimate()
+            elseif target.Character and target.Character ~= targetChar then
+                cacheTarget()
+            end
         end
     end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- TARGET DEATH HANDLING
+-- TARGET DEATH/RESPAWN HANDLING
 -- ═══════════════════════════════════════════════════════════════════
 
 local deathConn, charConn = nil, nil
@@ -494,7 +420,7 @@ local function connectTarget()
     if not target then return end
     
     charConn = target.CharacterAdded:Connect(function(newChar)
-        task.wait(0.3)
+        task.wait(0.5)
         cacheTarget()
         if copying and hasTarget then
             disableAnimate()
@@ -507,7 +433,7 @@ local function connectTarget()
         if h then
             deathConn = h.Died:Connect(function()
                 print("⏳ Target died - waiting for respawn...")
-                stopAll()
+                stopAllTracks()
             end)
         end
     end
@@ -528,54 +454,64 @@ local function start()
     
     local nearest = findNearest()
     if not nearest then
-        print("❌ No player nearby to copy")
+        print("❌ No player nearby (within " .. MAX_DIST .. " studs)")
         return
     end
     
+    target = nearest
     copying = true
     hasTarget = true
-    target = nearest
     
-    stopAll()
     cacheTarget()
+    
+    if not targetAnimator then
+        print("❌ Target has no Animator")
+        copying = false
+        hasTarget = false
+        target = nil
+        return
+    end
+    
+    stopAllTracks()
     disableAnimate()
     connectTarget()
     
+    -- Save ground position
     if isOnGround() then
         local groundCF = getGroundPosition()
         if groundCF then savedGroundCF = groundCF end
     end
     
     print("═══════════════════════════════════════")
-    print("  ✅ ZERO LATENCY SYNC: ON")
-    print("  📌 Copying: " .. target.Name)
+    print("  ✅ ANIMATION COPY: ON")
+    print("  📌 Target: " .. target.Name)
     print("═══════════════════════════════════════")
-    print("  ⚡ SYNC METHOD:")
-    print("    ✓ Motor6D.Transform (CLIENT-SIDE)")
-    print("    ✓ No network delay")
-    print("    ✓ No ping dependency")
-    print("    ✓ Frame-perfect accuracy")
+    print("  ⚡ HYBRID SYNC ACTIVE:")
+    print("    ✓ Animation replication")
+    print("    ✓ Motor6D transform overlay")
+    print("    ✓ Frame-perfect timing")
+    print("    ✓ You stay in your position")
     print("═══════════════════════════════════════")
 end
 
 local function stop()
     if not copying then return end
+    
     copying = false
     hasTarget = false
     
     if deathConn then deathConn:Disconnect() deathConn = nil end
     if charConn then charConn:Disconnect() charConn = nil end
     
-    stopAll()
+    stopAllTracks()
     enableAnimate()
     
     target = nil
     targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
     table.clear(targetMotors)
-    table.clear(targetParts)
     
     print("═══════════════════════════════════════")
-    print("  ❌ ZERO LATENCY SYNC: OFF")
+    print("  ❌ ANIMATION COPY: OFF")
     print("═══════════════════════════════════════")
 end
 
@@ -601,7 +537,7 @@ Players.PlayerRemoving:Connect(function(p)
         print("⚠️ Target left the game!")
         hasTarget = false
         target = nil
-        stopAll()
+        stopAllTracks()
         enableAnimate()
     end
 end)
@@ -611,7 +547,7 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "AnimCopyZero"
+gui.Name = "AnimCopyV9"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
@@ -722,7 +658,7 @@ noBtn.Text = "✕ No"
 noBtn.Parent = btnFrame
 Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0,6)
 
--- Status
+-- Status indicator
 local status = Instance.new("TextLabel")
 status.Size = UDim2.fromOffset(200,32)
 status.Position = UDim2.new(0,10,0,10)
@@ -796,7 +732,7 @@ local function fadeOut()
     task.wait(0.15)
 end
 
--- Status update
+-- Status update loop
 task.spawn(function()
     while true do
         task.wait(0.1)
@@ -808,11 +744,12 @@ task.spawn(function()
             if not hasTarget or not target then
                 status.Text = "⚠️ No Target [G]"
                 status.TextColor3 = Color3.fromRGB(255,80,80)
-            elseif not targetRoot then
+            elseif not targetAnimator then
                 status.Text = "⏳ Waiting..."
                 status.TextColor3 = Color3.fromRGB(255,180,80)
             else
-                status.Text = "⚡ ZERO LAG: " .. target.Name
+                local trackCount = #trackIds
+                status.Text = "⚡ " .. target.Name .. " [" .. trackCount .. " anims]"
                 status.TextColor3 = Color3.fromRGB(80,255,120)
             end
             
@@ -847,13 +784,14 @@ end
 -- ═══════════════════════════════════════════════════════════════════
 
 LP.CharacterAdded:Connect(function(c)
+    -- Clear old data
     table.clear(tracks)
     table.clear(trackIds)
     table.clear(anims)
     table.clear(myMotors)
-    table.clear(myParts)
     char, hum, animator, root = nil, nil, nil, nil
     
+    -- Wait for character to load
     local h = c:WaitForChild("Humanoid", 10)
     local r = c:WaitForChild("HumanoidRootPart", 10)
     if not h or not r then return end
@@ -866,8 +804,8 @@ LP.CharacterAdded:Connect(function(c)
     end
     
     cacheMotors(char, myMotors)
-    cacheParts(char, myParts)
     
+    -- Teleport popup
     if savedGroundCF then
         respawning = true
         task.wait(0.3)
@@ -883,6 +821,7 @@ LP.CharacterAdded:Connect(function(c)
         respawning = false
     end
     
+    -- Resume copying if was active
     task.wait(0.2)
     if copying and hasTarget then
         cacheTarget()
@@ -897,20 +836,12 @@ end)
 cacheLocal()
 
 print("═══════════════════════════════════════════════")
-print("  ⚡ Animation Copy v9.0")
-print("  ZERO LATENCY EDITION")
+print("  🎭 Animation Copy v9.1 - FIXED")
 print("═══════════════════════════════════════════════")
 print("  Press [G] to toggle")
 print("")
-print("  🔥 WHY ZERO LATENCY:")
-print("    Motor6D.Transform is CLIENT-SIDE")
-print("    It shows what YOU SEE on screen")
-print("    Not what the server knows")
-print("    = No ping, no delay, no desync")
-print("")
-print("  ✅ FEATURES:")
-print("    • Frame-perfect body sync")
-print("    • Works with any ping")
-print("    • Auto ground position save")
-print("    • Respawn teleport option")
+print("  ✅ FIXED: Now actually copies animations!")
+print("  ✅ Hybrid sync: Animations + Motor6D")
+print("  ✅ Frame-perfect timing")
+print("  ✅ Auto ground save + respawn teleport")
 print("═══════════════════════════════════════════════")
