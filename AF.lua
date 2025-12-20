@@ -1,42 +1,38 @@
--- [ Anti-TPUA v9.0 | ATTACK BLOCKER ONLY ] --
--- ONLY stops other players' parts from hitting you
--- NEVER touches your own velocity/physics AT ALL
+-- [ Anti-Fling v9.1 | No Push + No Fling | Zero Lag ] --
+-- Blocks all player contact - nobody can push or fling you
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LP = Players.LocalPlayer
 
 -- [ Config ] --
-local CHECK_RADIUS = 35
-local ATTACK_SPEED = 30
-local ATTACK_SPIN = 10
+local SCAN_RADIUS = 30
+local FLING_SPEED = 120
+local FLING_SPIN = 20
 
 -- [ State ] --
 local blockCount = 0
-local attackingParts = {}
-local ghostedPlayers = {}
+local blockedParts = {}
+local processedCharacters = {}
 
 -- [ Cache ] --
-local char, root, hum = nil, nil, nil
+local char, root, hum
 local V3_ZERO = Vector3.zero
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-overlapParams.MaxParts = 100
-
--- [ Player Cache ] --
-local playerCharacters = {}
+overlapParams.MaxParts = 50
 
 -- ═══════════════════════════════════════════════════════════════════
--- GUI
+-- SIMPLE GUI
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "AntiTPUA_v9"
+gui.Name = "AntiFling"
 gui.ResetOnSpawn = false
 gui.Parent = LP:WaitForChild("PlayerGui")
 
 local box = Instance.new("Frame")
-box.Size = UDim2.fromOffset(90, 40)
+box.Size = UDim2.fromOffset(85, 38)
 box.Position = UDim2.fromOffset(5, 5)
 box.BackgroundColor3 = Color3.new(0, 0, 0)
 box.BackgroundTransparency = 0.5
@@ -53,10 +49,10 @@ dot.Parent = box
 Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -20, 0, 16)
-title.Position = UDim2.fromOffset(18, 2)
+title.Size = UDim2.new(1, -20, 0, 14)
+title.Position = UDim2.fromOffset(18, 3)
 title.BackgroundTransparency = 1
-title.Text = "AntiTPUA v9"
+title.Text = "Anti-Fling"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextSize = 10
 title.Font = Enum.Font.GothamBold
@@ -64,335 +60,195 @@ title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = box
 
 local counter = Instance.new("TextLabel")
-counter.Size = UDim2.new(1, -10, 0, 14)
+counter.Size = UDim2.new(1, -10, 0, 12)
 counter.Position = UDim2.fromOffset(6, 20)
 counter.BackgroundTransparency = 1
 counter.Text = "Blocked: 0"
 counter.TextColor3 = Color3.new(1, 0.6, 0)
-counter.TextSize = 10
+counter.TextSize = 9
 counter.Font = Enum.Font.Gotham
 counter.TextXAlignment = Enum.TextXAlignment.Left
 counter.Parent = box
 
-local flashQueued = false
 local function flash()
-    if flashQueued then return end
-    flashQueued = true
     dot.BackgroundColor3 = Color3.new(1, 0, 0)
-    task.delay(0.1, function()
+    task.delay(0.08, function()
         dot.BackgroundColor3 = Color3.new(0, 1, 0)
-        flashQueued = false
     end)
 end
 
-local function incrementBlock()
+-- ═══════════════════════════════════════════════════════════════════
+-- GHOST OTHER PLAYERS (No Push/Bump)
+-- ═══════════════════════════════════════════════════════════════════
+
+local function ghostCharacter(character)
+    if not character or processedCharacters[character] then return end
+    processedCharacters[character] = true
+    
+    local function disablePart(part)
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    -- Disable all current parts
+    for _, part in character:GetDescendants() do
+        disablePart(part)
+    end
+    
+    -- Disable any new parts added
+    character.DescendantAdded:Connect(disablePart)
+end
+
+local function setupPlayer(player)
+    if player == LP then return end
+    
+    if player.Character then
+        ghostCharacter(player.Character)
+    end
+    
+    player.CharacterAdded:Connect(function(c)
+        task.wait()
+        ghostCharacter(c)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- FLING DETECTION
+-- ═══════════════════════════════════════════════════════════════════
+
+local function isOtherPlayerPart(part)
+    local ancestor = part:FindFirstAncestorOfClass("Model")
+    if not ancestor then return false end
+    local player = Players:GetPlayerFromCharacter(ancestor)
+    return player and player ~= LP
+end
+
+local function isFlingAttack(part, myPos)
+    if part.Anchored then return false end
+    if not isOtherPlayerPart(part) then return false end
+    
+    local speed = part.AssemblyLinearVelocity.Magnitude
+    local spin = part.AssemblyAngularVelocity.Magnitude
+    local dist = (part.Position - myPos).Magnitude
+    
+    -- High speed fling
+    if speed > FLING_SPEED and dist < 25 then return true end
+    
+    -- Spinning attack (super ring)
+    if spin > FLING_SPIN and dist < 20 then return true end
+    
+    -- Very fast direct attack
+    if speed > 180 and dist < 30 then
+        local dir = (myPos - part.Position).Unit
+        local velDir = part.AssemblyLinearVelocity.Unit
+        if dir:Dot(velDir) > 0.4 then return true end
+    end
+    
+    return false
+end
+
+local function blockPart(part)
+    if blockedParts[part] then return end
+    blockedParts[part] = tick()
+    
+    part.AssemblyLinearVelocity = V3_ZERO
+    part.AssemblyAngularVelocity = V3_ZERO
+    
     blockCount += 1
     counter.Text = "Blocked: " .. blockCount
     flash()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- CHARACTER & PLAYER CACHE
+-- CHARACTER SETUP
 -- ═══════════════════════════════════════════════════════════════════
 
-local function cacheCharacter(c)
-    if not c then
-        char, root, hum = nil, nil, nil
-        return false
-    end
+local function setupCharacter(c)
+    if not c then return end
     
     char = c
-    root = c:FindFirstChild("HumanoidRootPart")
+    root = c:WaitForChild("HumanoidRootPart", 5)
     hum = c:FindFirstChildOfClass("Humanoid")
     
-    if char then
-        overlapParams.FilterDescendantsInstances = {char}
-    end
+    if not root then return end
     
-    return root ~= nil and hum ~= nil
-end
-
-local function updatePlayerCache()
-    table.clear(playerCharacters)
-    for _, p in Players:GetPlayers() do
-        if p ~= LP and p.Character then
-            playerCharacters[p.Character] = p
-        end
-    end
-end
-
-local function getPartOwner(part)
-    local parent = part.Parent
-    while parent and parent ~= workspace do
-        if playerCharacters[parent] then
-            return playerCharacters[parent]
-        end
-        parent = parent.Parent
-    end
-    return nil
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- NEUTRALIZE ATTACKING PARTS (only OTHER players' parts)
--- ═══════════════════════════════════════════════════════════════════
-
-local function neutralize(part)
-    if attackingParts[part] then return end
-    attackingParts[part] = tick()
+    overlapParams.FilterDescendantsInstances = {char}
     
-    -- Stop the attacking part
-    part.CanCollide = false
-    part.CanTouch = false
-    part.AssemblyLinearVelocity = V3_ZERO
-    part.AssemblyAngularVelocity = V3_ZERO
-    
-    incrementBlock()
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- CHECK IF A PART IS ATTACKING (only checks OTHER players' parts)
--- ═══════════════════════════════════════════════════════════════════
-
-local function isAttacking(part, myPos)
-    -- Ignore anchored parts
-    if part.Anchored then return false end
-    
-    -- Get owner - MUST be another player
-    local owner = getPartOwner(part)
-    if not owner then return false end  -- Not a player's part
-    if owner == LP then return false end  -- Our own part
-    
-    -- Check distance
-    local partPos = part.Position
-    local dist = (partPos - myPos).Magnitude
-    if dist > 30 then return false end
-    
-    -- Check velocity
-    local vel = part.AssemblyLinearVelocity
-    local speed = vel.Magnitude
-    local spin = part.AssemblyAngularVelocity.Magnitude
-    
-    -- Not moving fast enough to be an attack
-    if speed < ATTACK_SPEED and spin < ATTACK_SPIN then return false end
-    
-    -- Super Ring: Spinning fast near you
-    if spin > 15 and dist < 20 then return true end
-    
-    -- TPUA: Moving very fast
-    if speed > 80 and dist < 25 then return true end
-    
-    -- Direct hit: Moving toward you
-    if speed > 40 then
-        local toPlayer = (myPos - partPos)
-        local dotProduct = toPlayer.Unit:Dot(vel.Unit)
-        if dotProduct > 0.4 then return true end
-    end
-    
-    -- Very close + moving
-    if dist < 8 and speed > 20 then return true end
-    
-    return false
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- GHOST OTHER PLAYERS (make their parts not collide with you)
--- ═══════════════════════════════════════════════════════════════════
-
-local function ghostPlayer(character)
-    if not character or ghostedPlayers[character] then return end
-    ghostedPlayers[character] = true
-    
-    local function disable(part)
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-            part.CanTouch = false
-            part.Massless = true
-        end
-    end
-    
-    for _, part in character:GetDescendants() do
-        disable(part)
-    end
-    
-    character.DescendantAdded:Connect(disable)
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- CLEANUP
--- ═══════════════════════════════════════════════════════════════════
-
-local function cleanupParts()
-    local now = tick()
-    for part, time in pairs(attackingParts) do
-        if now - time > 2 then
-            attackingParts[part] = nil
-        end
+    -- Anti-ragdoll
+    if hum then
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
     end
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- MAIN LOOP - ONLY SCANS FOR ATTACKS, NEVER TOUCHES YOUR PHYSICS
+-- MAIN LOOP - LIGHTWEIGHT
 -- ═══════════════════════════════════════════════════════════════════
 
-local frameCounter = 0
-local cleanupCounter = 0
+local frameCount = 0
+local cleanupCount = 0
 
 RunService.Heartbeat:Connect(function()
     if not root or not root.Parent then return end
     
+    frameCount += 1
+    if frameCount < 8 then return end
+    frameCount = 0
+    
     local myPos = root.Position
     
-    -- ═══════════════════════════════════════════════════════════════
-    -- SCAN FOR ATTACKING PARTS (every 6 frames)
-    -- ═══════════════════════════════════════════════════════════════
+    -- Scan for fling attacks
+    local ok, parts = pcall(workspace.GetPartBoundsInRadius, workspace, myPos, SCAN_RADIUS, overlapParams)
     
-    frameCounter += 1
-    if frameCounter >= 6 then
-        frameCounter = 0
-        
-        local success, parts = pcall(workspace.GetPartBoundsInRadius, workspace, myPos, CHECK_RADIUS, overlapParams)
-        
-        if success and parts then
-            for _, part in parts do
-                if isAttacking(part, myPos) then
-                    neutralize(part)
-                end
+    if ok and parts then
+        for _, part in parts do
+            if isFlingAttack(part, myPos) then
+                blockPart(part)
             end
         end
     end
     
-    -- ═══════════════════════════════════════════════════════════════
-    -- CLEANUP (every 60 frames)
-    -- ═══════════════════════════════════════════════════════════════
-    
-    cleanupCounter += 1
-    if cleanupCounter >= 60 then
-        cleanupCounter = 0
-        cleanupParts()
-        updatePlayerCache()
+    -- Cleanup every ~100 frames
+    cleanupCount += 1
+    if cleanupCount >= 12 then
+        cleanupCount = 0
+        local now = tick()
+        for part, time in pairs(blockedParts) do
+            if now - time > 2 then
+                blockedParts[part] = nil
+            end
+        end
     end
 end)
-
--- ═══════════════════════════════════════════════════════════════════
--- TOUCH PROTECTION (backup - catches fast attacks)
--- ═══════════════════════════════════════════════════════════════════
-
-local function setupTouchProtection()
-    if not root then return end
-    
-    local oldHitbox = char:FindFirstChild("AntiTPUA_Hitbox")
-    if oldHitbox then oldHitbox:Destroy() end
-    
-    local hitbox = Instance.new("Part")
-    hitbox.Name = "AntiTPUA_Hitbox"
-    hitbox.Size = Vector3.new(8, 8, 8)
-    hitbox.Transparency = 1
-    hitbox.CanCollide = false
-    hitbox.CanTouch = true
-    hitbox.CanQuery = false
-    hitbox.Massless = true
-    hitbox.Anchored = false
-    hitbox.Parent = char
-    
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = root
-    weld.Part1 = hitbox
-    weld.Parent = hitbox
-    
-    hitbox.Touched:Connect(function(part)
-        if part.Anchored then return end
-        if attackingParts[part] then return end
-        
-        -- ONLY care about other players' parts
-        local owner = getPartOwner(part)
-        if not owner then return end
-        if owner == LP then return end
-        
-        local speed = part.AssemblyLinearVelocity.Magnitude
-        local spin = part.AssemblyAngularVelocity.Magnitude
-        
-        if speed > ATTACK_SPEED or spin > ATTACK_SPIN then
-            neutralize(part)
-        end
-    end)
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- SIMPLE HUMANOID PROTECTION (just anti-ragdoll)
--- ═══════════════════════════════════════════════════════════════════
-
-local function setupHumanoidProtection()
-    if not hum then return end
-    
-    -- Only prevent ragdoll states
-    hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- CHARACTER SETUP
--- ═══════════════════════════════════════════════════════════════════
-
-local function onCharacterAdded(c)
-    task.wait(0.1)
-    
-    if not cacheCharacter(c) then return end
-    
-    setupHumanoidProtection()
-    setupTouchProtection()
-    updatePlayerCache()
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- PLAYER SETUP
--- ═══════════════════════════════════════════════════════════════════
-
-local function onPlayerAdded(player)
-    if player == LP then return end
-    
-    if player.Character then
-        ghostPlayer(player.Character)
-    end
-    
-    player.CharacterAdded:Connect(function(c)
-        task.wait(0.1)
-        ghostPlayer(c)
-        updatePlayerCache()
-    end)
-end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- INIT
 -- ═══════════════════════════════════════════════════════════════════
 
+-- Ghost all existing players
 for _, player in Players:GetPlayers() do
-    onPlayerAdded(player)
+    setupPlayer(player)
 end
 
-Players.PlayerAdded:Connect(onPlayerAdded)
+-- Ghost new players
+Players.PlayerAdded:Connect(setupPlayer)
 
+-- Cleanup when players leave
 Players.PlayerRemoving:Connect(function(player)
     if player.Character then
-        ghostedPlayers[player.Character] = nil
-        playerCharacters[player.Character] = nil
+        processedCharacters[player.Character] = nil
     end
 end)
 
+-- Setup local character
 if LP.Character then
-    onCharacterAdded(LP.Character)
+    setupCharacter(LP.Character)
 end
 
-LP.CharacterAdded:Connect(onCharacterAdded)
+LP.CharacterAdded:Connect(function(c)
+    task.wait(0.1)
+    setupCharacter(c)
+end)
 
-updatePlayerCache()
-
-print("═══════════════════════════════════════════════")
-print("  🛡️ AntiTPUA v9.0 - ATTACK BLOCKER ONLY")
-print("═══════════════════════════════════════════════")
-print("  ✅ ONLY blocks other players' attacks")
-print("  ✅ NEVER touches your velocity")
-print("  ✅ NEVER touches your physics")
-print("  ✅ Normal jumping works 100%")
-print("  ✅ Normal falling works 100%")
-print("  ✅ Zero interference with movement")
-print("═══════════════════════════════════════════════")
+print("🛡️ Anti-Fling v9.1 | No Push + No Fling | Active")
