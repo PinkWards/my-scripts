@@ -1,5 +1,6 @@
--- [ Anti-TPUA v7.1 | ZERO LAG Edition ] --
+-- [ Anti-TPUA v7.2 | ZERO LAG Edition - FIXED ] --
 -- Same protection, 90% less CPU usage
+-- Fixed: No more slow falling!
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -7,7 +8,7 @@ local LP = Players.LocalPlayer
 
 -- [ Config ] --
 local CHECK_RADIUS = 35
-local FLING_SPEED = 400
+local FLING_SPEED = 400        -- Horizontal speed threshold
 local FLING_SPIN = 60
 local ATTACK_SPEED = 30
 local ATTACK_SPIN = 10
@@ -54,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 16)
 title.Position = UDim2.fromOffset(18, 2)
 title.BackgroundTransparency = 1
-title.Text = "AntiTPUA v7"
+title.Text = "AntiTPUA v7.2"
 title.TextColor3 = Color3.new(1, 1, 1)
 title.TextSize = 10
 title.Font = Enum.Font.GothamBold
@@ -215,6 +216,12 @@ local function isFlying()
     return false
 end
 
+-- [ Check if grounded ] --
+local function isGrounded()
+    if not hum then return false end
+    return hum.FloorMaterial ~= Enum.Material.Air
+end
+
 -- [ Cleanup old attacking parts ] --
 local function cleanupParts()
     local now = tick()
@@ -234,7 +241,7 @@ local function cleanupParts()
     end
 end
 
--- [ MAIN PROTECTION LOOP - OPTIMIZED ] --
+-- [ MAIN PROTECTION LOOP - OPTIMIZED & FIXED ] --
 local frameCounter = 0
 local cleanupCounter = 0
 
@@ -245,7 +252,7 @@ RunService.Heartbeat:Connect(function()
     local now = tick()
     
     -- ═══════════════════════════════════════════════════════════════
-    -- SELF FLING PROTECTION (every frame - critical)
+    -- SELF FLING PROTECTION (every frame - critical) - FIXED!
     -- ═══════════════════════════════════════════════════════════════
     
     if not isFlying() then
@@ -263,30 +270,50 @@ RunService.Heartbeat:Connect(function()
         if now - lastMoveTime > 0.5 then
             local vel = root.AssemblyLinearVelocity
             local angVel = root.AssemblyAngularVelocity
-            local speed = vel.Magnitude
+            
+            -- ✅ FIX: Calculate HORIZONTAL speed only (ignore Y velocity)
+            local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
+            local horizontalSpeed = horizontalVel.Magnitude
+            local totalSpeed = vel.Magnitude
             local spin = angVel.Magnitude
             
-            local isFling = speed > FLING_SPEED or 
-                            spin > FLING_SPIN or 
-                            (speed > 150 and spin > 20) or
-                            math.abs(vel.Y) > 200
+            -- ✅ FIX: Only detect UPWARD launches as flings, not falling
+            local launchedUp = vel.Y > 250  -- Being thrown upward
+            
+            -- ✅ FIX: New fling detection (ignores normal falling)
+            local isFling = horizontalSpeed > FLING_SPEED or     -- Horizontal fling
+                            spin > FLING_SPIN or                  -- Spinning fast
+                            (horizontalSpeed > 150 and spin > 20) or  -- Combo
+                            launchedUp or                         -- Launched upward
+                            (horizontalSpeed > 200 and not isGrounded())  -- Fast horizontal while airborne
             
             if isFling then
-                -- Stop all parts
+                -- ✅ FIX: Only zero horizontal velocity, preserve DOWNWARD Y velocity
+                local newYVel = vel.Y
+                if vel.Y > 0 then
+                    -- If being launched UP, kill that velocity
+                    newYVel = 0
+                else
+                    -- If falling DOWN, preserve it (normal gravity)
+                    newYVel = math.max(vel.Y, -200)  -- Cap at terminal velocity
+                end
+                
                 for _, part in char:GetDescendants() do
                     if part:IsA("BasePart") then
-                        part.AssemblyLinearVelocity = V3_ZERO
+                        part.AssemblyLinearVelocity = Vector3.new(0, newYVel, 0)
                         part.AssemblyAngularVelocity = V3_ZERO
                     end
                 end
                 
-                if speed > 800 and safeCF then
+                -- Only teleport back if extreme horizontal fling
+                if horizontalSpeed > 800 and safeCF then
                     root.CFrame = safeCF
                 end
                 
                 incrementBlock()
             else
-                if speed < 50 then
+                -- Save safe position when stable
+                if totalSpeed < 50 and isGrounded() then
                     safeCF = root.CFrame
                 end
             end
@@ -375,13 +402,16 @@ local function setupHumanoidProtection()
     
     hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
     hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-    hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+    -- ✅ FIX: Removed Physics state disable (can cause issues)
+    -- hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
     
     local lastHealth = hum.Health
     hum.HealthChanged:Connect(function(newHealth)
         if root then
-            local vel = root.AssemblyLinearVelocity.Magnitude
-            if vel > 200 and newHealth < lastHealth then
+            -- ✅ FIX: Only check horizontal velocity for damage prevention
+            local horizontalVel = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
+            local horizontalSpeed = horizontalVel.Magnitude
+            if horizontalSpeed > 200 and newHealth < lastHealth then
                 hum.Health = lastHealth
                 return
             end
@@ -443,14 +473,14 @@ LP.CharacterAdded:Connect(onCharacterAdded)
 updatePlayerCache()
 
 print("═══════════════════════════════════════════════")
-print("  🛡️ AntiTPUA v7.1 - ZERO LAG Edition")
+print("  🛡️ AntiTPUA v7.2 - FIXED EDITION")
 print("═══════════════════════════════════════════════")
-print("  ✅ Optimizations:")
-print("    • GetPartBoundsInRadius (10x faster)")
-print("    • Cached player lookup")
-print("    • Frame-skipping (6 frames)")
-print("    • Reduced memory allocations")
-print("    • No Region3 (deprecated)")
+print("  ✅ Fixes Applied:")
+print("    • No more slow falling!")
+print("    • Horizontal velocity detection only")
+print("    • Preserves normal gravity/falling")
+print("    • Upward launches still blocked")
+print("    • Grounded check for safe position")
 print("")
 print("  🔥 Same protection power!")
 print("═══════════════════════════════════════════════")
