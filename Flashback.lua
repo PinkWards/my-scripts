@@ -20,7 +20,7 @@ local RESTORE_HEALTH = true
 -- 0.5 = half speed (slower rewind)
 -- 1.0 = normal speed (same as recorded)
 -- 2.0 = double speed (fast rewind)
-local REWIND_SPEED = 1.0  -- <-- Adjust this! Lower = slower rewind
+local REWIND_SPEED = 1.5  -- <-- Adjust this! Lower = slower rewind
 
 -- ============ END OF SETTINGS ============
 
