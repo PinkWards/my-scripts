@@ -1,22 +1,26 @@
 --[[
-    ====== FLASHBACK SCRIPT (WITH HEALTH RESTORE) ======
+    ====== FLASHBACK SCRIPT (SMOOTH REWIND) ======
     Hold C to rewind time!
     ✓ Fixed: Now works after death
-    ✓ NEW: Restores health when rewinding!
+    ✓ Health restoration enabled
+    ✓ FIXED: Smooth, adjustable rewind speed
 ]]
 
 -- ============ SETTINGS ============
 
 local FLASHBACK_KEY = Enum.KeyCode.C
 local FLASHBACK_LENGTH = 60
-local FLASHBACK_SPEED = 1
 local SMOOTHNESS = 0.3
 local REVERSE_VELOCITY = true
-local VELOCITY_MULTIPLIER = 1
+local VELOCITY_MULTIPLIER = 0.5
 local RECORD_TOOLS = true
-local USE_INTERPOLATION = true
-local INTERPOLATION_SPEED = 0.5
-local RESTORE_HEALTH = true  -- NEW: Enable health restoration
+local RESTORE_HEALTH = true
+
+-- NEW: Rewind speed control
+-- 0.5 = half speed (slower rewind)
+-- 1.0 = normal speed (same as recorded)
+-- 2.0 = double speed (fast rewind)
+local REWIND_SPEED = 0.5  -- <-- Adjust this! Lower = slower rewind
 
 -- ============ END OF SETTINGS ============
 
@@ -28,7 +32,7 @@ local LP = Players.LocalPlayer
 local frames = {}
 local maxFrames = FLASHBACK_LENGTH * 60
 
--- Character references (will be updated on respawn)
+-- Character references
 local Character = nil
 local HRP = nil
 local Humanoid = nil
@@ -37,6 +41,8 @@ local flashback = {
     lastinput = false, 
     canrevert = true, 
     active = false,
+    frameAccumulator = 0,  -- NEW: For smooth timing
+    targetFrame = nil,     -- NEW: Current target frame
 }
 
 -- Update character references
@@ -55,13 +61,11 @@ local function UpdateCharacter()
 end
 
 function flashback:Advance(allowinput)
-    -- Check if character is valid
     if not HRP or not HRP.Parent then return end
     if not Humanoid or Humanoid.Health <= 0 then return end
     
     -- Remove old frames
-    local frameCount = #frames
-    if frameCount >= maxFrames then
+    if #frames >= maxFrames then
         table.remove(frames, 1)
     end
     
@@ -74,14 +78,18 @@ function flashback:Advance(allowinput)
         self.lastinput = false
     end
     
-    -- Record current frame (now includes health!)
+    -- Reset accumulator when not rewinding
+    self.frameAccumulator = 0
+    self.targetFrame = nil
+    
+    -- Record current frame
     local frameData = {
         CFrame = HRP.CFrame,
         Velocity = HRP.AssemblyLinearVelocity,
         State = Humanoid:GetState(),
         PlatformStand = Humanoid.PlatformStand,
-        Health = Humanoid.Health,      -- NEW: Record health
-        MaxHealth = Humanoid.MaxHealth -- NEW: Record max health too
+        Health = Humanoid.Health,
+        MaxHealth = Humanoid.MaxHealth
     }
     
     if RECORD_TOOLS then
@@ -92,7 +100,6 @@ function flashback:Advance(allowinput)
 end
 
 function flashback:Revert()
-    -- Check if character is valid
     if not HRP or not HRP.Parent then return end
     if not Humanoid or Humanoid.Health <= 0 then return end
     
@@ -104,41 +111,46 @@ function flashback:Revert()
         return
     end
     
-    -- Skip frames based on speed
-    local framesToRemove = math.min(FLASHBACK_SPEED, num - 1)
-    for i = 1, framesToRemove do
-        frames[num] = nil
-        num = num - 1
-    end
-    
     self.lastinput = true
-    local lastframe = frames[num]
     
-    if not lastframe then return end
+    -- Accumulate time for smooth speed control
+    self.frameAccumulator = self.frameAccumulator + REWIND_SPEED
     
-    frames[num] = nil
-    
-    -- Apply position
-    if USE_INTERPOLATION then
-        HRP.CFrame = HRP.CFrame:Lerp(lastframe.CFrame, INTERPOLATION_SPEED)
-    else
-        HRP.CFrame = lastframe.CFrame
+    -- Only consume frames when accumulator is >= 1
+    while self.frameAccumulator >= 1 and #frames > 0 do
+        self.frameAccumulator = self.frameAccumulator - 1
+        self.targetFrame = frames[#frames]
+        frames[#frames] = nil
     end
     
-    -- Apply velocity
+    -- If no target yet, get the last frame (but don't remove it)
+    if not self.targetFrame then
+        self.targetFrame = frames[#frames]
+    end
+    
+    if not self.targetFrame then return end
+    
+    local lastframe = self.targetFrame
+    
+    -- Smooth interpolation to target position
+    -- Lower SMOOTHNESS = smoother but slower response
+    local lerpSpeed = math.clamp(SMOOTHNESS * (REWIND_SPEED + 0.5), 0.1, 1)
+    HRP.CFrame = HRP.CFrame:Lerp(lastframe.CFrame, lerpSpeed)
+    
+    -- Apply velocity (reduced for smoother feel)
     if REVERSE_VELOCITY then
-        HRP.AssemblyLinearVelocity = -lastframe.Velocity * VELOCITY_MULTIPLIER
+        local targetVel = -lastframe.Velocity * VELOCITY_MULTIPLIER * REWIND_SPEED
+        HRP.AssemblyLinearVelocity = HRP.AssemblyLinearVelocity:Lerp(targetVel, 0.3)
     else
-        HRP.AssemblyLinearVelocity = Vector3.zero
+        HRP.AssemblyLinearVelocity = HRP.AssemblyLinearVelocity:Lerp(Vector3.zero, 0.3)
     end
     
     -- Apply state
     Humanoid:ChangeState(lastframe.State)
     Humanoid.PlatformStand = lastframe.PlatformStand
     
-    -- NEW: Restore health!
+    -- Restore health
     if RESTORE_HEALTH and lastframe.Health then
-        -- Only restore if past health was higher
         if lastframe.Health > Humanoid.Health then
             Humanoid.Health = lastframe.Health
         end
@@ -173,7 +185,6 @@ end)
 
 -- Main loop
 RunService.Heartbeat:Connect(function()
-    -- Always try to update character references
     if not Character or not Character.Parent then
         UpdateCharacter()
         return
@@ -195,25 +206,21 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- Reset everything properly on respawn
+-- Reset on respawn
 LP.CharacterAdded:Connect(function(char)
-    -- Wait for character to fully load
     task.wait(0.1)
     
-    -- Clear old frames (they're from dead character!)
     frames = {}
-    
-    -- Reset flashback state
     flashback.canrevert = true
     flashback.active = false
     flashback.lastinput = false
+    flashback.frameAccumulator = 0
+    flashback.targetFrame = nil
     
-    -- Update references to NEW character
     Character = char
     HRP = char:WaitForChild("HumanoidRootPart", 5)
     Humanoid = char:WaitForChild("Humanoid", 5)
     
-    -- Handle death during flashback
     if Humanoid then
         Humanoid.Died:Connect(function()
             flashback.active = false
@@ -227,7 +234,6 @@ end)
 -- Initial setup
 if LP.Character then
     UpdateCharacter()
-    
     if Humanoid then
         Humanoid.Died:Connect(function()
             flashback.active = false
@@ -238,5 +244,5 @@ end
 
 print("====== FLASHBACK SCRIPT LOADED ======")
 print("Hold [" .. FLASHBACK_KEY.Name .. "] to rewind time!")
-print("✓ Health restoration enabled!")
+print("Rewind Speed: " .. REWIND_SPEED .. "x")
 print("======================================")
