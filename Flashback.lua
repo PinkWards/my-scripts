@@ -1,17 +1,13 @@
---[[
-    ====== FLASHBACK SCRIPT (BACKWARD REPLAY) ======
-    Hold C to run backwards in time!
-    ✓ Same speed as you moved
-    ✓ Animations play in reverse
-    ✓ Looks like rewinding a video
-]]
-
--- ============ SETTINGS ============
-
 local FLASHBACK_KEY = Enum.KeyCode.C
 local FLASHBACK_LENGTH = 60
-local RECORD_TOOLS = true             
-local RESTORE_HEALTH = true           
+local FLASHBACK_SPEED = 1
+local SMOOTHNESS = 0.3
+local REVERSE_VELOCITY = true
+local VELOCITY_MULTIPLIER = 1
+local RECORD_TOOLS = true
+local USE_INTERPOLATION = true
+local INTERPOLATION_SPEED = 0.5
+local RESTORE_HEALTH = true  -- NEW: Enable health restoration
 
 -- ============ END OF SETTINGS ============
 
@@ -23,104 +19,61 @@ local LP = Players.LocalPlayer
 local frames = {}
 local maxFrames = FLASHBACK_LENGTH * 60
 
+-- Character references (will be updated on respawn)
 local Character = nil
 local HRP = nil
 local Humanoid = nil
-local Animator = nil
 
 local flashback = {
+    lastinput = false, 
+    canrevert = true, 
     active = false,
-    canrevert = true,
-    wasRewinding = false,
 }
 
+-- Update character references
 local function UpdateCharacter()
     Character = LP.Character
     if not Character then
         HRP = nil
         Humanoid = nil
-        Animator = nil
         return false
     end
     
     HRP = Character:FindFirstChild("HumanoidRootPart")
     Humanoid = Character:FindFirstChildOfClass("Humanoid")
     
-    if Humanoid then
-        Animator = Humanoid:FindFirstChildOfClass("Animator")
-    end
-    
     return HRP ~= nil and Humanoid ~= nil
 end
 
-local function GetMotor6Ds()
-    local motors = {}
-    if not Character then return motors end
-    
-    for _, desc in pairs(Character:GetDescendants()) do
-        if desc:IsA("Motor6D") then
-            table.insert(motors, desc)
-        end
-    end
-    return motors
-end
-
-local function StopAnimations()
-    if not Animator then return end
-    for _, track in pairs(Animator:GetPlayingAnimationTracks()) do
-        track:AdjustSpeed(0)
-    end
-end
-
-local function ResumeAnimations()
-    if not Animator then return end
-    for _, track in pairs(Animator:GetPlayingAnimationTracks()) do
-        track:AdjustSpeed(1)
-    end
-end
-
-function flashback:Record()
+function flashback:Advance(allowinput)
+    -- Check if character is valid
     if not HRP or not HRP.Parent then return end
     if not Humanoid or Humanoid.Health <= 0 then return end
     
-    -- Remove oldest frame if full
-    if #frames >= maxFrames then
+    -- Remove old frames
+    local frameCount = #frames
+    if frameCount >= maxFrames then
         table.remove(frames, 1)
     end
     
-    if not self.canrevert then
+    if allowinput and not self.canrevert then
         self.canrevert = true
     end
     
-    -- Resume animations after rewind
-    if self.wasRewinding then
+    if self.lastinput then
         Humanoid.PlatformStand = false
-        ResumeAnimations()
-        self.wasRewinding = false
+        self.lastinput = false
     end
     
-    -- Record frame
+    -- Record current frame (now includes health!)
     local frameData = {
         CFrame = HRP.CFrame,
         Velocity = HRP.AssemblyLinearVelocity,
-        AngularVelocity = HRP.AssemblyAngularVelocity,
         State = Humanoid:GetState(),
-        Health = Humanoid.Health,
-        Motors = {},
-        BodyParts = {},
+        PlatformStand = Humanoid.PlatformStand,
+        Health = Humanoid.Health,      -- NEW: Record health
+        MaxHealth = Humanoid.MaxHealth -- NEW: Record max health too
     }
-    
-    -- Record Motor6D transforms (animation pose)
-    for _, motor in pairs(GetMotor6Ds()) do
-        frameData.Motors[motor] = motor.Transform
-    end
-    
-    -- Record body parts
-    for _, part in pairs(Character:GetDescendants()) do
-        if part:IsA("BasePart") then
-            frameData.BodyParts[part] = part.CFrame
-        end
-    end
     
     if RECORD_TOOLS then
         frameData.Tool = Character:FindFirstChildOfClass("Tool")
@@ -129,81 +82,73 @@ function flashback:Record()
     frames[#frames + 1] = frameData
 end
 
-function flashback:Playback()
+function flashback:Revert()
+    -- Check if character is valid
     if not HRP or not HRP.Parent then return end
     if not Humanoid or Humanoid.Health <= 0 then return end
     
-    -- No frames left
-    if #frames == 0 then
+    local num = #frames
+    
+    if num == 0 or not self.canrevert then
         self.canrevert = false
+        self:Advance(false)
         return
     end
     
-    if not self.canrevert then
-        return
+    -- Skip frames based on speed
+    local framesToRemove = math.min(FLASHBACK_SPEED, num - 1)
+    for i = 1, framesToRemove do
+        frames[num] = nil
+        num = num - 1
     end
     
-    self.wasRewinding = true
+    self.lastinput = true
+    local lastframe = frames[num]
     
-    -- Stop animator from overriding our pose
-    StopAnimations()
+    if not lastframe then return end
     
-    -- Get last frame and remove it (1 frame per heartbeat = same speed)
-    local frame = frames[#frames]
-    frames[#frames] = nil
+    frames[num] = nil
     
-    if not frame then return end
+    -- Apply position
+    if USE_INTERPOLATION then
+        HRP.CFrame = HRP.CFrame:Lerp(lastframe.CFrame, INTERPOLATION_SPEED)
+    else
+        HRP.CFrame = lastframe.CFrame
+    end
     
-    -- ========== APPLY FRAME EXACTLY ==========
+    -- Apply velocity
+    if REVERSE_VELOCITY then
+        HRP.AssemblyLinearVelocity = -lastframe.Velocity * VELOCITY_MULTIPLIER
+    else
+        HRP.AssemblyLinearVelocity = Vector3.zero
+    end
     
-    -- Position
-    HRP.CFrame = frame.CFrame
+    -- Apply state
+    Humanoid:ChangeState(lastframe.State)
+    Humanoid.PlatformStand = lastframe.PlatformStand
     
-    -- Reverse velocity (so you move backwards)
-    HRP.AssemblyLinearVelocity = -frame.Velocity
-    HRP.AssemblyAngularVelocity = -(frame.AngularVelocity or Vector3.zero)
-    
-    -- Apply Motor6D transforms (exact animation pose)
-    for motor, transform in pairs(frame.Motors) do
-        if motor and motor.Parent then
-            motor.Transform = transform
+    -- NEW: Restore health!
+    if RESTORE_HEALTH and lastframe.Health then
+        -- Only restore if past health was higher
+        if lastframe.Health > Humanoid.Health then
+            Humanoid.Health = lastframe.Health
         end
     end
     
-    -- Apply body part positions
-    for part, cf in pairs(frame.BodyParts) do
-        if part and part.Parent and part ~= HRP then
-            part.CFrame = cf
-        end
-    end
-    
-    -- Prevent physics interference
-    Humanoid.PlatformStand = true
-    
-    -- State
-    pcall(function()
-        Humanoid:ChangeState(frame.State)
-    end)
-    
-    -- Health
-    if RESTORE_HEALTH and frame.Health then
-        Humanoid.Health = frame.Health
-    end
-    
-    -- Tools
+    -- Handle tools
     if RECORD_TOOLS then
-        local currentTool = Character:FindFirstChildOfClass("Tool")
-        if frame.Tool and frame.Tool.Parent then
-            if not currentTool then
-                Humanoid:EquipTool(frame.Tool)
+        local currenttool = Character:FindFirstChildOfClass("Tool")
+        if lastframe.Tool and lastframe.Tool.Parent then
+            if not currenttool then
+                Humanoid:EquipTool(lastframe.Tool)
             end
-        elseif currentTool then
+        elseif currenttool then
             Humanoid:UnequipTools()
         end
     end
 end
 
--- Input
+-- Key input
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == FLASHBACK_KEY then
@@ -214,16 +159,12 @@ end)
 UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == FLASHBACK_KEY then
         flashback.active = false
-        
-        if Humanoid then
-            Humanoid.PlatformStand = false
-        end
-        ResumeAnimations()
     end
 end)
 
--- Main loop (Heartbeat runs ~60 times per second, same as recording)
+-- Main loop
 RunService.Heartbeat:Connect(function()
+    -- Always try to update character references
     if not Character or not Character.Parent then
         UpdateCharacter()
         return
@@ -239,39 +180,45 @@ RunService.Heartbeat:Connect(function()
     end
     
     if flashback.active then
-        flashback:Playback()  -- Play 1 frame backward
+        flashback:Revert()
     else
-        flashback:Record()    -- Record 1 frame
+        flashback:Advance(true)
     end
 end)
 
--- Reset on respawn
+-- Reset everything properly on respawn
 LP.CharacterAdded:Connect(function(char)
+    -- Wait for character to fully load
     task.wait(0.1)
     
+    -- Clear old frames (they're from dead character!)
     frames = {}
+    
+    -- Reset flashback state
     flashback.canrevert = true
     flashback.active = false
-    flashback.wasRewinding = false
+    flashback.lastinput = false
     
+    -- Update references to NEW character
     Character = char
     HRP = char:WaitForChild("HumanoidRootPart", 5)
     Humanoid = char:WaitForChild("Humanoid", 5)
     
+    -- Handle death during flashback
     if Humanoid then
-        Animator = Humanoid:FindFirstChildOfClass("Animator")
         Humanoid.Died:Connect(function()
             flashback.active = false
             flashback.canrevert = false
         end)
     end
     
-    print("[Flashback] Ready! Hold " .. FLASHBACK_KEY.Name .. " to run backwards")
+    print("[Flashback] Ready! Hold " .. FLASHBACK_KEY.Name .. " to rewind")
 end)
 
 -- Initial setup
 if LP.Character then
     UpdateCharacter()
+    
     if Humanoid then
         Humanoid.Died:Connect(function()
             flashback.active = false
@@ -280,6 +227,7 @@ if LP.Character then
     end
 end
 
-print("====== BACKWARD REPLAY LOADED ======")
-print("Hold [" .. FLASHBACK_KEY.Name .. "] to run backwards!")
-print("=====================================")
+print("====== FLASHBACK SCRIPT LOADED ======")
+print("Hold [" .. FLASHBACK_KEY.Name .. "] to rewind time!")
+print("✓ Health restoration enabled!")
+print("======================================")
