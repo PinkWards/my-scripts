@@ -1,28 +1,21 @@
 --[[
     ====== FLASHBACK SCRIPT (FRAME-PERFECT REWIND) ======
     Hold C to rewind time!
-    ✓ Frame-perfect playback - exactly what you did
-    ✓ Same speed as recorded (1:1)
-    ✓ No smoothing/interpolation - pure replay
+    ✓ Frame-perfect playback
+    ✓ Proper animation recording
+    ✓ Correct speed (1:1 with recording)
 ]]
 
 -- ============ SETTINGS ============
 
 local FLASHBACK_KEY = Enum.KeyCode.C
 local FLASHBACK_LENGTH = 60          -- Seconds of recording
-local REVERSE_VELOCITY = true         -- Reverse movement direction
-local RECORD_TOOLS = true             -- Record equipped tools
-local RESTORE_HEALTH = true           -- Restore health during rewind
+local REVERSE_VELOCITY = true         
+local RECORD_TOOLS = true             
+local RESTORE_HEALTH = true           
 
 -- Rewind speed: 1.0 = exact same speed as recorded
--- 0.5 = half speed (slow-mo rewind)
--- 2.0 = double speed (fast rewind)
 local REWIND_SPEED = 1.0
-
--- Playback mode:
--- "EXACT" = Frame-perfect, no smoothing (like rewinding a video)
--- "SMOOTH" = Interpolated, smoother but less accurate
-local PLAYBACK_MODE = "EXACT"
 
 -- ============ END OF SETTINGS ============
 
@@ -38,12 +31,14 @@ local maxFrames = FLASHBACK_LENGTH * 60
 local Character = nil
 local HRP = nil
 local Humanoid = nil
+local Animator = nil
 
 local flashback = {
     lastinput = false, 
     canrevert = true, 
     active = false,
-    frameAccumulator = 0,
+    frameIndex = 0,        -- Current frame position (float for smooth speed)
+    wasRewinding = false,  -- Track if we were rewinding last frame
 }
 
 -- Update character references
@@ -52,13 +47,49 @@ local function UpdateCharacter()
     if not Character then
         HRP = nil
         Humanoid = nil
+        Animator = nil
         return false
     end
     
     HRP = Character:FindFirstChild("HumanoidRootPart")
     Humanoid = Character:FindFirstChildOfClass("Humanoid")
     
+    if Humanoid then
+        Animator = Humanoid:FindFirstChildOfClass("Animator")
+    end
+    
     return HRP ~= nil and Humanoid ~= nil
+end
+
+-- Get all Motor6Ds in character (these control animations)
+local function GetMotor6Ds()
+    local motors = {}
+    if not Character then return motors end
+    
+    for _, desc in pairs(Character:GetDescendants()) do
+        if desc:IsA("Motor6D") then
+            table.insert(motors, desc)
+        end
+    end
+    return motors
+end
+
+-- Stop all animations
+local function StopAnimations()
+    if not Animator then return end
+    
+    for _, track in pairs(Animator:GetPlayingAnimationTracks()) do
+        track:AdjustSpeed(0)  -- Pause instead of stop to keep pose
+    end
+end
+
+-- Resume all animations
+local function ResumeAnimations()
+    if not Animator then return end
+    
+    for _, track in pairs(Animator:GetPlayingAnimationTracks()) do
+        track:AdjustSpeed(1)
+    end
 end
 
 function flashback:Advance(allowinput)
@@ -79,27 +110,39 @@ function flashback:Advance(allowinput)
         self.lastinput = false
     end
     
-    -- Reset accumulator when not rewinding
-    self.frameAccumulator = 0
+    -- Resume animations if we were rewinding
+    if self.wasRewinding then
+        ResumeAnimations()
+        self.wasRewinding = false
+    end
     
-    -- Record current frame with ALL necessary data
+    -- Reset frame index to end
+    self.frameIndex = 0
+    
+    -- Record current frame
     local frameData = {
         CFrame = HRP.CFrame,
         Velocity = HRP.AssemblyLinearVelocity,
         AngularVelocity = HRP.AssemblyAngularVelocity,
         State = Humanoid:GetState(),
-        PlatformStand = Humanoid.PlatformStand,
         Health = Humanoid.Health,
-        MaxHealth = Humanoid.MaxHealth,
-        MoveDirection = Humanoid.MoveDirection,
-        WalkSpeed = Humanoid.WalkSpeed,
-        JumpPower = Humanoid.JumpPower,
+        Timestamp = tick(),  -- Record actual time
     }
     
-    -- Record all body part CFrames for perfect replay
+    -- Record Motor6D transforms (this captures the actual animation pose)
+    frameData.Motors = {}
+    for _, motor in pairs(GetMotor6Ds()) do
+        frameData.Motors[motor] = {
+            Transform = motor.Transform,
+            C0 = motor.C0,
+            C1 = motor.C1,
+        }
+    end
+    
+    -- Record body part CFrames as backup
     frameData.BodyParts = {}
     for _, part in pairs(Character:GetDescendants()) do
-        if part:IsA("BasePart") and part ~= HRP then
+        if part:IsA("BasePart") then
             frameData.BodyParts[part] = part.CFrame
         end
     end
@@ -111,79 +154,106 @@ function flashback:Advance(allowinput)
     frames[#frames + 1] = frameData
 end
 
-function flashback:Revert()
+function flashback:Revert(deltaTime)
     if not HRP or not HRP.Parent then return end
     if not Humanoid or Humanoid.Health <= 0 then return end
     
-    local num = #frames
+    local numFrames = #frames
     
-    if num == 0 or not self.canrevert then
+    if numFrames == 0 or not self.canrevert then
         self.canrevert = false
         self:Advance(false)
         return
     end
     
     self.lastinput = true
+    self.wasRewinding = true
     
-    -- Accumulate based on rewind speed
-    self.frameAccumulator = self.frameAccumulator + REWIND_SPEED
+    -- Stop animations so we can control the pose manually
+    StopAnimations()
     
-    local lastframe = nil
-    
-    -- Consume frames based on accumulator
-    while self.frameAccumulator >= 1 and #frames > 0 do
-        self.frameAccumulator = self.frameAccumulator - 1
-        lastframe = frames[#frames]
-        frames[#frames] = nil  -- Remove the frame (consume it)
+    -- Initialize frame index if starting rewind
+    if self.frameIndex == 0 then
+        self.frameIndex = numFrames
     end
     
-    -- For fractional speeds less than 1, peek at frame without consuming
-    if not lastframe and #frames > 0 then
-        lastframe = frames[#frames]
+    -- Move backwards through frames based on speed and delta time
+    -- deltaTime normalized to 60 FPS (0.0167 seconds per frame)
+    local frameStep = REWIND_SPEED * (deltaTime / 0.0167)
+    self.frameIndex = self.frameIndex - frameStep
+    
+    -- Clamp to valid range
+    if self.frameIndex < 1 then
+        self.frameIndex = 1
+        -- Remove consumed frames
+        local framesToRemove = numFrames - 1
+        for i = 1, framesToRemove do
+            table.remove(frames, 1)
+        end
+        self.frameIndex = 1
     end
     
+    -- Get the frame to display (integer index)
+    local targetIndex = math.floor(self.frameIndex)
+    targetIndex = math.clamp(targetIndex, 1, numFrames)
+    
+    local lastframe = frames[targetIndex]
     if not lastframe then return end
     
-    -- ========== APPLY FRAME ==========
+    -- Remove frames we've passed
+    while #frames > math.ceil(self.frameIndex) + 1 do
+        frames[#frames] = nil
+    end
     
-    if PLAYBACK_MODE == "EXACT" then
-        -- FRAME-PERFECT: Set exact position, no interpolation
-        HRP.CFrame = lastframe.CFrame
-        
-        -- Set exact velocity (reversed if enabled)
-        if REVERSE_VELOCITY then
-            HRP.AssemblyLinearVelocity = -lastframe.Velocity
-            HRP.AssemblyAngularVelocity = -lastframe.AngularVelocity
-        else
-            HRP.AssemblyLinearVelocity = Vector3.zero
-            HRP.AssemblyAngularVelocity = Vector3.zero
+    -- ========== APPLY FRAME (EXACT) ==========
+    
+    -- Set exact position
+    HRP.CFrame = lastframe.CFrame
+    
+    -- Set velocity
+    if REVERSE_VELOCITY then
+        HRP.AssemblyLinearVelocity = -lastframe.Velocity
+        HRP.AssemblyAngularVelocity = -(lastframe.AngularVelocity or Vector3.zero)
+    else
+        HRP.AssemblyLinearVelocity = Vector3.zero
+        HRP.AssemblyAngularVelocity = Vector3.zero
+    end
+    
+    -- Apply Motor6D transforms (this restores the exact animation pose!)
+    if lastframe.Motors then
+        for motor, data in pairs(lastframe.Motors) do
+            if motor and motor.Parent then
+                motor.Transform = data.Transform
+            end
         end
-        
-        -- Restore all body part positions for perfect visual replay
-        if lastframe.BodyParts then
-            for part, cf in pairs(lastframe.BodyParts) do
-                if part and part.Parent then
+    end
+    
+    -- Apply body part CFrames as backup
+    if lastframe.BodyParts then
+        for part, cf in pairs(lastframe.BodyParts) do
+            if part and part.Parent and part ~= HRP then
+                -- Only apply if not controlled by Motor6D
+                local hasMotor = false
+                for _, child in pairs(part:GetChildren()) do
+                    if child:IsA("Motor6D") then
+                        hasMotor = true
+                        break
+                    end
+                end
+                if not hasMotor then
                     part.CFrame = cf
                 end
             end
         end
-        
-    else -- SMOOTH mode
-        -- Interpolated movement
-        local lerpSpeed = 0.5
-        HRP.CFrame = HRP.CFrame:Lerp(lastframe.CFrame, lerpSpeed)
-        
-        if REVERSE_VELOCITY then
-            local targetVel = -lastframe.Velocity * 0.5
-            HRP.AssemblyLinearVelocity = HRP.AssemblyLinearVelocity:Lerp(targetVel, 0.3)
-        else
-            HRP.AssemblyLinearVelocity = HRP.AssemblyLinearVelocity:Lerp(Vector3.zero, 0.3)
-        end
     end
     
+    -- Prevent physics from fighting us
+    Humanoid.PlatformStand = true
+    
     -- Apply humanoid state
-    Humanoid:ChangeState(lastframe.State)
-    Humanoid.PlatformStand = true  -- Prevent character from fighting the rewind
+    pcall(function()
+        Humanoid:ChangeState(lastframe.State)
+    end)
     
     -- Restore health
     if RESTORE_HEALTH and lastframe.Health then
@@ -214,15 +284,18 @@ end)
 UserInputService.InputEnded:Connect(function(input)
     if input.KeyCode == FLASHBACK_KEY then
         flashback.active = false
-        -- Re-enable normal movement when done rewinding
+        flashback.frameIndex = 0
+        
+        -- Re-enable normal movement
         if Humanoid then
             Humanoid.PlatformStand = false
         end
+        ResumeAnimations()
     end
 end)
 
--- Main loop
-RunService.Heartbeat:Connect(function()
+-- Main loop with delta time
+RunService.Heartbeat:Connect(function(deltaTime)
     if not Character or not Character.Parent then
         UpdateCharacter()
         return
@@ -238,7 +311,7 @@ RunService.Heartbeat:Connect(function()
     end
     
     if flashback.active then
-        flashback:Revert()
+        flashback:Revert(deltaTime)
     else
         flashback:Advance(true)
     end
@@ -252,13 +325,16 @@ LP.CharacterAdded:Connect(function(char)
     flashback.canrevert = true
     flashback.active = false
     flashback.lastinput = false
-    flashback.frameAccumulator = 0
+    flashback.frameIndex = 0
+    flashback.wasRewinding = false
     
     Character = char
     HRP = char:WaitForChild("HumanoidRootPart", 5)
     Humanoid = char:WaitForChild("Humanoid", 5)
     
     if Humanoid then
+        Animator = Humanoid:FindFirstChildOfClass("Animator")
+        
         Humanoid.Died:Connect(function()
             flashback.active = false
             flashback.canrevert = false
@@ -281,6 +357,5 @@ end
 
 print("====== FLASHBACK SCRIPT LOADED ======")
 print("Hold [" .. FLASHBACK_KEY.Name .. "] to rewind time!")
-print("Mode: " .. PLAYBACK_MODE)
-print("Speed: " .. REWIND_SPEED .. "x")
+print("Speed: " .. REWIND_SPEED .. "x (1.0 = same speed)")
 print("======================================")
