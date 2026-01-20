@@ -27,9 +27,7 @@ local Window = WindUI:CreateWindow({
     SideBarWidth = 200
 })
 
--- SET L KEY AS TOGGLE KEY FOR THE WINDOW
 Window:SetToggleKey(Enum.KeyCode.L)
-
 Window:SetIconSize(48)
 
 Window:CreateTopbarButton("theme-switcher", "moon", function()
@@ -46,7 +44,6 @@ local Tabs = {
 local player = game:GetService("Players").LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local UserInputService = game:GetService("UserInputService")
 local Events = ReplicatedStorage:WaitForChild("Events", 10)
 local CharacterFolder = Events and Events:WaitForChild("Character", 10)
 local EmoteRemote = CharacterFolder and CharacterFolder:WaitForChild("Emote", 10)
@@ -60,9 +57,10 @@ local emoteEnabled = {false, false, false, false, false, false}
 local emoteOption = 1
 local pendingSlot = nil
 
+local randomOptionEnabled = true
+
 local currentEmoteInputs = {}
 local selectEmoteInputs = {}
-local EmoteChangerEmoteOption = nil
 local allEmotes = {}
 local emoteConnections = {}
 
@@ -93,120 +91,6 @@ local function ScanEmotes()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INDICATOR GUI
--- ═══════════════════════════════════════════════════════════════
-
-local IndicatorGui = nil
-local OptionButtons = {}
-local indicatorVisible = true
-
-local function UpdateIndicatorButtons()
-    for i, button in pairs(OptionButtons) do
-        if button and button.Parent then
-            button.BackgroundColor3 = (i == emoteOption) and Color3.fromRGB(50, 180, 100) or Color3.fromRGB(45, 45, 55)
-        end
-    end
-end
-
-local function CreateIndicatorGUI()
-    if IndicatorGui then
-        IndicatorGui:Destroy()
-    end
-    
-    IndicatorGui = Instance.new("ScreenGui")
-    IndicatorGui.Name = "EmoteOptionIndicator"
-    IndicatorGui.ResetOnSpawn = false
-    
-    pcall(function()
-        IndicatorGui.Parent = game:GetService("CoreGui")
-    end)
-    if not IndicatorGui.Parent then
-        IndicatorGui.Parent = player:WaitForChild("PlayerGui")
-    end
-    
-    local Container = Instance.new("Frame")
-    Container.Name = "Container"
-    Container.Size = UDim2.new(0, 160, 0, 70)
-    Container.Position = UDim2.new(0, 20, 0.85, 0)
-    Container.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-    Container.BackgroundTransparency = 0.1
-    Container.BorderSizePixel = 0
-    Container.Active = true
-    Container.Draggable = true
-    Container.Parent = IndicatorGui
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = Container
-    
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(80, 80, 90)
-    stroke.Parent = Container
-    
-    local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, 0, 0, 22)
-    Title.Position = UDim2.new(0, 0, 0, 5)
-    Title.BackgroundTransparency = 1
-    Title.Text = "🎭 Emote Option"
-    Title.TextColor3 = Color3.fromRGB(200, 200, 210)
-    Title.TextSize = 12
-    Title.Font = Enum.Font.GothamBold
-    Title.Parent = Container
-    
-    local ButtonsFrame = Instance.new("Frame")
-    ButtonsFrame.Size = UDim2.new(1, -20, 0, 32)
-    ButtonsFrame.Position = UDim2.new(0, 10, 0, 30)
-    ButtonsFrame.BackgroundTransparency = 1
-    ButtonsFrame.Parent = Container
-    
-    for i = 1, 3 do
-        local Button = Instance.new("TextButton")
-        Button.Name = "Option" .. i
-        Button.Size = UDim2.new(0, 42, 0, 32)
-        Button.Position = UDim2.new(0, (i - 1) * 47, 0, 0)
-        Button.BackgroundColor3 = (i == emoteOption) and Color3.fromRGB(50, 180, 100) or Color3.fromRGB(45, 45, 55)
-        Button.BorderSizePixel = 0
-        Button.Text = tostring(i)
-        Button.TextColor3 = Color3.new(1, 1, 1)
-        Button.TextSize = 16
-        Button.Font = Enum.Font.GothamBold
-        Button.AutoButtonColor = false
-        Button.Parent = ButtonsFrame
-        
-        local btnCorner = Instance.new("UICorner")
-        btnCorner.CornerRadius = UDim.new(0, 8)
-        btnCorner.Parent = Button
-        
-        OptionButtons[i] = Button
-        
-        Button.MouseButton1Click:Connect(function()
-            emoteOption = i
-            if player.Character then
-                player.Character:SetAttribute("EmoteNum", i)
-            end
-            UpdateIndicatorButtons()
-        end)
-    end
-    
-    local Hint = Instance.new("TextLabel")
-    Hint.Size = UDim2.new(1, 0, 0, 14)
-    Hint.Position = UDim2.new(0, 0, 1, -16)
-    Hint.BackgroundTransparency = 1
-    Hint.Text = "Numpad 1-3 | L = Toggle"
-    Hint.TextColor3 = Color3.fromRGB(120, 120, 130)
-    Hint.TextSize = 9
-    Hint.Font = Enum.Font.Gotham
-    Hint.Parent = Container
-end
-
-local function ToggleIndicator()
-    indicatorVisible = not indicatorVisible
-    if IndicatorGui then
-        IndicatorGui.Enabled = indicatorVisible
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════
 -- EMOTE OPTION FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════
 
@@ -218,14 +102,14 @@ local function SetEmoteOption(num)
     if player.Character then
         player.Character:SetAttribute("EmoteNum", num)
     end
-    
-    UpdateIndicatorButtons()
-    
-    pcall(function()
-        if EmoteChangerEmoteOption and EmoteChangerEmoteOption.Set then
-            EmoteChangerEmoteOption:Set(tostring(num))
-        end
-    end)
+end
+
+local function SetRandomOption()
+    local randomNum = math.random(1, 3)
+    if player.Character then
+        player.Character:SetAttribute("EmoteNum", randomNum)
+    end
+    return randomNum
 end
 
 local function SetupEmoteConnections()
@@ -268,7 +152,8 @@ local function SaveConfig()
     local config = {
         currentEmotes = currentEmotes,
         selectEmotes = selectEmotes,
-        emoteOption = emoteOption
+        emoteOption = emoteOption,
+        randomOptionEnabled = randomOptionEnabled
     }
     local success = pcall(function()
         writefile(SAVE_FILE, HttpService:JSONEncode(config))
@@ -291,6 +176,9 @@ local function LoadConfig()
             selectEmotes[i] = (result.selectEmotes and result.selectEmotes[i]) or ""
         end
         emoteOption = result.emoteOption or 1
+        if result.randomOptionEnabled ~= nil then
+            randomOptionEnabled = result.randomOptionEnabled
+        end
         return true
     end
     return false
@@ -303,25 +191,6 @@ local function DeleteConfig()
     end
     return false
 end
-
--- ═══════════════════════════════════════════════════════════════
--- KEYBINDS
--- ═══════════════════════════════════════════════════════════════
-
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    
-    if input.KeyCode == Enum.KeyCode.KeypadOne then
-        SetEmoteOption(1)
-    elseif input.KeyCode == Enum.KeyCode.KeypadTwo then
-        SetEmoteOption(2)
-    elseif input.KeyCode == Enum.KeyCode.KeypadThree then
-        SetEmoteOption(3)
-    elseif input.KeyCode == Enum.KeyCode.L then
-        -- Toggle the indicator when L is pressed (Window toggle is handled by WindUI)
-        ToggleIndicator()
-    end
-end)
 
 -- ═══════════════════════════════════════════════════════════════
 -- EMOTE CHANGER LOGIC
@@ -371,6 +240,10 @@ local function FireSelect(slot)
     local b = tonumber(currentTag)
     if not b or b < 0 or b > 255 then return end
     if not selectEmotes[slot] or selectEmotes[slot] == "" then return end
+    
+    if randomOptionEnabled then
+        SetRandomOption()
+    end
     
     local buf = buffer.create(2)
     buffer.writeu8(buf, 0, b)
@@ -476,49 +349,60 @@ end
 Tabs.EmoteChanger:Section({ Title = "Emote Changer", TextSize = 20 })
 Tabs.EmoteChanger:Paragraph({
     Title = "How to use",
-    Desc = "Current = emote you own | Select = animation to play\nNumpad 1-3 = switch option | L = toggle GUI"
+    Desc = "Current = emote you own | Select = animation to play"
 })
 Tabs.EmoteChanger:Divider()
 
+Tabs.EmoteChanger:Section({ Title = "Animation Options", TextSize = 16 })
+
+Tabs.EmoteChanger:Toggle({
+    Title = "Shuffle Animation (Like Zombie Stride)",
+    Desc = "Randomly picks Option 1, 2, or 3 each time you emote",
+    Value = randomOptionEnabled,
+    Callback = function(v)
+        randomOptionEnabled = v
+    end
+})
+
+Tabs.EmoteChanger:Dropdown({
+    Title = "Manual Animation Option",
+    Desc = "Only works when Shuffle is OFF",
+    Multi = false,
+    AllowNone = false,
+    Value = tostring(emoteOption),
+    Values = {"1", "2", "3"},
+    Callback = function(v)
+        SetEmoteOption(tonumber(v) or 1)
+    end
+})
+
+Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Emote Slots", TextSize = 16 })
+
 for i = 1, 6 do
+    Tabs.EmoteChanger:Paragraph({
+        Title = "Slot " .. i,
+        Desc = ""
+    })
+    
     currentEmoteInputs[i] = Tabs.EmoteChanger:Input({
         Title = "Current Emote " .. i,
-        Placeholder = "Enter emote name",
+        Placeholder = "Emote you own",
         Value = currentEmotes[i],
         Callback = function(v)
             currentEmotes[i] = v:gsub("%s+", "")
         end
     })
-end
-
-Tabs.EmoteChanger:Divider()
-
-for i = 1, 6 do
+    
     selectEmoteInputs[i] = Tabs.EmoteChanger:Input({
         Title = "Select Emote " .. i,
-        Placeholder = "Enter emote name",
+        Placeholder = "Animation to play",
         Value = selectEmotes[i],
         Callback = function(v)
             selectEmotes[i] = v:gsub("%s+", "")
         end
     })
 end
-
-Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Animation Option", TextSize = 16 })
-
-EmoteChangerEmoteOption = Tabs.EmoteChanger:Input({
-    Title = "Emote Option (1-3)",
-    Placeholder = "1",
-    Value = tostring(emoteOption),
-    Callback = function(v)
-        SetEmoteOption(tonumber(v) or 1)
-    end
-})
-
-Tabs.EmoteChanger:Button({ Title = "Option 1", Icon = "hash", Callback = function() SetEmoteOption(1) end })
-Tabs.EmoteChanger:Button({ Title = "Option 2", Icon = "hash", Callback = function() SetEmoteOption(2) end })
-Tabs.EmoteChanger:Button({ Title = "Option 3", Icon = "hash", Callback = function() SetEmoteOption(3) end })
 
 Tabs.EmoteChanger:Divider()
 
@@ -556,15 +440,15 @@ Tabs.EmoteChanger:Button({
 -- EMOTE LIST TAB
 -- ═══════════════════════════════════════════════════════════════
 
-Tabs.EmoteList:Section({ Title = "📋 Emote List", TextSize = 20 })
+Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
 Tabs.EmoteList:Paragraph({
     Title = "All Available Emotes",
-    Desc = "Click any emote to copy its name to clipboard"
+    Desc = "Click any emote to copy its name"
 })
 Tabs.EmoteList:Divider()
 
 Tabs.EmoteList:Button({
-    Title = "🔄 Refresh Emote List",
+    Title = "Refresh Emote List",
     Icon = "refresh-cw",
     Callback = function()
         ScanEmotes()
@@ -578,14 +462,13 @@ Tabs.EmoteList:Button({
 
 Tabs.EmoteList:Divider()
 
--- Load emotes
 task.spawn(function()
     task.wait(1)
     ScanEmotes()
     
     Tabs.EmoteList:Paragraph({
-        Title = "📊 Found " .. #allEmotes .. " emotes",
-        Desc = "Click to copy name"
+        Title = "Found " .. #allEmotes .. " emotes",
+        Desc = "Click to copy"
     })
     
     Tabs.EmoteList:Divider()
@@ -669,24 +552,14 @@ Tabs.Settings:Button({
 Tabs.Settings:Divider()
 
 Tabs.Settings:Paragraph({
-    Title = "Keybinds",
-    Desc = "L = Toggle GUI\nNumpad 1 = Option 1\nNumpad 2 = Option 2\nNumpad 3 = Option 3"
-})
-
--- You can also change the toggle key here if you want
-Tabs.Settings:Keybind({
-    Title = "Toggle GUI Key",
-    Value = "L",
-    Callback = function(key)
-        Window:SetToggleKey(Enum.KeyCode[key])
-    end
+    Title = "Info",
+    Desc = "Press L to toggle the UI"
 })
 
 -- ═══════════════════════════════════════════════════════════════
 -- INITIALIZE
 -- ═══════════════════════════════════════════════════════════════
 
-CreateIndicatorGUI()
 SetupEmoteConnections()
 
 task.spawn(function()
@@ -709,6 +582,5 @@ task.spawn(function()
     end
 end)
 
-print("✅ Visual Emote Changer Loaded!")
-print("   L = Toggle GUI")
-print("   Numpad 1-3 = Switch animation option")
+print("Visual Emote Changer Loaded!")
+print("Press L to toggle UI")
