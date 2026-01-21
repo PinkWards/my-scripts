@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 -- Mesh IDs
@@ -15,6 +16,7 @@ local COLORS = {
 local currentColor = COLORS.WHITE
 local isWhite = true
 local isApplying = false
+local scriptEnabled = true
 
 -- Store connections for cleanup
 local korbloxConnections = {}
@@ -27,14 +29,18 @@ local function makeHeadless(character)
     local head = character:FindFirstChild("Head")
     if not head then return end
 
+    -- Only hide the head mesh itself
     head.Transparency = 1
     head.CanCollide = false
 
+    -- Only remove the face decal, nothing else
     for _, child in ipairs(head:GetChildren()) do
         if child:IsA("Decal") and child.Name == "face" then
             child:Destroy()
         end
     end
+    
+    -- Accessories (hair, hats, etc.) are NOT touched - they stay visible
 end
 
 local function applyKorbloxLeg(character)
@@ -95,12 +101,70 @@ end
 
 local function applyEffects(character)
     if not character then return end
+    if not scriptEnabled then return end
     
     local humanoid = character:FindFirstChild("Humanoid")
     if not humanoid then return end
     
     makeHeadless(character)
     applyKorbloxLeg(character)
+end
+
+local function checkAndReapply()
+    if not scriptEnabled then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return end
+    
+    local needsHeadless = false
+    local needsKorblox = false
+    
+    -- Check if headless is still applied (only check head, not accessories)
+    local head = character:FindFirstChild("Head")
+    if head and head.Transparency ~= 1 then
+        needsHeadless = true
+    end
+    
+    -- Check for face decal reappearing
+    if head then
+        for _, child in ipairs(head:GetChildren()) do
+            if child:IsA("Decal") and child.Name == "face" then
+                needsHeadless = true
+                break
+            end
+        end
+    end
+    
+    -- Check if korblox is still applied
+    local rightLeg
+    if humanoid.RigType == Enum.HumanoidRigType.R15 then
+        rightLeg = character:FindFirstChild("RightUpperLeg")
+        
+        -- Also check lower leg visibility
+        local lowerLeg = character:FindFirstChild("RightLowerLeg")
+        local foot = character:FindFirstChild("RightFoot")
+        if (lowerLeg and lowerLeg.Transparency ~= 1) or (foot and foot.Transparency ~= 1) then
+            needsKorblox = true
+        end
+    else
+        rightLeg = character:FindFirstChild("Right Leg")
+    end
+    
+    if rightLeg and not rightLeg:FindFirstChild("KorbloxMesh") then
+        needsKorblox = true
+    end
+    
+    -- Reapply if needed
+    if needsHeadless then
+        makeHeadless(character)
+    end
+    
+    if needsKorblox then
+        applyKorbloxLeg(character)
+    end
 end
 
 local function updateColor()
@@ -126,8 +190,22 @@ local function updateColor()
 end
 
 local function setupCharacter(character)
-    task.wait(0.5)
+    task.wait(0.3)
     applyEffects(character)
+    
+    -- Watch for character changes (parts being modified)
+    local function onDescendantAdded(descendant)
+        task.wait(0.1)
+        -- Only react to mesh/part changes, not accessories
+        if descendant:IsA("SpecialMesh") or (descendant:IsA("Decal") and descendant.Name == "face") then
+            checkAndReapply()
+        end
+        if descendant.Name == "RightUpperLeg" or descendant.Name == "RightLowerLeg" or descendant.Name == "RightFoot" or descendant.Name == "Right Leg" then
+            checkAndReapply()
+        end
+    end
+    
+    character.DescendantAdded:Connect(onDescendantAdded)
 end
 
 -----------------------
@@ -327,49 +405,86 @@ korbloxConnections.characterAdded = player.CharacterAdded:Connect(function(chara
     setupCharacter(character)
 end)
 
--- Evade round detection
+-----------------------
+-- CONTINUOUS MONITORING LOOP
+-----------------------
+
 task.spawn(function()
-    local gameFolder = workspace:WaitForChild("Game", 10)
-    if not gameFolder then return end
-    
+    while scriptEnabled do
+        task.wait(0.5)
+        checkAndReapply()
+    end
+end)
+
+-----------------------
+-- EVADE SPECIFIC DETECTION
+-----------------------
+
+local function setupRoundDetection(gameFolder)
     local playersFolder = gameFolder:WaitForChild("Players", 10)
     if not playersFolder then return end
     
+    if korbloxConnections.roundDetect then
+        korbloxConnections.roundDetect:Disconnect()
+    end
+    
     korbloxConnections.roundDetect = playersFolder.ChildAdded:Connect(function(child)
         if child.Name == player.Name then
-            task.wait(0.5)
+            task.wait(0.3)
             if player.Character then
                 applyEffects(player.Character)
             end
         end
     end)
+    
+    local existingFolder = playersFolder:FindFirstChild(player.Name)
+    if existingFolder then
+        task.wait(0.3)
+        if player.Character then
+            applyEffects(player.Character)
+        end
+    end
+end
+
+task.spawn(function()
+    local gameFolder = workspace:FindFirstChild("Game") or workspace:WaitForChild("Game", 10)
+    if gameFolder then
+        setupRoundDetection(gameFolder)
+    end
 end)
 
--- Watch for Game folder recreation (map change)
 korbloxConnections.gameWatch = workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         task.spawn(function()
-            local playersFolder = child:WaitForChild("Players", 10)
-            if not playersFolder then return end
+            task.wait(0.5)
+            setupRoundDetection(child)
             
-            -- Disconnect old connection
-            if korbloxConnections.roundDetect then
-                korbloxConnections.roundDetect:Disconnect()
+            if player.Character then
+                applyEffects(player.Character)
             end
-            
-            korbloxConnections.roundDetect = playersFolder.ChildAdded:Connect(function(playerChild)
-                if playerChild.Name == player.Name then
-                    task.wait(0.5)
-                    if player.Character then
-                        applyEffects(player.Character)
-                    end
-                end
-            end)
         end)
     end
 end)
 
--- Apply now
+task.spawn(function()
+    while scriptEnabled do
+        local lobby = workspace:FindFirstChild("Lobby")
+        if lobby then
+            task.wait(1)
+            if player.Character then
+                checkAndReapply()
+            end
+        end
+        task.wait(2)
+    end
+end)
+
+-----------------------
+-- INITIAL APPLICATION
+-----------------------
+
 if player.Character then
     setupCharacter(player.Character)
 end
+
+print("[Korblox] Script loaded - Headless (head only) + Korblox leg!")
