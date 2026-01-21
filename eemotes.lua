@@ -38,6 +38,8 @@ local FeatureSection = Window:Section({ Title = "Features", Opened = true })
 local Tabs = {
     EmoteChanger = FeatureSection:Tab({ Title = "EmoteChanger", Icon = "smile" }),
     EmoteList = FeatureSection:Tab({ Title = "Emote List", Icon = "list" }),
+    Visuals = FeatureSection:Tab({ Title = "Visuals", Icon = "eye" }),
+    CosmeticList = FeatureSection:Tab({ Title = "Cosmetic List", Icon = "shirt" }),
     Settings = FeatureSection:Tab({ Title = "Settings", Icon = "settings" })
 }
 
@@ -66,6 +68,33 @@ local emoteConnections = {}
 
 local SAVE_FOLDER = "DaraHub"
 local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
+
+-- ═══════════════════════════════════════════════════════════════
+-- COSMETICS CHANGER VARIABLES
+-- ═══════════════════════════════════════════════════════════════
+
+local cosmetic1, cosmetic2 = "", ""
+local originalCosmetic1, originalCosmetic2 = "", ""
+local isSwapped = false
+local allCosmetics = {}
+local cosmeticRarities = {}
+
+-- Rarity definitions with colors for display
+local RARITY_INFO = {
+    ["Free"] = { Order = 1, Color = "⚪" },
+    ["Common"] = { Order = 2, Color = "⚪" },
+    ["Uncommon"] = { Order = 3, Color = "🟢" },
+    ["Rare"] = { Order = 4, Color = "🔵" },
+    ["Epic"] = { Order = 5, Color = "🟣" },
+    ["Legendary"] = { Order = 6, Color = "🟡" },
+    ["Mythic"] = { Order = 7, Color = "🔴" },
+    ["Admin"] = { Order = 8, Color = "⭐" },
+    ["Developer"] = { Order = 9, Color = "💎" },
+    ["Event"] = { Order = 10, Color = "🎃" },
+    ["Limited"] = { Order = 11, Color = "⏰" },
+    ["Exclusive"] = { Order = 12, Color = "👑" },
+    ["Unknown"] = { Order = 99, Color = "❓" }
+}
 
 -- ═══════════════════════════════════════════════════════════════
 -- MULTI-CONFIG SYSTEM
@@ -233,6 +262,267 @@ local function ScanEmotes()
         return a:lower() < b:lower()
     end)
     return allEmotes
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- COSMETICS SCANNER WITH RARITY DETECTION
+-- ═══════════════════════════════════════════════════════════════
+
+local function GetCosmeticRarity(cosmeticInstance)
+    -- Method 1: Check for Rarity attribute
+    local rarityAttr = cosmeticInstance:GetAttribute("Rarity")
+    if rarityAttr then
+        return tostring(rarityAttr)
+    end
+    
+    -- Method 2: Check for Rarity value object
+    local rarityValue = cosmeticInstance:FindFirstChild("Rarity")
+    if rarityValue and rarityValue:IsA("ValueBase") then
+        return tostring(rarityValue.Value)
+    end
+    
+    -- Method 3: Check for Type attribute (some games use this)
+    local typeAttr = cosmeticInstance:GetAttribute("Type")
+    if typeAttr then
+        return tostring(typeAttr)
+    end
+    
+    -- Method 4: Try to require and read from ModuleScript
+    if cosmeticInstance:IsA("ModuleScript") then
+        local success, data = pcall(function()
+            return require(cosmeticInstance)
+        end)
+        if success and type(data) == "table" then
+            if data.Rarity then return tostring(data.Rarity) end
+            if data.rarity then return tostring(data.rarity) end
+            if data.Type then return tostring(data.Type) end
+            if data.type then return tostring(data.type) end
+            if data.Tier then return tostring(data.Tier) end
+            if data.tier then return tostring(data.tier) end
+        end
+    end
+    
+    -- Method 5: Check parent folder name for rarity hints
+    local parent = cosmeticInstance.Parent
+    if parent then
+        local parentName = parent.Name:lower()
+        for rarity, _ in pairs(RARITY_INFO) do
+            if parentName:find(rarity:lower()) then
+                return rarity
+            end
+        end
+    end
+    
+    -- Method 6: Check cosmetic name for rarity keywords
+    local name = cosmeticInstance.Name:lower()
+    local rarityKeywords = {
+        ["admin"] = "Admin",
+        ["dev"] = "Developer",
+        ["developer"] = "Developer",
+        ["exclusive"] = "Exclusive",
+        ["limited"] = "Limited",
+        ["event"] = "Event",
+        ["halloween"] = "Event",
+        ["christmas"] = "Event",
+        ["mythic"] = "Mythic",
+        ["legendary"] = "Legendary",
+        ["epic"] = "Epic",
+        ["rare"] = "Rare",
+        ["uncommon"] = "Uncommon",
+        ["common"] = "Common",
+        ["free"] = "Free"
+    }
+    
+    for keyword, rarity in pairs(rarityKeywords) do
+        if name:find(keyword) then
+            return rarity
+        end
+    end
+    
+    return "Unknown"
+end
+
+local function ScanCosmetics()
+    allCosmetics = {}
+    cosmeticRarities = {}
+    
+    local cosmeticsFolder = ReplicatedStorage:FindFirstChild("Items")
+    if cosmeticsFolder then
+        cosmeticsFolder = cosmeticsFolder:FindFirstChild("Cosmetics")
+        if cosmeticsFolder then
+            for _, cosmetic in pairs(cosmeticsFolder:GetChildren()) do
+                local cosmeticName = cosmetic.Name
+                local rarity = GetCosmeticRarity(cosmetic)
+                
+                table.insert(allCosmetics, cosmeticName)
+                cosmeticRarities[cosmeticName] = rarity
+            end
+        end
+    end
+    
+    -- Sort by rarity first, then alphabetically
+    table.sort(allCosmetics, function(a, b)
+        local rarityA = cosmeticRarities[a] or "Unknown"
+        local rarityB = cosmeticRarities[b] or "Unknown"
+        local orderA = RARITY_INFO[rarityA] and RARITY_INFO[rarityA].Order or 99
+        local orderB = RARITY_INFO[rarityB] and RARITY_INFO[rarityB].Order or 99
+        
+        if orderA == orderB then
+            return a:lower() < b:lower()
+        end
+        return orderA < orderB
+    end)
+    
+    return allCosmetics
+end
+
+local function GetRarityDisplay(cosmeticName)
+    local rarity = cosmeticRarities[cosmeticName] or "Unknown"
+    local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+    return info.Color .. " [" .. rarity .. "]"
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- COSMETICS CHANGER FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
+
+local function normalize(str) 
+    return str:gsub("%s+", ""):lower() 
+end 
+
+local function levenshtein(s, t) 
+    local m, n = #s, #t 
+    local d = {} 
+    for i = 0, m do d[i] = {[0] = i} end 
+    for j = 0, n do d[0][j] = j end 
+    
+    for i = 1, m do 
+        for j = 1, n do 
+            local cost = (s:sub(i,i) == t:sub(j,j)) and 0 or 1 
+            d[i][j] = math.min( 
+                d[i-1][j] + 1, 
+                d[i][j-1] + 1, 
+                d[i-1][j-1] + cost 
+            ) 
+        end 
+    end 
+    return d[m][n] 
+end 
+
+local function similarity(s, t) 
+    local nS, nT = normalize(s), normalize(t) 
+    local dist = levenshtein(nS, nT) 
+    return 1 - dist / math.max(#nS, #nT) 
+end 
+
+local function findSimilarCosmetic(name) 
+    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
+    if Cosmetics then
+        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
+    end
+    if not Cosmetics then return name end
+    
+    local bestMatch = name 
+    local bestScore = 0.5 
+    for _, c in ipairs(Cosmetics:GetChildren()) do 
+        local score = similarity(name, c.Name) 
+        if score > bestScore then 
+            bestScore = score 
+            bestMatch = c.Name 
+        end 
+    end 
+    return bestMatch 
+end 
+
+local function SwapCosmetics()
+    if cosmetic1 == "" or cosmetic2 == "" or cosmetic1 == cosmetic2 then 
+        return false, "Please select two different cosmetics"
+    end
+    
+    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
+    if Cosmetics then
+        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
+    end
+    if not Cosmetics then 
+        return false, "Cosmetics folder not found"
+    end
+    
+    local matchedCosmetic1 = findSimilarCosmetic(cosmetic1) 
+    local matchedCosmetic2 = findSimilarCosmetic(cosmetic2) 
+    
+    local a = Cosmetics:FindFirstChild(matchedCosmetic1) 
+    local b = Cosmetics:FindFirstChild(matchedCosmetic2) 
+    if not a or not b then 
+        return false, "Could not find one or both cosmetics"
+    end 
+    
+    if not isSwapped then
+        originalCosmetic1 = matchedCosmetic1
+        originalCosmetic2 = matchedCosmetic2
+    end
+    
+    local tempRoot = Instance.new("Folder", Cosmetics) 
+    tempRoot.Name = "__temp_swap_" .. tostring(tick()):gsub("%.", "_") 
+    
+    local tempA = Instance.new("Folder", tempRoot) 
+    local tempB = Instance.new("Folder", tempRoot) 
+    
+    for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end 
+    for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end 
+    
+    for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end 
+    for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end 
+    
+    tempRoot:Destroy()
+    
+    cosmetic1 = matchedCosmetic1
+    cosmetic2 = matchedCosmetic2
+    isSwapped = true
+    
+    return true, "Successfully swapped " .. matchedCosmetic1 .. " with " .. matchedCosmetic2
+end
+
+local function ResetCosmetics()
+    if not isSwapped then
+        return false, "No cosmetics have been swapped yet"
+    end
+    
+    if originalCosmetic1 == "" or originalCosmetic2 == "" then
+        return false, "Original cosmetic names not found"
+    end
+    
+    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
+    if Cosmetics then
+        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
+    end
+    if not Cosmetics then 
+        return false, "Cosmetics folder not found"
+    end
+    
+    local a = Cosmetics:FindFirstChild(cosmetic1) 
+    local b = Cosmetics:FindFirstChild(cosmetic2) 
+    
+    if a and b then
+        local tempRoot = Instance.new("Folder", Cosmetics) 
+        tempRoot.Name = "__temp_reset_" .. tostring(tick()):gsub("%.", "_") 
+        
+        local tempA = Instance.new("Folder", tempRoot) 
+        local tempB = Instance.new("Folder", tempRoot) 
+        
+        for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end 
+        for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end 
+        
+        for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end 
+        for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end 
+        
+        tempRoot:Destroy()
+        
+        isSwapped = false
+        
+        return true, "Successfully reset cosmetics to original state"
+    else
+        return false, "Could not find swapped cosmetics to reset"
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -581,6 +871,215 @@ task.spawn(function()
         
         if i % 25 == 0 then
             task.wait()
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- VISUALS TAB - COSMETICS CHANGER
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.Visuals:Section({ Title = "Cosmetics Changer", TextSize = 20 })
+Tabs.Visuals:Paragraph({
+    Title = "How to use",
+    Desc = "Swap cosmetic appearances (visual only, client-side)"
+})
+Tabs.Visuals:Divider()
+
+-- Cosmetic dropdowns
+local cosmeticNames = {}
+task.spawn(function()
+    task.wait(0.5)
+    ScanCosmetics()
+    cosmeticNames = allCosmetics
+end)
+
+local cosmetic1Dropdown = nil
+local cosmetic2Dropdown = nil
+
+Tabs.Visuals:Section({ Title = "Select Cosmetics", TextSize = 16 })
+
+Tabs.Visuals:Input({
+    Title = "Current Cosmetic (Your Owned)",
+    Placeholder = "Enter cosmetic name or use list below",
+    Callback = function(v) 
+        cosmetic1 = v
+        if not isSwapped then
+            originalCosmetic1 = v
+        end
+    end
+})
+
+Tabs.Visuals:Input({
+    Title = "Target Cosmetic (Want to look like)",
+    Placeholder = "Enter cosmetic name or use list below",
+    Callback = function(v) 
+        cosmetic2 = v
+        if not isSwapped then
+            originalCosmetic2 = v
+        end
+    end
+})
+
+Tabs.Visuals:Divider()
+
+Tabs.Visuals:Button({
+    Title = "Apply Cosmetics Swap",
+    Icon = "check",
+    Callback = function()
+        local success, msg = SwapCosmetics()
+        WindUI:Notify({
+            Title = "Cosmetics Changer",
+            Content = msg,
+            Duration = 3
+        })
+    end
+})
+
+Tabs.Visuals:Button({
+    Title = "Reset Cosmetics",
+    Desc = "Restore cosmetics to their original state",
+    Icon = "rotate-ccw",
+    Callback = function()
+        local success, msg = ResetCosmetics()
+        WindUI:Notify({
+            Title = "Cosmetics Changer",
+            Content = msg,
+            Duration = 3
+        })
+    end
+})
+
+Tabs.Visuals:Divider()
+
+Tabs.Visuals:Paragraph({
+    Title = "Status",
+    Desc = "Use the Cosmetic List tab to browse and select cosmetics with rarity tags"
+})
+
+-- ═══════════════════════════════════════════════════════════════
+-- COSMETIC LIST TAB
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.CosmeticList:Section({ Title = "Cosmetic List", TextSize = 20 })
+Tabs.CosmeticList:Paragraph({
+    Title = "All Available Cosmetics",
+    Desc = "Click any cosmetic to copy its name. Sorted by rarity."
+})
+Tabs.CosmeticList:Divider()
+
+-- Rarity Legend
+Tabs.CosmeticList:Section({ Title = "Rarity Legend", TextSize = 14 })
+Tabs.CosmeticList:Paragraph({
+    Title = "Rarity Colors",
+    Desc = "⚪ Common/Free | 🟢 Uncommon | 🔵 Rare | 🟣 Epic\n🟡 Legendary | 🔴 Mythic | ⭐ Admin | 💎 Developer\n🎃 Event | ⏰ Limited | 👑 Exclusive | ❓ Unknown"
+})
+Tabs.CosmeticList:Divider()
+
+-- Filter by rarity
+local selectedRarityFilter = "All"
+Tabs.CosmeticList:Dropdown({
+    Title = "Filter by Rarity",
+    Multi = false,
+    AllowNone = false,
+    Value = "All",
+    Values = {"All", "Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Admin", "Developer", "Event", "Limited", "Exclusive", "Unknown"},
+    Callback = function(v)
+        selectedRarityFilter = v
+        WindUI:Notify({
+            Title = "Filter",
+            Content = "Filtering by: " .. v .. "\nRefresh to apply",
+            Duration = 2
+        })
+    end
+})
+
+Tabs.CosmeticList:Button({
+    Title = "Refresh Cosmetic List",
+    Icon = "refresh-cw",
+    Callback = function()
+        ScanCosmetics()
+        
+        local rarityCount = {}
+        for _, cosmeticName in ipairs(allCosmetics) do
+            local rarity = cosmeticRarities[cosmeticName] or "Unknown"
+            rarityCount[rarity] = (rarityCount[rarity] or 0) + 1
+        end
+        
+        local summary = "Found " .. #allCosmetics .. " cosmetics!\n"
+        for rarity, count in pairs(rarityCount) do
+            local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+            summary = summary .. info.Color .. " " .. rarity .. ": " .. count .. "\n"
+        end
+        
+        WindUI:Notify({
+            Title = "Cosmetics",
+            Content = summary,
+            Duration = 4
+        })
+    end
+})
+
+Tabs.CosmeticList:Divider()
+
+-- Cosmetic list container
+local cosmeticListContainer = Tabs.CosmeticList:Section({ Title = "Cosmetics", TextSize = 16 })
+
+task.spawn(function()
+    task.wait(1.5)
+    ScanCosmetics()
+    
+    local countParagraph = Tabs.CosmeticList:Paragraph({
+        Title = "Found " .. #allCosmetics .. " cosmetics",
+        Desc = "Click to copy, sorted by rarity"
+    })
+    
+    Tabs.CosmeticList:Divider()
+    
+    -- Group by rarity
+    local cosmeticsByRarity = {}
+    for _, cosmeticName in ipairs(allCosmetics) do
+        local rarity = cosmeticRarities[cosmeticName] or "Unknown"
+        if not cosmeticsByRarity[rarity] then
+            cosmeticsByRarity[rarity] = {}
+        end
+        table.insert(cosmeticsByRarity[rarity], cosmeticName)
+    end
+    
+    -- Create sections for each rarity
+    local rarityOrder = {"Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Admin", "Developer", "Event", "Limited", "Exclusive", "Unknown"}
+    
+    for _, rarity in ipairs(rarityOrder) do
+        local cosmetics = cosmeticsByRarity[rarity]
+        if cosmetics and #cosmetics > 0 then
+            local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+            
+            Tabs.CosmeticList:Section({ 
+                Title = info.Color .. " " .. rarity .. " (" .. #cosmetics .. ")", 
+                TextSize = 14 
+            })
+            
+            for i, cosmeticName in ipairs(cosmetics) do
+                Tabs.CosmeticList:Button({
+                    Title = cosmeticName,
+                    Desc = GetRarityDisplay(cosmeticName),
+                    Icon = "copy",
+                    Callback = function()
+                        if setclipboard then
+                            setclipboard(cosmeticName)
+                            WindUI:Notify({
+                                Title = "Copied!",
+                                Content = cosmeticName .. " " .. GetRarityDisplay(cosmeticName),
+                                Duration = 1.5
+                            })
+                        end
+                    end
+                })
+                
+                if i % 20 == 0 then
+                    task.wait()
+                end
+            end
         end
     end
 end)
