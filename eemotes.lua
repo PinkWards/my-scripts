@@ -78,167 +78,233 @@ local originalCosmetic1, originalCosmetic2 = "", ""
 local isSwapped = false
 local allCosmetics = {}
 local cosmeticRarities = {}
+local cosmeticPrices = {}
 
--- Rarity definitions with colors for display
+-- Rarity based on price ranges
 local RARITY_INFO = {
-    ["Free"] = { Order = 1, Color = "⚪" },
-    ["Common"] = { Order = 2, Color = "⚪" },
-    ["Uncommon"] = { Order = 3, Color = "🟢" },
-    ["Rare"] = { Order = 4, Color = "🔵" },
-    ["Epic"] = { Order = 5, Color = "🟣" },
-    ["Legendary"] = { Order = 6, Color = "🟡" },
-    ["Mythic"] = { Order = 7, Color = "🔴" },
-    ["Admin"] = { Order = 8, Color = "⭐" },
-    ["Developer"] = { Order = 9, Color = "💎" },
-    ["Event"] = { Order = 10, Color = "🎃" },
-    ["Limited"] = { Order = 11, Color = "⏰" },
-    ["Exclusive"] = { Order = 12, Color = "👑" },
+    ["Free"] = { Order = 1, Color = "⚪", MinPrice = 0, MaxPrice = 0 },
+    ["Common"] = { Order = 2, Color = "⚪", MinPrice = 1, MaxPrice = 500 },
+    ["Uncommon"] = { Order = 3, Color = "🟢", MinPrice = 501, MaxPrice = 1500 },
+    ["Rare"] = { Order = 4, Color = "🔵", MinPrice = 1501, MaxPrice = 5000 },
+    ["Epic"] = { Order = 5, Color = "🟣", MinPrice = 5001, MaxPrice = 15000 },
+    ["Legendary"] = { Order = 6, Color = "🟡", MinPrice = 15001, MaxPrice = 50000 },
+    ["Mythic"] = { Order = 7, Color = "🔴", MinPrice = 50001, MaxPrice = 150000 },
+    ["Divine"] = { Order = 8, Color = "💎", MinPrice = 150001, MaxPrice = 999999999 },
+    ["Admin"] = { Order = 9, Color = "⭐" },
     ["Unknown"] = { Order = 99, Color = "❓" }
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- MULTI-CONFIG SYSTEM
+-- COSMETICS SCANNER WITH PRICE-BASED RARITY
 -- ═══════════════════════════════════════════════════════════════
 
-local allConfigs = {}
-local currentConfigName = ""
-local configDropdown = nil
-local configButtons = {}
-
-local function EnsureFolder()
-    if not isfolder(SAVE_FOLDER) then
-        makefolder(SAVE_FOLDER)
-    end
-end
-
-local function GetConfigNames()
-    local names = {}
-    for name, _ in pairs(allConfigs) do
-        table.insert(names, name)
-    end
-    table.sort(names, function(a, b)
-        return a:lower() < b:lower()
-    end)
-    return names
-end
-
-local function SaveAllConfigs()
-    EnsureFolder()
-    local data = {
-        configs = allConfigs,
-        lastUsed = currentConfigName
-    }
-    local success = pcall(function()
-        writefile(CONFIGS_FILE, HttpService:JSONEncode(data))
-    end)
-    return success
-end
-
-local function LoadAllConfigs()
-    if not isfile(CONFIGS_FILE) then
-        return false
+local function GetCosmeticPrice(cosmeticInstance)
+    local price = nil
+    
+    -- Method 1: Check for Price/Cost attribute
+    price = cosmeticInstance:GetAttribute("Price")
+    if price then return tonumber(price) end
+    
+    price = cosmeticInstance:GetAttribute("Cost")
+    if price then return tonumber(price) end
+    
+    -- Method 2: Check for Price/Cost value object
+    local priceValue = cosmeticInstance:FindFirstChild("Price")
+    if priceValue and priceValue:IsA("ValueBase") then
+        return tonumber(priceValue.Value)
     end
     
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIGS_FILE))
-    end)
-    
-    if success and result and result.configs then
-        allConfigs = result.configs
-        currentConfigName = result.lastUsed or ""
-        return true
+    local costValue = cosmeticInstance:FindFirstChild("Cost")
+    if costValue and costValue:IsA("ValueBase") then
+        return tonumber(costValue.Value)
     end
+    
+    -- Method 3: Try to require ModuleScript and read price
+    if cosmeticInstance:IsA("ModuleScript") then
+        local success, data = pcall(function()
+            return require(cosmeticInstance)
+        end)
+        if success and type(data) == "table" then
+            -- Check various common price field names
+            if data.Price then return tonumber(data.Price) end
+            if data.price then return tonumber(data.price) end
+            if data.Cost then return tonumber(data.Cost) end
+            if data.cost then return tonumber(data.cost) end
+            if data.Coins then return tonumber(data.Coins) end
+            if data.coins then return tonumber(data.coins) end
+            if data.Money then return tonumber(data.Money) end
+            if data.money then return tonumber(data.money) end
+            if data.Value then return tonumber(data.Value) end
+            if data.value then return tonumber(data.value) end
+        end
+    end
+    
+    -- Method 4: Check children for ModuleScript with price data
+    for _, child in pairs(cosmeticInstance:GetChildren()) do
+        if child:IsA("ModuleScript") then
+            local success, data = pcall(function()
+                return require(child)
+            end)
+            if success and type(data) == "table" then
+                if data.Price then return tonumber(data.Price) end
+                if data.price then return tonumber(data.price) end
+                if data.Cost then return tonumber(data.Cost) end
+                if data.cost then return tonumber(data.cost) end
+            end
+        end
+    end
+    
+    return nil
+end
+
+local function GetRarityFromPrice(price)
+    if price == nil then
+        return "Unknown"
+    end
+    
+    price = tonumber(price) or 0
+    
+    if price == 0 then
+        return "Free"
+    elseif price <= 500 then
+        return "Common"
+    elseif price <= 1500 then
+        return "Uncommon"
+    elseif price <= 5000 then
+        return "Rare"
+    elseif price <= 15000 then
+        return "Epic"
+    elseif price <= 50000 then
+        return "Legendary"
+    elseif price <= 150000 then
+        return "Mythic"
+    else
+        return "Divine"
+    end
+end
+
+local function CheckIfAdmin(cosmeticInstance)
+    -- Check if it's an admin/special cosmetic
+    local name = cosmeticInstance.Name:lower()
+    local adminKeywords = {"admin", "dev", "developer", "mod", "moderator", "staff", "owner", "vip", "exclusive"}
+    
+    for _, keyword in ipairs(adminKeywords) do
+        if name:find(keyword) then
+            return true
+        end
+    end
+    
+    -- Check for admin attribute
+    local isAdmin = cosmeticInstance:GetAttribute("Admin")
+    if isAdmin then return true end
+    
+    local isSpecial = cosmeticInstance:GetAttribute("Special")
+    if isSpecial then return true end
+    
+    -- Check in module data
+    if cosmeticInstance:IsA("ModuleScript") then
+        local success, data = pcall(function()
+            return require(cosmeticInstance)
+        end)
+        if success and type(data) == "table" then
+            if data.Admin or data.admin then return true end
+            if data.Special or data.special then return true end
+            if data.Developer or data.developer then return true end
+            if data.Gamepass or data.gamepass then return true end
+            if data.Robux or data.robux then return true end
+        end
+    end
+    
     return false
 end
 
-local function CreateConfig(name)
-    if name == "" then return false, "Name cannot be empty" end
-    if allConfigs[name] then return false, "Config already exists" end
+local function ScanCosmetics()
+    allCosmetics = {}
+    cosmeticRarities = {}
+    cosmeticPrices = {}
     
-    allConfigs[name] = {
-        currentEmotes = {"", "", "", "", "", ""},
-        selectEmotes = {"", "", "", "", "", ""},
-        emoteOption = 1,
-        randomOptionEnabled = true
-    }
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Config created"
-end
-
-local function SaveToConfig(name)
-    if name == "" then return false, "No config selected" end
-    
-    allConfigs[name] = {
-        currentEmotes = table.clone(currentEmotes),
-        selectEmotes = table.clone(selectEmotes),
-        emoteOption = emoteOption,
-        randomOptionEnabled = randomOptionEnabled
-    }
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Saved to " .. name
-end
-
-local function LoadFromConfig(name)
-    if not allConfigs[name] then return false, "Config not found" end
-    
-    local config = allConfigs[name]
-    for i = 1, 6 do
-        currentEmotes[i] = (config.currentEmotes and config.currentEmotes[i]) or ""
-        selectEmotes[i] = (config.selectEmotes and config.selectEmotes[i]) or ""
+    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
+    if Cosmetics then
+        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
     end
-    emoteOption = config.emoteOption or 1
-    if config.randomOptionEnabled ~= nil then
-        randomOptionEnabled = config.randomOptionEnabled
+    
+    if not Cosmetics then
+        warn("Could not find ReplicatedStorage.Items.Cosmetics")
+        return allCosmetics
     end
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Loaded " .. name
+    
+    for _, cosmetic in pairs(Cosmetics:GetChildren()) do
+        local cosmeticName = cosmetic.Name
+        local price = GetCosmeticPrice(cosmetic)
+        local rarity
+        
+        -- Check if it's admin/special first
+        if CheckIfAdmin(cosmetic) then
+            rarity = "Admin"
+        else
+            rarity = GetRarityFromPrice(price)
+        end
+        
+        table.insert(allCosmetics, cosmeticName)
+        cosmeticRarities[cosmeticName] = rarity
+        cosmeticPrices[cosmeticName] = price or 0
+    end
+    
+    -- Sort by price (highest first), then alphabetically
+    table.sort(allCosmetics, function(a, b)
+        local priceA = cosmeticPrices[a] or 0
+        local priceB = cosmeticPrices[b] or 0
+        
+        -- Sort by rarity order first
+        local rarityA = cosmeticRarities[a] or "Unknown"
+        local rarityB = cosmeticRarities[b] or "Unknown"
+        local orderA = RARITY_INFO[rarityA] and RARITY_INFO[rarityA].Order or 99
+        local orderB = RARITY_INFO[rarityB] and RARITY_INFO[rarityB].Order or 99
+        
+        if orderA == orderB then
+            -- Same rarity, sort by price (highest first)
+            if priceA == priceB then
+                return a:lower() < b:lower()
+            end
+            return priceA > priceB
+        end
+        return orderA < orderB
+    end)
+    
+    return allCosmetics
 end
 
-local function RenameConfig(oldName, newName)
-    if oldName == "" then return false, "No config selected" end
-    if newName == "" then return false, "New name cannot be empty" end
-    if not allConfigs[oldName] then return false, "Config not found" end
-    if allConfigs[newName] then return false, "Name already exists" end
+local function GetRarityDisplay(cosmeticName)
+    local rarity = cosmeticRarities[cosmeticName] or "Unknown"
+    local price = cosmeticPrices[cosmeticName] or 0
+    local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
     
-    allConfigs[newName] = allConfigs[oldName]
-    allConfigs[oldName] = nil
-    if currentConfigName == oldName then
-        currentConfigName = newName
+    local priceStr = ""
+    if price > 0 then
+        -- Format price with commas
+        local formatted = tostring(price)
+        while true do
+            formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+            if k == 0 then break end
+        end
+        priceStr = " - 💰" .. formatted
+    elseif price == 0 and rarity ~= "Unknown" then
+        priceStr = " - FREE"
     end
-    SaveAllConfigs()
-    return true, "Renamed to " .. newName
+    
+    return info.Color .. " [" .. rarity .. "]" .. priceStr
 end
 
-local function DeleteConfig(name)
-    if name == "" then return false, "No config selected" end
-    if not allConfigs[name] then return false, "Config not found" end
-    
-    allConfigs[name] = nil
-    if currentConfigName == name then
-        currentConfigName = ""
+local function FormatPrice(price)
+    if not price or price == 0 then
+        return "Free"
     end
-    SaveAllConfigs()
-    return true, "Deleted " .. name
-end
-
-local function DuplicateConfig(name, newName)
-    if name == "" then return false, "No config selected" end
-    if newName == "" then return false, "New name cannot be empty" end
-    if not allConfigs[name] then return false, "Config not found" end
-    if allConfigs[newName] then return false, "Name already exists" end
-    
-    local original = allConfigs[name]
-    allConfigs[newName] = {
-        currentEmotes = table.clone(original.currentEmotes),
-        selectEmotes = table.clone(original.selectEmotes),
-        emoteOption = original.emoteOption,
-        randomOptionEnabled = original.randomOptionEnabled
-    }
-    SaveAllConfigs()
-    return true, "Duplicated as " .. newName
+    local formatted = tostring(price)
+    while true do
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return formatted
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -964,125 +1030,311 @@ Tabs.Visuals:Paragraph({
 Tabs.CosmeticList:Section({ Title = "Cosmetic List", TextSize = 20 })
 Tabs.CosmeticList:Paragraph({
     Title = "All Available Cosmetics",
-    Desc = "Click any cosmetic to copy its name. Sorted by rarity."
+    Desc = "Click any cosmetic to copy its name. Sorted by rarity/price."
 })
 Tabs.CosmeticList:Divider()
 
 -- Rarity Legend
-Tabs.CosmeticList:Section({ Title = "Rarity Legend", TextSize = 14 })
+Tabs.CosmeticList:Section({ Title = "Rarity Legend (By Price)", TextSize = 14 })
 Tabs.CosmeticList:Paragraph({
-    Title = "Rarity Colors",
-    Desc = "⚪ Common/Free | 🟢 Uncommon | 🔵 Rare | 🟣 Epic\n🟡 Legendary | 🔴 Mythic | ⭐ Admin | 💎 Developer\n🎃 Event | ⏰ Limited | 👑 Exclusive | ❓ Unknown"
+    Title = "Price Ranges",
+    Desc = "⚪ Free: 0 | ⚪ Common: 1-500 | 🟢 Uncommon: 501-1,500\n🔵 Rare: 1,501-5,000 | 🟣 Epic: 5,001-15,000\n🟡 Legendary: 15,001-50,000 | 🔴 Mythic: 50,001-150,000\n💎 Divine: 150,001+ | ⭐ Admin/Special"
 })
 Tabs.CosmeticList:Divider()
 
 -- Filter by rarity
 local selectedRarityFilter = "All"
-Tabs.CosmeticList:Dropdown({
+local rarityFilterDropdown = Tabs.CosmeticList:Dropdown({
     Title = "Filter by Rarity",
     Multi = false,
     AllowNone = false,
     Value = "All",
-    Values = {"All", "Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Admin", "Developer", "Event", "Limited", "Exclusive", "Unknown"},
+    Values = {"All", "Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Divine", "Admin", "Unknown"},
     Callback = function(v)
         selectedRarityFilter = v
         WindUI:Notify({
             Title = "Filter",
-            Content = "Filtering by: " .. v .. "\nRefresh to apply",
+            Content = "Filter set to: " .. v,
             Duration = 2
         })
     end
 })
 
-Tabs.CosmeticList:Button({
-    Title = "Refresh Cosmetic List",
-    Icon = "refresh-cw",
-    Callback = function()
-        ScanCosmetics()
-        
-        local rarityCount = {}
-        for _, cosmeticName in ipairs(allCosmetics) do
-            local rarity = cosmeticRarities[cosmeticName] or "Unknown"
-            rarityCount[rarity] = (rarityCount[rarity] or 0) + 1
-        end
-        
-        local summary = "Found " .. #allCosmetics .. " cosmetics!\n"
-        for rarity, count in pairs(rarityCount) do
-            local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
-            summary = summary .. info.Color .. " " .. rarity .. ": " .. count .. "\n"
-        end
-        
-        WindUI:Notify({
-            Title = "Cosmetics",
-            Content = summary,
-            Duration = 4
-        })
+-- Sort options
+local sortByPrice = true
+Tabs.CosmeticList:Toggle({
+    Title = "Sort by Price (Highest First)",
+    Desc = "When OFF, sorts alphabetically within each rarity",
+    Value = true,
+    Callback = function(v)
+        sortByPrice = v
     end
 })
 
 Tabs.CosmeticList:Divider()
 
--- Cosmetic list container
-local cosmeticListContainer = Tabs.CosmeticList:Section({ Title = "Cosmetics", TextSize = 16 })
+local cosmeticCountParagraph = Tabs.CosmeticList:Paragraph({
+    Title = "Cosmetics",
+    Desc = "Press 'Scan Cosmetics' to load..."
+})
 
-task.spawn(function()
-    task.wait(1.5)
-    ScanCosmetics()
-    
-    local countParagraph = Tabs.CosmeticList:Paragraph({
-        Title = "Found " .. #allCosmetics .. " cosmetics",
-        Desc = "Click to copy, sorted by rarity"
-    })
-    
-    Tabs.CosmeticList:Divider()
-    
-    -- Group by rarity
-    local cosmeticsByRarity = {}
-    for _, cosmeticName in ipairs(allCosmetics) do
-        local rarity = cosmeticRarities[cosmeticName] or "Unknown"
-        if not cosmeticsByRarity[rarity] then
-            cosmeticsByRarity[rarity] = {}
-        end
-        table.insert(cosmeticsByRarity[rarity], cosmeticName)
-    end
-    
-    -- Create sections for each rarity
-    local rarityOrder = {"Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Admin", "Developer", "Event", "Limited", "Exclusive", "Unknown"}
-    
-    for _, rarity in ipairs(rarityOrder) do
-        local cosmetics = cosmeticsByRarity[rarity]
-        if cosmetics and #cosmetics > 0 then
-            local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+Tabs.CosmeticList:Button({
+    Title = "Scan Cosmetics",
+    Icon = "search",
+    Callback = function()
+        WindUI:Notify({
+            Title = "Scanning...",
+            Content = "Please wait...",
+            Duration = 1
+        })
+        
+        task.spawn(function()
+            ScanCosmetics()
             
-            Tabs.CosmeticList:Section({ 
-                Title = info.Color .. " " .. rarity .. " (" .. #cosmetics .. ")", 
-                TextSize = 14 
+            -- Count by rarity
+            local rarityCount = {}
+            local totalValue = 0
+            for _, cosmeticName in ipairs(allCosmetics) do
+                local rarity = cosmeticRarities[cosmeticName] or "Unknown"
+                rarityCount[rarity] = (rarityCount[rarity] or 0) + 1
+                totalValue = totalValue + (cosmeticPrices[cosmeticName] or 0)
+            end
+            
+            local summary = "Found " .. #allCosmetics .. " cosmetics!\nTotal Value: 💰" .. FormatPrice(totalValue) .. "\n\n"
+            
+            local rarityOrder = {"Free", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Divine", "Admin", "Unknown"}
+            for _, rarity in ipairs(rarityOrder) do
+                local count = rarityCount[rarity]
+                if count then
+                    local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+                    summary = summary .. info.Color .. " " .. rarity .. ": " .. count .. "\n"
+                end
+            end
+            
+            pcall(function()
+                cosmeticCountParagraph:SetDesc(summary)
+            end)
+            
+            WindUI:Notify({
+                Title = "Cosmetics Scanned!",
+                Content = "Found " .. #allCosmetics .. " cosmetics",
+                Duration = 3
             })
+        end)
+    end
+})
+
+Tabs.CosmeticList:Button({
+    Title = "Copy All Cosmetic Names",
+    Icon = "clipboard",
+    Callback = function()
+        if #allCosmetics == 0 then
+            WindUI:Notify({
+                Title = "Error",
+                Content = "Scan cosmetics first!",
+                Duration = 2
+            })
+            return
+        end
+        
+        local text = "=== COSMETICS LIST ===\n\n"
+        
+        local rarityOrder = {"Divine", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common", "Free", "Admin", "Unknown"}
+        for _, rarity in ipairs(rarityOrder) do
+            local cosmeticsInRarity = {}
+            for _, name in ipairs(allCosmetics) do
+                if cosmeticRarities[name] == rarity then
+                    table.insert(cosmeticsInRarity, name)
+                end
+            end
             
-            for i, cosmeticName in ipairs(cosmetics) do
-                Tabs.CosmeticList:Button({
-                    Title = cosmeticName,
-                    Desc = GetRarityDisplay(cosmeticName),
-                    Icon = "copy",
-                    Callback = function()
-                        if setclipboard then
-                            setclipboard(cosmeticName)
-                            WindUI:Notify({
-                                Title = "Copied!",
-                                Content = cosmeticName .. " " .. GetRarityDisplay(cosmeticName),
-                                Duration = 1.5
-                            })
-                        end
-                    end
-                })
-                
-                if i % 20 == 0 then
-                    task.wait()
+            if #cosmeticsInRarity > 0 then
+                local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+                text = text .. "\n" .. info.Color .. " " .. rarity:upper() .. " (" .. #cosmeticsInRarity .. "):\n"
+                for _, name in ipairs(cosmeticsInRarity) do
+                    local price = cosmeticPrices[name] or 0
+                    text = text .. "  • " .. name .. " - " .. FormatPrice(price) .. "\n"
                 end
             end
         end
+        
+        if setclipboard then
+            setclipboard(text)
+            WindUI:Notify({
+                Title = "Copied!",
+                Content = "All cosmetic names copied to clipboard!",
+                Duration = 2
+            })
+        end
     end
-end)
+})
+
+Tabs.CosmeticList:Divider()
+
+-- Search
+local searchQuery = ""
+Tabs.CosmeticList:Input({
+    Title = "Search Cosmetics",
+    Placeholder = "Type to search...",
+    Callback = function(v)
+        searchQuery = v:lower()
+    end
+})
+
+Tabs.CosmeticList:Button({
+    Title = "Show Filtered Results",
+    Icon = "filter",
+    Callback = function()
+        if #allCosmetics == 0 then
+            WindUI:Notify({
+                Title = "Error",
+                Content = "Scan cosmetics first!",
+                Duration = 2
+            })
+            return
+        end
+        
+        local filtered = {}
+        for _, name in ipairs(allCosmetics) do
+            local rarity = cosmeticRarities[name] or "Unknown"
+            local matchesRarity = (selectedRarityFilter == "All") or (rarity == selectedRarityFilter)
+            local matchesSearch = (searchQuery == "") or (name:lower():find(searchQuery, 1, true))
+            
+            if matchesRarity and matchesSearch then
+                table.insert(filtered, name)
+            end
+        end
+        
+        if #filtered == 0 then
+            WindUI:Notify({
+                Title = "No Results",
+                Content = "No cosmetics match your filter",
+                Duration = 2
+            })
+            return
+        end
+        
+        local resultText = "Found " .. #filtered .. " matching cosmetics:\n\n"
+        for i, name in ipairs(filtered) do
+            if i <= 20 then
+                resultText = resultText .. GetRarityDisplay(name) .. " " .. name .. "\n"
+            end
+        end
+        if #filtered > 20 then
+            resultText = resultText .. "\n... and " .. (#filtered - 20) .. " more"
+        end
+        
+        WindUI:Notify({
+            Title = "Search Results",
+            Content = resultText,
+            Duration = 8
+        })
+    end
+})
+
+Tabs.CosmeticList:Divider()
+Tabs.CosmeticList:Section({ Title = "Cosmetic Browser", TextSize = 16 })
+
+-- This will be populated when scanning
+local cosmeticButtonsCreated = false
+
+Tabs.CosmeticList:Button({
+    Title = "Load Cosmetic List (May Lag)",
+    Desc = "Creates clickable buttons for each cosmetic",
+    Icon = "list",
+    Callback = function()
+        if #allCosmetics == 0 then
+            WindUI:Notify({
+                Title = "Error",
+                Content = "Scan cosmetics first!",
+                Duration = 2
+            })
+            return
+        end
+        
+        if cosmeticButtonsCreated then
+            WindUI:Notify({
+                Title = "Already Loaded",
+                Content = "Cosmetic list already created!",
+                Duration = 2
+            })
+            return
+        end
+        
+        WindUI:Notify({
+            Title = "Loading...",
+            Content = "Creating " .. #allCosmetics .. " buttons...",
+            Duration = 2
+        })
+        
+        task.spawn(function()
+            local rarityOrder = {"Divine", "Mythic", "Legendary", "Epic", "Rare", "Uncommon", "Common", "Free", "Admin", "Unknown"}
+            
+            for _, rarity in ipairs(rarityOrder) do
+                local cosmeticsInRarity = {}
+                for _, name in ipairs(allCosmetics) do
+                    if cosmeticRarities[name] == rarity then
+                        table.insert(cosmeticsInRarity, name)
+                    end
+                end
+                
+                if #cosmeticsInRarity > 0 then
+                    local info = RARITY_INFO[rarity] or RARITY_INFO["Unknown"]
+                    
+                    Tabs.CosmeticList:Section({ 
+                        Title = info.Color .. " " .. rarity .. " (" .. #cosmeticsInRarity .. ")", 
+                        TextSize = 14 
+                    })
+                    
+                    -- Sort by price within rarity
+                    table.sort(cosmeticsInRarity, function(a, b)
+                        local priceA = cosmeticPrices[a] or 0
+                        local priceB = cosmeticPrices[b] or 0
+                        if priceA == priceB then
+                            return a:lower() < b:lower()
+                        end
+                        return priceA > priceB
+                    end)
+                    
+                    for i, cosmeticName in ipairs(cosmeticsInRarity) do
+                        local price = cosmeticPrices[cosmeticName] or 0
+                        local priceText = price > 0 and ("💰 " .. FormatPrice(price)) or "FREE"
+                        
+                        Tabs.CosmeticList:Button({
+                            Title = cosmeticName,
+                            Desc = info.Color .. " " .. rarity .. " | " .. priceText,
+                            Icon = "copy",
+                            Callback = function()
+                                if setclipboard then
+                                    setclipboard(cosmeticName)
+                                    WindUI:Notify({
+                                        Title = "Copied!",
+                                        Content = cosmeticName .. "\n" .. priceText,
+                                        Duration = 1.5
+                                    })
+                                end
+                            end
+                        })
+                        
+                        if i % 15 == 0 then
+                            task.wait()
+                        end
+                    end
+                    
+                    task.wait()
+                end
+            end
+            
+            cosmeticButtonsCreated = true
+            
+            WindUI:Notify({
+                Title = "Complete!",
+                Content = "All cosmetics loaded!",
+                Duration = 2
+            })
+        end)
+    end
+})
 
 -- ═══════════════════════════════════════════════════════════════
 -- SETTINGS TAB - MULTI CONFIG SYSTEM
