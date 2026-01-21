@@ -65,7 +65,152 @@ local allEmotes = {}
 local emoteConnections = {}
 
 local SAVE_FOLDER = "DaraHub"
-local SAVE_FILE = SAVE_FOLDER .. "/EmoteConfig.json"
+local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
+
+-- ═══════════════════════════════════════════════════════════════
+-- MULTI-CONFIG SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local allConfigs = {}
+local currentConfigName = ""
+local configDropdown = nil
+local configButtons = {}
+
+local function EnsureFolder()
+    if not isfolder(SAVE_FOLDER) then
+        makefolder(SAVE_FOLDER)
+    end
+end
+
+local function GetConfigNames()
+    local names = {}
+    for name, _ in pairs(allConfigs) do
+        table.insert(names, name)
+    end
+    table.sort(names, function(a, b)
+        return a:lower() < b:lower()
+    end)
+    return names
+end
+
+local function SaveAllConfigs()
+    EnsureFolder()
+    local data = {
+        configs = allConfigs,
+        lastUsed = currentConfigName
+    }
+    local success = pcall(function()
+        writefile(CONFIGS_FILE, HttpService:JSONEncode(data))
+    end)
+    return success
+end
+
+local function LoadAllConfigs()
+    if not isfile(CONFIGS_FILE) then
+        return false
+    end
+    
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIGS_FILE))
+    end)
+    
+    if success and result and result.configs then
+        allConfigs = result.configs
+        currentConfigName = result.lastUsed or ""
+        return true
+    end
+    return false
+end
+
+local function CreateConfig(name)
+    if name == "" then return false, "Name cannot be empty" end
+    if allConfigs[name] then return false, "Config already exists" end
+    
+    allConfigs[name] = {
+        currentEmotes = {"", "", "", "", "", ""},
+        selectEmotes = {"", "", "", "", "", ""},
+        emoteOption = 1,
+        randomOptionEnabled = true
+    }
+    currentConfigName = name
+    SaveAllConfigs()
+    return true, "Config created"
+end
+
+local function SaveToConfig(name)
+    if name == "" then return false, "No config selected" end
+    
+    allConfigs[name] = {
+        currentEmotes = table.clone(currentEmotes),
+        selectEmotes = table.clone(selectEmotes),
+        emoteOption = emoteOption,
+        randomOptionEnabled = randomOptionEnabled
+    }
+    currentConfigName = name
+    SaveAllConfigs()
+    return true, "Saved to " .. name
+end
+
+local function LoadFromConfig(name)
+    if not allConfigs[name] then return false, "Config not found" end
+    
+    local config = allConfigs[name]
+    for i = 1, 6 do
+        currentEmotes[i] = (config.currentEmotes and config.currentEmotes[i]) or ""
+        selectEmotes[i] = (config.selectEmotes and config.selectEmotes[i]) or ""
+    end
+    emoteOption = config.emoteOption or 1
+    if config.randomOptionEnabled ~= nil then
+        randomOptionEnabled = config.randomOptionEnabled
+    end
+    currentConfigName = name
+    SaveAllConfigs()
+    return true, "Loaded " .. name
+end
+
+local function RenameConfig(oldName, newName)
+    if oldName == "" then return false, "No config selected" end
+    if newName == "" then return false, "New name cannot be empty" end
+    if not allConfigs[oldName] then return false, "Config not found" end
+    if allConfigs[newName] then return false, "Name already exists" end
+    
+    allConfigs[newName] = allConfigs[oldName]
+    allConfigs[oldName] = nil
+    if currentConfigName == oldName then
+        currentConfigName = newName
+    end
+    SaveAllConfigs()
+    return true, "Renamed to " .. newName
+end
+
+local function DeleteConfig(name)
+    if name == "" then return false, "No config selected" end
+    if not allConfigs[name] then return false, "Config not found" end
+    
+    allConfigs[name] = nil
+    if currentConfigName == name then
+        currentConfigName = ""
+    end
+    SaveAllConfigs()
+    return true, "Deleted " .. name
+end
+
+local function DuplicateConfig(name, newName)
+    if name == "" then return false, "No config selected" end
+    if newName == "" then return false, "New name cannot be empty" end
+    if not allConfigs[name] then return false, "Config not found" end
+    if allConfigs[newName] then return false, "Name already exists" end
+    
+    local original = allConfigs[name]
+    allConfigs[newName] = {
+        currentEmotes = table.clone(original.currentEmotes),
+        selectEmotes = table.clone(original.selectEmotes),
+        emoteOption = original.emoteOption,
+        randomOptionEnabled = original.randomOptionEnabled
+    }
+    SaveAllConfigs()
+    return true, "Duplicated as " .. newName
+end
 
 -- ═══════════════════════════════════════════════════════════════
 -- EMOTE SCANNER
@@ -135,61 +280,6 @@ local function SetupEmoteConnections()
             end
         end
     end)
-end
-
--- ═══════════════════════════════════════════════════════════════
--- CONFIG FUNCTIONS
--- ═══════════════════════════════════════════════════════════════
-
-local function EnsureFolder()
-    if not isfolder(SAVE_FOLDER) then
-        makefolder(SAVE_FOLDER)
-    end
-end
-
-local function SaveConfig()
-    EnsureFolder()
-    local config = {
-        currentEmotes = currentEmotes,
-        selectEmotes = selectEmotes,
-        emoteOption = emoteOption,
-        randomOptionEnabled = randomOptionEnabled
-    }
-    local success = pcall(function()
-        writefile(SAVE_FILE, HttpService:JSONEncode(config))
-    end)
-    return success
-end
-
-local function LoadConfig()
-    if not isfile(SAVE_FILE) then
-        return false
-    end
-    
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(readfile(SAVE_FILE))
-    end)
-    
-    if success and result then
-        for i = 1, 6 do
-            currentEmotes[i] = (result.currentEmotes and result.currentEmotes[i]) or ""
-            selectEmotes[i] = (result.selectEmotes and result.selectEmotes[i]) or ""
-        end
-        emoteOption = result.emoteOption or 1
-        if result.randomOptionEnabled ~= nil then
-            randomOptionEnabled = result.randomOptionEnabled
-        end
-        return true
-    end
-    return false
-end
-
-local function DeleteConfig()
-    if isfile(SAVE_FILE) then
-        delfile(SAVE_FILE)
-        return true
-    end
-    return false
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -355,7 +445,7 @@ Tabs.EmoteChanger:Divider()
 
 Tabs.EmoteChanger:Section({ Title = "Animation Options", TextSize = 16 })
 
-Tabs.EmoteChanger:Toggle({
+local shuffleToggle = Tabs.EmoteChanger:Toggle({
     Title = "Shuffle Animation (Like Zombie Stride)",
     Desc = "Randomly picks Option 1, 2, or 3 each time you emote",
     Value = randomOptionEnabled,
@@ -364,7 +454,7 @@ Tabs.EmoteChanger:Toggle({
     end
 })
 
-Tabs.EmoteChanger:Dropdown({
+local manualDropdown = Tabs.EmoteChanger:Dropdown({
     Title = "Manual Animation Option",
     Desc = "Only works when Shuffle is OFF",
     Multi = false,
@@ -496,30 +586,138 @@ task.spawn(function()
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- SETTINGS TAB
+-- SETTINGS TAB - MULTI CONFIG SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
-Tabs.Settings:Section({ Title = "Configuration", TextSize = 20 })
+Tabs.Settings:Section({ Title = "Config Profiles", TextSize = 20 })
+Tabs.Settings:Paragraph({
+    Title = "Manage Multiple Configs",
+    Desc = "Create configs for different accounts (Main, Alt, etc.)"
+})
 Tabs.Settings:Divider()
 
-Tabs.Settings:Button({
-    Title = "Save Config",
-    Icon = "save",
-    Callback = function()
-        local success = SaveConfig()
-        WindUI:Notify({
-            Title = "Config",
-            Content = success and "Saved!" or "Failed!",
-            Duration = 1
-        })
+-- Current config display
+local currentConfigDisplay = Tabs.Settings:Paragraph({
+    Title = "Current Config",
+    Desc = "None selected"
+})
+
+local function UpdateConfigDisplay()
+    pcall(function()
+        currentConfigDisplay:SetDesc(currentConfigName ~= "" and currentConfigName or "None selected")
+    end)
+end
+
+-- Config selector dropdown
+Tabs.Settings:Section({ Title = "Select Config", TextSize = 16 })
+
+local function RefreshConfigDropdown()
+    local names = GetConfigNames()
+    if #names == 0 then
+        names = {"No configs yet"}
+    end
+    if configDropdown then
+        pcall(function()
+            configDropdown:Refresh(names, true)
+            if currentConfigName ~= "" and allConfigs[currentConfigName] then
+                configDropdown:Set(currentConfigName)
+            end
+        end)
+    end
+end
+
+configDropdown = Tabs.Settings:Dropdown({
+    Title = "Choose Config",
+    Desc = "Select a config to load",
+    Multi = false,
+    AllowNone = true,
+    Value = "",
+    Values = {"No configs yet"},
+    Callback = function(selected)
+        if selected and selected ~= "No configs yet" and allConfigs[selected] then
+            local success, msg = LoadFromConfig(selected)
+            if success then
+                -- Update UI with loaded values
+                for i = 1, 6 do
+                    pcall(function()
+                        if currentEmoteInputs[i] then currentEmoteInputs[i]:Set(currentEmotes[i]) end
+                        if selectEmoteInputs[i] then selectEmoteInputs[i]:Set(selectEmotes[i]) end
+                    end)
+                end
+                SetEmoteOption(emoteOption)
+                pcall(function()
+                    shuffleToggle:Set(randomOptionEnabled)
+                    manualDropdown:Set(tostring(emoteOption))
+                end)
+                ApplyEmotes()
+                UpdateConfigDisplay()
+                WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
+            end
+        end
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Create new config
+Tabs.Settings:Section({ Title = "Create New Config", TextSize = 16 })
+
+local newConfigName = ""
+Tabs.Settings:Input({
+    Title = "New Config Name",
+    Placeholder = "Enter name (e.g., Main, Alt1, Alt2)",
+    Value = "",
+    Callback = function(v)
+        newConfigName = v
     end
 })
 
 Tabs.Settings:Button({
-    Title = "Load Config",
-    Icon = "download",
+    Title = "Create New Config",
+    Icon = "plus",
     Callback = function()
-        local success = LoadConfig()
+        if newConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "Enter a config name!", Duration = 2 })
+            return
+        end
+        local success, msg = CreateConfig(newConfigName)
+        if success then
+            RefreshConfigDropdown()
+            UpdateConfigDisplay()
+            WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
+        else
+            WindUI:Notify({ Title = "Error", Content = msg, Duration = 2 })
+        end
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Save/Load/Delete current config
+Tabs.Settings:Section({ Title = "Current Config Actions", TextSize = 16 })
+
+Tabs.Settings:Button({
+    Title = "Save to Current Config",
+    Icon = "save",
+    Callback = function()
+        if currentConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "Select or create a config first!", Duration = 2 })
+            return
+        end
+        local success, msg = SaveToConfig(currentConfigName)
+        WindUI:Notify({ Title = "Config", Content = success and msg or "Failed to save!", Duration = 2 })
+    end
+})
+
+Tabs.Settings:Button({
+    Title = "Reload Current Config",
+    Icon = "refresh-cw",
+    Callback = function()
+        if currentConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 })
+            return
+        end
+        local success, msg = LoadFromConfig(currentConfigName)
         if success then
             for i = 1, 6 do
                 pcall(function()
@@ -528,24 +726,166 @@ Tabs.Settings:Button({
                 end)
             end
             SetEmoteOption(emoteOption)
+            pcall(function()
+                shuffleToggle:Set(randomOptionEnabled)
+                manualDropdown:Set(tostring(emoteOption))
+            end)
             ApplyEmotes()
-            WindUI:Notify({ Title = "Config", Content = "Loaded!", Duration = 1 })
+            WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
+        end
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Rename config
+Tabs.Settings:Section({ Title = "Rename Config", TextSize = 16 })
+
+local renameInput = ""
+Tabs.Settings:Input({
+    Title = "New Name",
+    Placeholder = "Enter new name for current config",
+    Value = "",
+    Callback = function(v)
+        renameInput = v
+    end
+})
+
+Tabs.Settings:Button({
+    Title = "Rename Current Config",
+    Icon = "edit",
+    Callback = function()
+        if currentConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 })
+            return
+        end
+        if renameInput == "" then
+            WindUI:Notify({ Title = "Error", Content = "Enter a new name!", Duration = 2 })
+            return
+        end
+        local success, msg = RenameConfig(currentConfigName, renameInput)
+        if success then
+            RefreshConfigDropdown()
+            UpdateConfigDisplay()
+            WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
         else
-            WindUI:Notify({ Title = "Config", Content = "Not found!", Duration = 1 })
+            WindUI:Notify({ Title = "Error", Content = msg, Duration = 2 })
+        end
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Duplicate config
+Tabs.Settings:Section({ Title = "Duplicate Config", TextSize = 16 })
+
+local duplicateName = ""
+Tabs.Settings:Input({
+    Title = "Duplicate Name",
+    Placeholder = "Name for the copy",
+    Value = "",
+    Callback = function(v)
+        duplicateName = v
+    end
+})
+
+Tabs.Settings:Button({
+    Title = "Duplicate Current Config",
+    Icon = "copy",
+    Callback = function()
+        if currentConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 })
+            return
+        end
+        if duplicateName == "" then
+            WindUI:Notify({ Title = "Error", Content = "Enter a name for the copy!", Duration = 2 })
+            return
+        end
+        local success, msg = DuplicateConfig(currentConfigName, duplicateName)
+        if success then
+            RefreshConfigDropdown()
+            WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
+        else
+            WindUI:Notify({ Title = "Error", Content = msg, Duration = 2 })
+        end
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Delete config
+Tabs.Settings:Section({ Title = "Delete Config", TextSize = 16 })
+
+Tabs.Settings:Button({
+    Title = "Delete Current Config",
+    Icon = "trash",
+    Callback = function()
+        if currentConfigName == "" then
+            WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 })
+            return
+        end
+        local configToDelete = currentConfigName
+        local success, msg = DeleteConfig(configToDelete)
+        if success then
+            RefreshConfigDropdown()
+            UpdateConfigDisplay()
+            WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
+        else
+            WindUI:Notify({ Title = "Error", Content = msg, Duration = 2 })
         end
     end
 })
 
 Tabs.Settings:Button({
-    Title = "Delete Config",
-    Icon = "trash",
+    Title = "Delete ALL Configs",
+    Icon = "alert-triangle",
     Callback = function()
-        local success = DeleteConfig()
-        WindUI:Notify({
-            Title = "Config",
-            Content = success and "Deleted!" or "Not found!",
-            Duration = 1
-        })
+        allConfigs = {}
+        currentConfigName = ""
+        SaveAllConfigs()
+        RefreshConfigDropdown()
+        UpdateConfigDisplay()
+        WindUI:Notify({ Title = "Config", Content = "All configs deleted!", Duration = 2 })
+    end
+})
+
+Tabs.Settings:Divider()
+
+-- Config list display
+Tabs.Settings:Section({ Title = "All Saved Configs", TextSize = 16 })
+
+local configListParagraph = Tabs.Settings:Paragraph({
+    Title = "Configs",
+    Desc = "Loading..."
+})
+
+local function UpdateConfigList()
+    local names = GetConfigNames()
+    local listText = ""
+    if #names == 0 then
+        listText = "No configs saved yet"
+    else
+        for i, name in ipairs(names) do
+            if name == currentConfigName then
+                listText = listText .. "► " .. name .. " (active)\n"
+            else
+                listText = listText .. "• " .. name .. "\n"
+            end
+        end
+    end
+    pcall(function()
+        configListParagraph:SetDesc(listText)
+    end)
+end
+
+Tabs.Settings:Button({
+    Title = "Refresh Config List",
+    Icon = "refresh-cw",
+    Callback = function()
+        RefreshConfigDropdown()
+        UpdateConfigList()
+        UpdateConfigDisplay()
+        WindUI:Notify({ Title = "Refreshed", Content = "Config list updated!", Duration = 1 })
     end
 })
 
@@ -553,7 +893,7 @@ Tabs.Settings:Divider()
 
 Tabs.Settings:Paragraph({
     Title = "Info",
-    Desc = "Press L to toggle the UI"
+    Desc = "Press L to toggle the UI\nConfigs are saved to: " .. CONFIGS_FILE
 })
 
 -- ═══════════════════════════════════════════════════════════════
@@ -564,20 +904,43 @@ SetupEmoteConnections()
 
 task.spawn(function()
     task.wait(1)
-    if LoadConfig() then
-        for i = 1, 6 do
+    
+    -- Load configs
+    LoadAllConfigs()
+    RefreshConfigDropdown()
+    UpdateConfigList()
+    UpdateConfigDisplay()
+    
+    -- Auto-load last used config
+    if currentConfigName ~= "" and allConfigs[currentConfigName] then
+        local success = LoadFromConfig(currentConfigName)
+        if success then
+            for i = 1, 6 do
+                pcall(function()
+                    if currentEmoteInputs[i] then currentEmoteInputs[i]:Set(currentEmotes[i]) end
+                    if selectEmoteInputs[i] then selectEmoteInputs[i]:Set(selectEmotes[i]) end
+                end)
+            end
+            SetEmoteOption(emoteOption)
             pcall(function()
-                if currentEmoteInputs[i] then currentEmoteInputs[i]:Set(currentEmotes[i]) end
-                if selectEmoteInputs[i] then selectEmoteInputs[i]:Set(selectEmotes[i]) end
+                shuffleToggle:Set(randomOptionEnabled)
+                manualDropdown:Set(tostring(emoteOption))
+                configDropdown:Set(currentConfigName)
             end)
+            task.wait(0.5)
+            ApplyEmotes()
+            UpdateConfigDisplay()
+            WindUI:Notify({
+                Title = "Emote Changer",
+                Content = "Loaded config: " .. currentConfigName,
+                Duration = 2
+            })
         end
-        SetEmoteOption(emoteOption)
-        task.wait(0.5)
-        ApplyEmotes()
+    else
         WindUI:Notify({
             Title = "Emote Changer",
-            Content = "Config auto-loaded!",
-            Duration = 2
+            Content = "Create a config in Settings tab!",
+            Duration = 3
         })
     end
 end)
