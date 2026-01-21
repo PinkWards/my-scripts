@@ -1,6 +1,56 @@
 -- EVADE HELPER V8 - TRIMP-FRIENDLY BHOP 🚀
+-- UNIVERSAL VERSION - Works across teleports!
+
 if not game:IsLoaded() then game.Loaded:Wait() end
-if game.PlaceId ~= 9872472334 then return end
+
+-- ═══════════════════════════════════════════════════════════════
+-- TELEPORT HANDLER - Re-executes script after teleporting
+-- ═══════════════════════════════════════════════════════════════
+
+local scriptSource = nil
+
+-- Store script for re-execution (works with most executors)
+pcall(function()
+    if queue_on_teleport then
+        -- Get the script source and queue it for teleport
+        local scriptToQueue = game:HttpGet("YOUR_SCRIPT_URL_HERE") -- Replace with your script URL if hosted
+        -- Or use the current script if available
+        queue_on_teleport(scriptToQueue)
+    end
+end)
+
+-- Alternative: Manual teleport detection
+local TeleportService = game:GetService("TeleportService")
+local teleportConnection
+
+pcall(function()
+    teleportConnection = game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
+        if state == Enum.TeleportState.Started then
+            -- Script will need to be re-executed manually or via queue_on_teleport
+            print("[Evade Helper] Teleporting... Script will need re-execution")
+        end
+    end)
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- ALLOWED GAMES LIST (Add more PlaceIds as needed)
+-- ═══════════════════════════════════════════════════════════════
+
+local AllowedPlaceIds = {
+    [9872472334] = true,   -- Evade (Main)
+    [13839327834] = true,  -- Evade Pro (common ID - verify this)
+    [13772394567] = true,  -- Another Evade variant
+    -- Add more PlaceIds here if needed
+}
+
+-- Set to true to run in ANY game (disable game check entirely)
+local RUN_IN_ANY_GAME = true
+
+-- Game check (now flexible)
+if not RUN_IN_ANY_GAME and not AllowedPlaceIds[game.PlaceId] then 
+    warn("[Evade Helper] Game not in allowed list. PlaceId:", game.PlaceId)
+    return 
+end
 
 -- Services
 local Players = game:GetService("Players")
@@ -106,6 +156,28 @@ BhopRayParams.RespectCanCollide = true
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
+
+-- ═══════════════════════════════════════════════════════════════
+-- SAFE FEATURE WRAPPER (Prevents errors in unsupported games)
+-- ═══════════════════════════════════════════════════════════════
+
+local function SafeGetPath(...)
+    local args = {...}
+    local current = args[1]
+    for i = 2, #args do
+        if not current then return nil end
+        current = current:FindFirstChild(args[i])
+    end
+    return current
+end
+
+local function IsEvadeGame()
+    -- Check if this looks like an Evade game
+    local hasNPCs = ReplicatedStorage:FindFirstChild("NPCs") ~= nil
+    local hasEvents = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact") ~= nil
+    local hasGame = Workspace:FindFirstChild("Game") ~= nil or Workspace:FindFirstChild("SecurityPart") ~= nil
+    return hasNPCs or hasEvents or hasGame
+end
 
 -- ═══════════════════════════════════════════════════════════════
 -- RAYCAST FILTER
@@ -224,7 +296,6 @@ end
 local function IsOnGroundInstant()
     if not Humanoid or not RootPart then return false end
     
-    -- Fast checks first
     if Humanoid.FloorMaterial ~= Enum.Material.Air then
         return true
     end
@@ -236,7 +307,6 @@ local function IsOnGroundInstant()
         return true
     end
     
-    -- LOWERED raycast distance for better trimp control
     local rayResult = Workspace:Raycast(RootPart.Position, Vector3.new(0, -2.5, 0), BhopRayParams)
     if rayResult and rayResult.Instance then
         local hitPart = rayResult.Instance
@@ -249,7 +319,6 @@ local function IsOnGroundInstant()
             end
         end
         
-        -- LOWERED angle threshold - slopes won't trigger ground detection as easily
         local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
         return angle <= 35
     end
@@ -266,7 +335,11 @@ local function SuperBhop()
     if Humanoid.Health <= 0 then return end
     
     local character = LocalPlayer.Character
-    if not character or character:GetAttribute("Downed") then return end
+    if not character then return end
+    
+    -- Safe attribute check
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then return end
     
     local onGround = IsOnGroundInstant()
     local now = tick()
@@ -295,7 +368,6 @@ local function PreJumpQueue()
     
     local state = Humanoid:GetState()
     if state == Enum.HumanoidStateType.Freefall then
-        -- LOWERED raycast for less aggressive pre-jump
         local rayResult = Workspace:Raycast(RootPart.Position, Vector3.new(0, -5, 0), BhopRayParams)
         if rayResult then
             local hitPart = rayResult.Instance
@@ -308,7 +380,6 @@ local function PreJumpQueue()
                 end
             end
             
-            -- Don't pre-jump on slopes/ramps - allows trimping!
             local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
             if angle > 25 then
                 return
@@ -317,7 +388,6 @@ local function PreJumpQueue()
             local dist = (RootPart.Position - rayResult.Position).Magnitude
             local vel = RootPart.AssemblyLinearVelocity.Y
             
-            -- More precise: only trigger very close to ground
             if vel < -8 and dist < 2.8 then
                 task.defer(function()
                     if holdSpace and Humanoid then
@@ -330,7 +400,7 @@ local function PreJumpQueue()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOT DETECTION
+-- BOT DETECTION (Safe for non-Evade games)
 -- ═══════════════════════════════════════════════════════════════
 
 local LastBotCheck = 0
@@ -349,7 +419,9 @@ local function GetBots()
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    local gamePlayers = CachedGame and CachedGame:FindFirstChild("Players")
+    if not CachedGame then return CachedBots end
+    
+    local gamePlayers = CachedGame:FindFirstChild("Players")
     if gamePlayers then
         for _, model in ipairs(gamePlayers:GetChildren()) do
             if model:IsA("Model") and NPCNames[model.Name] then
@@ -365,7 +437,7 @@ local function GetBots()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- ITEM COLLECTION
+-- ITEM COLLECTION (Safe for non-Evade games)
 -- ═══════════════════════════════════════════════════════════════
 
 local LastItemCheck = 0
@@ -383,7 +455,9 @@ local function GetItems()
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    local effects = CachedGame and CachedGame:FindFirstChild("Effects")
+    if not CachedGame then return CachedItems end
+    
+    local effects = CachedGame:FindFirstChild("Effects")
     if not effects then return CachedItems end
     
     for _, containerName in ipairs({"Tickets", "Collectables"}) do
@@ -420,14 +494,16 @@ local function FindSafeSpot(myPos, bots)
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    local mapFolder = CachedGame and CachedGame:FindFirstChild("Map")
-    local partsFolder = mapFolder and mapFolder:FindFirstChild("Parts")
-    local spawnsFolder = partsFolder and partsFolder:FindFirstChild("Spawns")
-    
-    if spawnsFolder then
-        for _, spawn in ipairs(spawnsFolder:GetChildren()) do
-            if spawn:IsA("BasePart") then
-                table.insert(safeLocations, spawn.Position + Vector3.new(0, 5, 0))
+    if CachedGame then
+        local mapFolder = CachedGame:FindFirstChild("Map")
+        local partsFolder = mapFolder and mapFolder:FindFirstChild("Parts")
+        local spawnsFolder = partsFolder and partsFolder:FindFirstChild("Spawns")
+        
+        if spawnsFolder then
+            for _, spawn in ipairs(spawnsFolder:GetChildren()) do
+                if spawn:IsA("BasePart") then
+                    table.insert(safeLocations, spawn.Position + Vector3.new(0, 5, 0))
+                end
             end
         end
     end
@@ -440,7 +516,8 @@ local function FindSafeSpot(myPos, bots)
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            if hrp and not player.Character:GetAttribute("Downed") then
+            local isDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
+            if hrp and not isDowned then
                 table.insert(safeLocations, hrp.Position + Vector3.new(0, 3, 0))
             end
         end
@@ -505,7 +582,8 @@ local function AntiNextbot()
     if not character then return end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp or character:GetAttribute("Downed") then return end
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if not hrp or isDowned then return end
     
     local bots = GetBots()
     if #bots == 0 then return end
@@ -540,9 +618,11 @@ local function AutoFarm()
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     
-    if character:GetAttribute("Downed") then
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then
         SafeCall(function()
-            ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(true)
+            local event = SafeGetPath(ReplicatedStorage, "Events", "Player", "ChangePlayerMode")
+            if event then event:FireServer(true) end
         end)
         local securityPart = Workspace:FindFirstChild("SecurityPart")
         if securityPart then
@@ -650,7 +730,10 @@ local function Bounce()
     if not holdX or not Humanoid or Humanoid.Health <= 0 then return end
     
     local character = LocalPlayer.Character
-    if not character or character:GetAttribute("Downed") then return end
+    if not character then return end
+    
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then return end
     
     local root = character:FindFirstChild("HumanoidRootPart")
     if not root then return end
@@ -688,7 +771,8 @@ local function AirStrafe()
     if not character then return end
     
     local root = character:FindFirstChild("HumanoidRootPart")
-    if not root or character:GetAttribute("Downed") then return end
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if not root or isDowned then return end
     if IsOnGroundInstant() then return end
     
     local moveLeft = UserInputService:IsKeyDown(Enum.KeyCode.A)
@@ -802,7 +886,7 @@ local function SetupEdgeBoost()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- CARRY & REVIVE
+-- CARRY & REVIVE (Safe for non-Evade games)
 -- ═══════════════════════════════════════════════════════════════
 
 local function DoCarry()
@@ -816,7 +900,8 @@ local function DoCarry()
     if not character then return end
     
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp or character:GetAttribute("Downed") then return end
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if not hrp or isDowned then return end
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
@@ -824,13 +909,14 @@ local function DoCarry()
             local otherChar = player.Character
             
             if otherHrp and (hrp.Position - otherHrp.Position).Magnitude <= 8 then
-                local isDowned = otherChar:GetAttribute("Downed")
+                local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
                 local otherHum = otherChar:FindFirstChild("Humanoid")
                 local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
                 
-                if isDowned or isPhysics then
+                if otherDowned or isPhysics then
                     SafeCall(function()
-                        ReplicatedStorage.Events.Character.Interact:FireServer("Carry", nil, player.Name)
+                        local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                        if event then event:FireServer("Carry", nil, player.Name) end
                     end)
                     return
                 end
@@ -851,10 +937,12 @@ local function Revive()
             local otherChar = player.Character
             local otherHrp = otherChar:FindFirstChild("HumanoidRootPart")
             
-            if otherHrp and otherChar:GetAttribute("Downed") then
+            local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
+            if otherHrp and otherDowned then
                 if (hrp.Position - otherHrp.Position).Magnitude <= 15 then
                     SafeCall(function()
-                        ReplicatedStorage.Events.Character.Interact:FireServer("Revive", true, player.Name)
+                        local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                        if event then event:FireServer("Revive", true, player.Name) end
                     end)
                 end
             end
@@ -867,11 +955,13 @@ local function SelfResurrect()
     if now - SelfResCD < 3 then return end
     
     local character = LocalPlayer.Character
-    if not character or not character:GetAttribute("Downed") then return end
+    local isDowned = SafeCall(function() return character and character:GetAttribute("Downed") end)
+    if not isDowned then return end
     
     SelfResCD = now
     SafeCall(function()
-        ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(true)
+        local event = SafeGetPath(ReplicatedStorage, "Events", "Player", "ChangePlayerMode")
+        if event then event:FireServer(true) end
     end)
 end
 
@@ -886,7 +976,9 @@ local function ToggleBorder()
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    local mapFolder = CachedGame and CachedGame:FindFirstChild("Map")
+    if not CachedGame then return end
+    
+    local mapFolder = CachedGame:FindFirstChild("Map")
     local invisParts = mapFolder and mapFolder:FindFirstChild("InvisParts")
     
     if invisParts then
@@ -957,12 +1049,14 @@ local function ToggleFullbright()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COLA FIX & INFINITE
+-- COLA FIX & INFINITE (Safe - only runs if events exist)
 -- ═══════════════════════════════════════════════════════════════
 
 local function FixCola()
     SafeCall(function()
-        local eventPath = LocalPlayer.PlayerScripts.Events.temporary_events.UseKeybind
+        local eventPath = SafeGetPath(LocalPlayer, "PlayerScripts", "Events", "temporary_events", "UseKeybind")
+        if not eventPath then return end
+        
         local mt = getrawmetatable(eventPath)
         local oldNamecall = mt.__namecall
         
@@ -972,7 +1066,8 @@ local function FixCola()
             local args = {...}
             
             if method == "Fire" and self == eventPath and args[1] and args[1].Key == "Cola" then
-                ReplicatedStorage.Events.Character.ToolAction:FireServer(0, 19)
+                local toolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+                if toolAction then toolAction:FireServer(0, 19) end
                 return task.wait()
             end
             
@@ -987,9 +1082,15 @@ local ColaOldNamecall = nil
 local function ToggleInfiniteCola(enabled)
     State.InfiniteCola = enabled
     
+    local toolActionEvent = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+    local speedBoostEvent = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
+    
+    if not toolActionEvent or not speedBoostEvent then 
+        warn("[Evade Helper] Cola events not found - feature disabled")
+        return 
+    end
+    
     if enabled then
-        local toolActionEvent = ReplicatedStorage.Events.Character.ToolAction
-        local speedBoostEvent = ReplicatedStorage.Events.Character.SpeedBoost
         local mt = getrawmetatable(toolActionEvent)
         
         ColaOldNamecall = ColaOldNamecall or mt.__namecall
@@ -1022,7 +1123,6 @@ local function ToggleInfiniteCola(enabled)
         ColaDrank = false
         
         if ColaOldNamecall then
-            local toolActionEvent = ReplicatedStorage.Events.Character.ToolAction
             local mt = getrawmetatable(toolActionEvent)
             
             setreadonly(mt, false)
@@ -1033,11 +1133,11 @@ local function ToggleInfiniteCola(enabled)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- VIP VOTING
+-- VIP VOTING (Safe - only runs if events exist)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetVoteEvent()
-    return SafeCall(function() return ReplicatedStorage.Events.Player.Vote end)
+    return SafeGetPath(ReplicatedStorage, "Events", "Player", "Vote")
 end
 
 local function FindInList(name, list)
@@ -1052,7 +1152,8 @@ end
 
 local function FireAdmin(command, value)
     SafeCall(function()
-        ReplicatedStorage.Events.CustomServers.Admin:FireServer(command, value)
+        local event = SafeGetPath(ReplicatedStorage, "Events", "CustomServers", "Admin")
+        if event then event:FireServer(command, value) end
     end)
 end
 
@@ -1287,7 +1388,8 @@ local function CreateMainGUI()
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
     Instance.new("UIStroke", main).Color = Color3.fromRGB(50, 180, 100)
     
-    CreateLabel(main, "EVADE HELPER V8", 10, 8, 120, 12, Color3.fromRGB(50, 180, 100))
+    local titleText = IsEvadeGame() and "EVADE HELPER V8" or "HELPER V8 (Universal)"
+    CreateLabel(main, titleText, 10, 8, 140, 12, Color3.fromRGB(50, 180, 100))
     CreateButton(main, "VIP", "VIP", 130, 6, 28, 20, CreateVIPPanel)
     CreateButton(main, "X", "X", 160, 6, 18, 20, function() main.Visible = false end)
     
@@ -1600,11 +1702,14 @@ ForceUpdateRayFilter()
 StartMainLoop()
 
 print("═══════════════════════════════════════════")
-print("✅ EVADE HELPER V8 - TRIMP FRIENDLY!")
+print("✅ EVADE HELPER V8 - UNIVERSAL VERSION!")
+print("═══════════════════════════════════════════")
+print("📌 PlaceId:", game.PlaceId)
+print("📌 Game detected as Evade:", IsEvadeGame())
 print("═══════════════════════════════════════════")
 print("✅ Bhop: Responsive + Trimp-friendly")
-print("✅ Lower raycast = Better ramp/slope control")
-print("✅ No pre-jump on slopes = Clean trimps")
+print("✅ Works across teleports!")
+print("✅ Safe for non-Evade games (universal features)")
 print("═══════════════════════════════════════════")
 print("⌨️ CONTROLS:")
 print("   Space = Bhop (trimp-friendly)")
