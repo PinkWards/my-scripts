@@ -1,58 +1,38 @@
--- EVADE HELPER V8 - TRIMP-FRIENDLY BHOP 🚀
--- UNIVERSAL VERSION - Works across teleports!
-
 if not game:IsLoaded() then game.Loaded:Wait() end
-
--- ═══════════════════════════════════════════════════════════════
--- TELEPORT HANDLER - Re-executes script after teleporting
--- ═══════════════════════════════════════════════════════════════
 
 local scriptSource = nil
 
--- Store script for re-execution (works with most executors)
 pcall(function()
     if queue_on_teleport then
-        -- Get the script source and queue it for teleport
-        local scriptToQueue = game:HttpGet("YOUR_SCRIPT_URL_HERE") -- Replace with your script URL if hosted
-        -- Or use the current script if available
+        local scriptToQueue = game:HttpGet("YOUR_SCRIPT_URL_HERE")
         queue_on_teleport(scriptToQueue)
     end
 end)
 
--- Alternative: Manual teleport detection
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
 
 pcall(function()
     teleportConnection = game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
         if state == Enum.TeleportState.Started then
-            -- Script will need to be re-executed manually or via queue_on_teleport
             print("[Evade Helper] Teleporting... Script will need re-execution")
         end
     end)
 end)
 
--- ═══════════════════════════════════════════════════════════════
--- ALLOWED GAMES LIST (Add more PlaceIds as needed)
--- ═══════════════════════════════════════════════════════════════
-
 local AllowedPlaceIds = {
-    [9872472334] = true,   -- Evade (Main)
-    [13839327834] = true,  -- Evade Pro (common ID - verify this)
-    [13772394567] = true,  -- Another Evade variant
-    -- Add more PlaceIds here if needed
+    [9872472334] = true,
+    [13839327834] = true,
+    [13772394567] = true,
 }
 
--- Set to true to run in ANY game (disable game check entirely)
 local RUN_IN_ANY_GAME = true
 
--- Game check (now flexible)
 if not RUN_IN_ANY_GAME and not AllowedPlaceIds[game.PlaceId] then 
     warn("[Evade Helper] Game not in allowed list. PlaceId:", game.PlaceId)
     return 
 end
 
--- Services
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -64,7 +44,6 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local Workspace = workspace
 
--- State Management
 local State = {
     Border = false,
     AntiNextbot = false,
@@ -96,11 +75,13 @@ local BounceConfig = {
 }
 
 local EdgeConfig = {
-    Boost = 12,
-    MinSpeed = 12,
-    Cooldown = 0.2,
-    MinEdge = 0.4,
-    LastTime = 0
+    Boost = 14,
+    MinSpeed = 8,
+    Cooldown = 0.12,
+    MinEdge = 0.3,
+    LastTime = 0,
+    DetectionRange = 2.5,
+    RayDepth = 5
 }
 
 local ColaConfig = {
@@ -108,21 +89,18 @@ local ColaConfig = {
     Duration = 3.5
 }
 
--- Character References
 local Humanoid, RootPart = nil, nil
 local GUI, VIPPanel, TimerGUI = nil, nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
--- Input States
 local holdQ, holdSpace, holdX = false, false, false
 
--- Timing
 local LastAntiCheck, LastCarry, LastBounce, AirEnd = 0, 0, 0, 0
 local LastVoteMap, LastVoteMode = 0, 0
 local SelfResCD = 0
 local LastRayFilterUpdate = 0
+local LastEdgeCheck = 0
 
--- Caches
 local CurrentTarget, FarmStart = nil, 0
 local ColaDrank = false
 local NPCNames = {}
@@ -133,22 +111,18 @@ local FullbrightEnabled = false
 local SavedLighting = nil
 local LastCamera = nil
 
--- Connections Storage
 local Connections = {}
 local EdgeTouchConnections = {}
 local CachedGame = nil
 local StateChangedConn = nil
 
--- Slider UI References
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
 local SliderMin, SliderMax = 1.0, 1.8
 
--- BHOP Variables
 local LastGroundState = false
 local LastJumpTick = 0
 local BHOP_COOLDOWN = 0
 
--- Raycast Parameters
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
 BhopRayParams.RespectCanCollide = true
@@ -156,10 +130,7 @@ BhopRayParams.RespectCanCollide = true
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
-
--- ═══════════════════════════════════════════════════════════════
--- SAFE FEATURE WRAPPER (Prevents errors in unsupported games)
--- ═══════════════════════════════════════════════════════════════
+EdgeRayParams.RespectCanCollide = true
 
 local function SafeGetPath(...)
     local args = {...}
@@ -172,16 +143,11 @@ local function SafeGetPath(...)
 end
 
 local function IsEvadeGame()
-    -- Check if this looks like an Evade game
     local hasNPCs = ReplicatedStorage:FindFirstChild("NPCs") ~= nil
     local hasEvents = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact") ~= nil
     local hasGame = Workspace:FindFirstChild("Game") ~= nil or Workspace:FindFirstChild("SecurityPart") ~= nil
     return hasNPCs or hasEvents or hasGame
 end
-
--- ═══════════════════════════════════════════════════════════════
--- RAYCAST FILTER
--- ═══════════════════════════════════════════════════════════════
 
 local function UpdateRayFilter()
     local now = tick()
@@ -217,10 +183,6 @@ local function ForceUpdateRayFilter()
     LastRayFilterUpdate = 0
     UpdateRayFilter()
 end
-
--- ═══════════════════════════════════════════════════════════════
--- UTILITY FUNCTIONS
--- ═══════════════════════════════════════════════════════════════
 
 local function SafeCall(func, ...)
     local success, result = pcall(func, ...)
@@ -289,10 +251,6 @@ local function LoadNPCs()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- GROUND DETECTION - TRIMP FRIENDLY
--- ═══════════════════════════════════════════════════════════════
-
 local function IsOnGroundInstant()
     if not Humanoid or not RootPart then return false end
     
@@ -326,10 +284,6 @@ local function IsOnGroundInstant()
     return false
 end
 
--- ═══════════════════════════════════════════════════════════════
--- BHOP SYSTEM - TRIMP FRIENDLY
--- ═══════════════════════════════════════════════════════════════
-
 local function SuperBhop()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -337,7 +291,6 @@ local function SuperBhop()
     local character = LocalPlayer.Character
     if not character then return end
     
-    -- Safe attribute check
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
     
@@ -399,10 +352,6 @@ local function PreJumpQueue()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- BOT DETECTION (Safe for non-Evade games)
--- ═══════════════════════════════════════════════════════════════
-
 local LastBotCheck = 0
 
 local function GetBots()
@@ -435,10 +384,6 @@ local function GetBots()
     
     return CachedBots
 end
-
--- ═══════════════════════════════════════════════════════════════
--- ITEM COLLECTION (Safe for non-Evade games)
--- ═══════════════════════════════════════════════════════════════
 
 local LastItemCheck = 0
 
@@ -482,10 +427,6 @@ local function GetItems()
     
     return CachedItems
 end
-
--- ═══════════════════════════════════════════════════════════════
--- SAFE SPOT FINDER
--- ═══════════════════════════════════════════════════════════════
 
 local function FindSafeSpot(myPos, bots)
     local safeLocations = {}
@@ -539,10 +480,6 @@ local function FindSafeSpot(myPos, bots)
     return bestLocation
 end
 
--- ═══════════════════════════════════════════════════════════════
--- TELEPORT
--- ═══════════════════════════════════════════════════════════════
-
 local function Teleport(pos)
     local character = LocalPlayer.Character
     if not character then return end
@@ -566,10 +503,6 @@ local function Teleport(pos)
         end
     end)
 end
-
--- ═══════════════════════════════════════════════════════════════
--- ANTI-NEXTBOT
--- ═══════════════════════════════════════════════════════════════
 
 local function AntiNextbot()
     if not State.AntiNextbot then return end
@@ -598,10 +531,6 @@ local function AntiNextbot()
         end
     end
 end
-
--- ═══════════════════════════════════════════════════════════════
--- AUTO FARM
--- ═══════════════════════════════════════════════════════════════
 
 local LastFarmTick = 0
 
@@ -695,10 +624,6 @@ local function AutoFarm()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- UPSIDE DOWN FIX
--- ═══════════════════════════════════════════════════════════════
-
 local function ToggleUpsideDownFix(enabled)
     State.UpsideDownFix = enabled
     
@@ -721,10 +646,6 @@ local function ToggleUpsideDownFix(enabled)
         end)
     end
 end
-
--- ═══════════════════════════════════════════════════════════════
--- BOUNCE (X KEY)
--- ═══════════════════════════════════════════════════════════════
 
 local function Bounce()
     if not holdX or not Humanoid or Humanoid.Health <= 0 then return end
@@ -759,10 +680,6 @@ local function Bounce()
     
     AirEnd = now + BounceConfig.AirDuration
 end
-
--- ═══════════════════════════════════════════════════════════════
--- AIR STRAFE
--- ═══════════════════════════════════════════════════════════════
 
 local function AirStrafe()
     if tick() > AirEnd then return end
@@ -806,16 +723,86 @@ local function AirStrafe()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- EDGE BOOST
--- ═══════════════════════════════════════════════════════════════
+local function DetectEdge(position, direction)
+    local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
+    if not centerRay then return false, nil end
+    
+    local checkPos = position + direction * EdgeConfig.DetectionRange
+    local edgeRay = Workspace:Raycast(checkPos, Vector3.new(0, -EdgeConfig.RayDepth - 2, 0), EdgeRayParams)
+    
+    if not edgeRay then
+        return true, centerRay.Position.Y
+    end
+    
+    local heightDiff = centerRay.Position.Y - edgeRay.Position.Y
+    if heightDiff >= EdgeConfig.MinEdge then
+        return true, centerRay.Position.Y
+    end
+    
+    return false, nil
+end
 
-local function EdgeBoostHandler(hit)
+local function ReactiveEdgeBoost()
+    if not State.EdgeBoost then return end
+    if not Humanoid or not RootPart then return end
+    if Humanoid.Health <= 0 then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then return end
+    
+    local now = tick()
+    if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
+    
+    local vel = RootPart.AssemblyLinearVelocity
+    local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
+    local horizontalSpeed = horizontalVel.Magnitude
+    
+    if horizontalSpeed < EdgeConfig.MinSpeed then return end
+    
+    local playerPos = RootPart.Position
+    local moveDir = horizontalVel.Unit
+    
+    local checkDirections = {
+        moveDir,
+        (moveDir + RootPart.CFrame.RightVector * 0.5).Unit,
+        (moveDir - RootPart.CFrame.RightVector * 0.5).Unit,
+        RootPart.CFrame.LookVector,
+        -RootPart.CFrame.LookVector,
+        RootPart.CFrame.RightVector,
+        -RootPart.CFrame.RightVector
+    }
+    
+    for _, dir in ipairs(checkDirections) do
+        local isEdge, groundY = DetectEdge(playerPos, dir)
+        
+        if isEdge and groundY then
+            local playerFeetY = playerPos.Y - (Humanoid.HipHeight + 0.5)
+            local heightAboveGround = playerFeetY - groundY
+            
+            if heightAboveGround < 1.5 and heightAboveGround > -0.5 then
+                local boostAmount = EdgeConfig.Boost
+                
+                if vel.Y < 0 then
+                    boostAmount = boostAmount * 1.2
+                end
+                
+                RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
+                EdgeConfig.LastTime = now
+                return
+            end
+        end
+    end
+end
+
+local function EdgeBoostTouchHandler(hit)
     if not State.EdgeBoost then return end
     if not hit or not hit.Parent then return end
     
     local character = LocalPlayer.Character
-    if not character or not Humanoid then return end
+    if not character or not Humanoid or not RootPart then return end
     if hit:IsDescendantOf(character) then return end
     
     local hitModel = hit:FindFirstAncestorOfClass("Model")
@@ -826,42 +813,44 @@ local function EdgeBoostHandler(hit)
         end
     end
     
-    if not hit.CanCollide or hit.Transparency > 0.9 or hit.Size.Magnitude < 1 then return end
+    if not hit.CanCollide or hit.Transparency > 0.9 or hit.Size.Magnitude < 0.5 then return end
     
     local now = tick()
     if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
     
-    local root = character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    
-    local vel = root.AssemblyLinearVelocity
+    local vel = RootPart.AssemblyLinearVelocity
     local horizontalSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
     
-    if horizontalSpeed < EdgeConfig.MinSpeed then return end
+    if horizontalSpeed < EdgeConfig.MinSpeed * 0.5 then return end
     
     local partTop = hit.Position.Y + (hit.Size.Y / 2)
-    local playerBottom = root.Position.Y - Humanoid.HipHeight
+    local playerBottom = RootPart.Position.Y - Humanoid.HipHeight
     
-    if playerBottom <= partTop then return end
-    
-    local foundEdge = false
+    local isNearEdge = false
+    local hitPos = hit.Position
     local directions = {
-        Vector3.new(2, 0, 0), Vector3.new(-2, 0, 0),
-        Vector3.new(0, 0, 2), Vector3.new(0, 0, -2)
+        Vector3.new(hit.Size.X/2 + 0.5, 0, 0),
+        Vector3.new(-hit.Size.X/2 - 0.5, 0, 0),
+        Vector3.new(0, 0, hit.Size.Z/2 + 0.5),
+        Vector3.new(0, 0, -hit.Size.Z/2 - 0.5)
     }
     
-    for _, dir in ipairs(directions) do
-        local origin = Vector3.new(hit.Position.X + dir.X, partTop + 2, hit.Position.Z + dir.Z)
-        local ray = Workspace:Raycast(origin, Vector3.new(0, -5, 0), EdgeRayParams)
+    for _, offset in ipairs(directions) do
+        local checkPos = Vector3.new(hitPos.X + offset.X, partTop + 1, hitPos.Z + offset.Z)
+        local ray = Workspace:Raycast(checkPos, Vector3.new(0, -3, 0), EdgeRayParams)
         
         if not ray or math.abs(partTop - ray.Position.Y) >= EdgeConfig.MinEdge then
-            foundEdge = true
-            break
+            local distToEdge = (RootPart.Position - Vector3.new(hitPos.X + offset.X, RootPart.Position.Y, hitPos.Z + offset.Z)).Magnitude
+            if distToEdge < EdgeConfig.DetectionRange + 1 then
+                isNearEdge = true
+                break
+            end
         end
     end
     
-    if foundEdge then
-        root.AssemblyLinearVelocity = Vector3.new(vel.X, vel.Y + EdgeConfig.Boost, vel.Z)
+    if isNearEdge then
+        local boostAmount = EdgeConfig.Boost * 0.8
+        RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
         EdgeConfig.LastTime = now
     end
 end
@@ -879,15 +868,11 @@ local function SetupEdgeBoost()
     
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
-            local conn = part.Touched:Connect(EdgeBoostHandler)
+            local conn = part.Touched:Connect(EdgeBoostTouchHandler)
             table.insert(EdgeTouchConnections, conn)
         end
     end
 end
-
--- ═══════════════════════════════════════════════════════════════
--- CARRY & REVIVE (Safe for non-Evade games)
--- ═══════════════════════════════════════════════════════════════
 
 local function DoCarry()
     if not holdQ then return end
@@ -964,10 +949,6 @@ local function SelfResurrect()
         if event then event:FireServer(true) end
     end)
 end
-
--- ═══════════════════════════════════════════════════════════════
--- TOGGLES
--- ═══════════════════════════════════════════════════════════════
 
 local function ToggleBorder()
     State.Border = not State.Border
@@ -1047,10 +1028,6 @@ local function ToggleFullbright()
         Lighting.FogEnd = SavedLighting[5]
     end
 end
-
--- ═══════════════════════════════════════════════════════════════
--- COLA FIX & INFINITE (Safe - only runs if events exist)
--- ═══════════════════════════════════════════════════════════════
 
 local function FixCola()
     SafeCall(function()
@@ -1132,10 +1109,6 @@ local function ToggleInfiniteCola(enabled)
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- VIP VOTING (Safe - only runs if events exist)
--- ═══════════════════════════════════════════════════════════════
-
 local function GetVoteEvent()
     return SafeGetPath(ReplicatedStorage, "Events", "Player", "Vote")
 end
@@ -1190,10 +1163,6 @@ end
 local function StopModeVoting()
     State.VoteMode = false
 end
-
--- ═══════════════════════════════════════════════════════════════
--- GUI BUILDERS
--- ═══════════════════════════════════════════════════════════════
 
 local function CreateButton(parent, name, text, x, y, w, h, callback)
     local button = Instance.new("TextButton")
@@ -1486,10 +1455,6 @@ local function CreateMainGUI()
     UpdateGUI()
 end
 
--- ═══════════════════════════════════════════════════════════════
--- TIMER GUI
--- ═══════════════════════════════════════════════════════════════
-
 local function CreateTimerGUI()
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) end
     TimerGUI = Instance.new("ScreenGui")
@@ -1556,10 +1521,6 @@ local function UpdateTimer()
     end)
 end
 
--- ═══════════════════════════════════════════════════════════════
--- INPUT HANDLING
--- ═══════════════════════════════════════════════════════════════
-
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     local key = input.KeyCode
@@ -1584,10 +1545,6 @@ UserInputService.InputEnded:Connect(function(input)
     elseif key == Enum.KeyCode.X then holdX = false AirEnd = 0
     end
 end)
-
--- ═══════════════════════════════════════════════════════════════
--- CHARACTER SETUP
--- ═══════════════════════════════════════════════════════════════
 
 local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
@@ -1615,10 +1572,6 @@ local function SetupCharacter(character)
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- PLAYER TRACKING
--- ═══════════════════════════════════════════════════════════════
-
 Players.PlayerAdded:Connect(function(player)
     player.CharacterAdded:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
     player.CharacterRemoving:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
@@ -1635,13 +1588,10 @@ for _, player in ipairs(Players:GetPlayers()) do
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP
--- ═══════════════════════════════════════════════════════════════
-
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     local lastUpdate = 0
+    local lastEdgeUpdate = 0
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         local now = tick()
@@ -1651,6 +1601,11 @@ local function StartMainLoop()
         AirStrafe()
         DoCarry()
         
+        if State.EdgeBoost and now - lastEdgeUpdate >= 0.016 then
+            lastEdgeUpdate = now
+            ReactiveEdgeBoost()
+        end
+        
         if now - lastUpdate >= 0.1 then
             lastUpdate = now
             UpdateRayFilter()
@@ -1659,10 +1614,6 @@ local function StartMainLoop()
         end
     end)
 end
-
--- ═══════════════════════════════════════════════════════════════
--- INITIALIZATION
--- ═══════════════════════════════════════════════════════════════
 
 if LocalPlayer.Character then SetupCharacter(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(SetupCharacter)
@@ -1700,20 +1651,3 @@ SetupCameraFOV()
 LoadNPCs()
 ForceUpdateRayFilter()
 StartMainLoop()
-
-print("═══════════════════════════════════════════")
-print("✅ EVADE HELPER V8 - UNIVERSAL VERSION!")
-print("═══════════════════════════════════════════")
-print("📌 PlaceId:", game.PlaceId)
-print("📌 Game detected as Evade:", IsEvadeGame())
-print("═══════════════════════════════════════════")
-print("✅ Bhop: Responsive + Trimp-friendly")
-print("✅ Works across teleports!")
-print("✅ Safe for non-Evade games (universal features)")
-print("═══════════════════════════════════════════")
-print("⌨️ CONTROLS:")
-print("   Space = Bhop (trimp-friendly)")
-print("   X = Bounce + Air Strafe")
-print("   Q = Carry | E = Revive | R = Self-res")
-print("   P = Fullbright | RightShift = Toggle GUI")
-print("═══════════════════════════════════════════")
