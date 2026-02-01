@@ -47,7 +47,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 
 -- ═══════════════════════════════════════════════════════════════
--- EMOTE WHEEL REPLACEMENT SYSTEM (FROM FIRST SCRIPT)
+-- EMOTE WHEEL REPLACEMENT SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local emoteModelScript = nil
@@ -80,8 +80,11 @@ local allEmotes = {}
 local SAVE_FOLDER = "DaraHub"
 local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
 
+-- For blocking original emote
+local pendingSlot = nil
+
 -- ═══════════════════════════════════════════════════════════════
--- CORE EMOTE FUNCTIONS (FROM FIRST SCRIPT)
+-- CORE EMOTE FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════
 
 local function normalizeText(text)
@@ -98,7 +101,7 @@ local function fireSelect(emoteName)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
     if not emoteName or emoteName == "" then return end
     
-    -- Set random emote option if enabled
+    -- Set emote option
     if randomOptionEnabled and player.Character then
         player.Character:SetAttribute("EmoteNum", math.random(1, 3))
     elseif player.Character then
@@ -334,52 +337,55 @@ local function replaceEmotesFrame()
     return anyReplaced
 end
 
--- Animation listener to fire replacement emote
-local function setupAnimationListener()
-    local function setupHumanoidListeners(char)
-        local isR15 = char:GetAttribute("R15") == true
-        local humanoid
-        if isR15 then
-            local r15Visual = char:WaitForChild("R15Visual", 5)
-            if r15Visual then
-                humanoid = r15Visual:WaitForChild("Visual_Humanoid", 5)
-            end
-        else
-            humanoid = char:WaitForChild("Humanoid", 5)
+-- ═══════════════════════════════════════════════════════════════
+-- HOOK TO BLOCK ORIGINAL EMOTE (THIS FIXES THE BUG!)
+-- ═══════════════════════════════════════════════════════════════
+
+if EmoteRemote and PassCharacterInfo then
+    -- Listen for server response to fire replacement
+    PassCharacterInfo.OnClientEvent:Connect(function()
+        if pendingSlot then
+            local slot = pendingSlot
+            pendingSlot = nil
+            task.wait(0.1)
+            fireSelect(selectEmotes[slot])
         end
+    end)
+    
+    -- Hook to BLOCK original emote and fire replacement instead
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
         
-        if humanoid then
-            humanoid.AnimationPlayed:Connect(function(track)
-                local animation = track.Animation
-                if animation and animation:IsDescendantOf(ReplicatedStorage.Items.Emotes) then
-                    local emoteModule = animation:FindFirstAncestorWhichIsA("ModuleScript")
-                    if emoteModule then
-                        local currentEmoteName = emoteModule.Name
+        -- Intercept EmoteRemote:FireServer(emoteName)
+        if method == "FireServer" and self == EmoteRemote and type(args[1]) == "string" then
+            local emoteName = args[1]
+            
+            for i = 1, MAX_SLOTS do
+                if emoteEnabled[i] and currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
+                    -- Check if this is the emote we want to replace
+                    if normalizeText(emoteName) == normalizeText(currentEmotes[i]) then
+                        -- Set pending slot for when server responds
+                        pendingSlot = i
                         
-                        for i = 1, MAX_SLOTS do
-                            if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" and emoteEnabled[i] then
-                                local normalizedCurrent = normalizeText(currentEmotes[i])
-                                local normalizedPlaying = normalizeText(currentEmoteName)
-                                
-                                if normalizedCurrent == normalizedPlaying then
-                                    fireSelect(selectEmotes[i])
-                                    break
-                                end
+                        -- Backup: fire after short delay in case OnClientEvent doesn't trigger
+                        task.spawn(function()
+                            task.wait(0.15)
+                            if pendingSlot == i then
+                                pendingSlot = nil
+                                fireSelect(selectEmotes[i])
                             end
-                        end
+                        end)
+                        
+                        -- BLOCK the original emote from firing!
+                        return nil
                     end
                 end
-            end)
+            end
         end
-    end
-    
-    if player.Character then
-        setupHumanoidListeners(player.Character)
-    end
-    
-    player.CharacterAdded:Connect(function(newChar)
-        task.wait(0.5)
-        setupHumanoidListeners(newChar)
+        
+        return oldNamecall(self, ...)
     end)
 end
 
@@ -401,6 +407,7 @@ local reapplyThread = nil
 local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
+    pendingSlot = nil
     
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
@@ -442,7 +449,7 @@ local function handleSingleRespawn()
         respawnInProgress = false
     end)
     
-    -- Always reapply emote wheel (no toggle check)
+    -- Reapply emote wheel
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -856,7 +863,6 @@ local function ValidateAndApplyEmotes()
                 table.insert(sameEmoteSlots, i)
                 emoteEnabled[i] = false
             else
-                -- Update to actual names
                 currentEmotes[i] = currentActual
                 selectEmotes[i] = selectActual
                 table.insert(successfulSlots, {
@@ -874,7 +880,6 @@ local function ValidateAndApplyEmotes()
         end
     end
     
-    -- Build message
     local message = ""
     
     if #successfulSlots > 0 then
@@ -915,11 +920,9 @@ local function ValidateAndApplyEmotes()
         message = "No emotes configured"
     end
     
-    -- Clear caches and refresh wheel
     emoteNameCache = {}
     normalizedCache = {}
     
-    -- Find and replace emote wheel
     cleanUpLastEmoteFrame()
     emoteFrame = getEmoteFrame()
     if emoteFrame then
@@ -990,7 +993,7 @@ end
 Tabs.EmoteChanger:Section({ Title = "Emote Changer", TextSize = 20 })
 Tabs.EmoteChanger:Paragraph({
     Title = "How to use",
-    Desc = "Current = emote you own | Select = animation to play\nWheel icons update automatically!"
+    Desc = "Current = emote you own | Select = animation to play\nOnly the replacement emote plays!"
 })
 Tabs.EmoteChanger:Divider()
 
@@ -1064,7 +1067,6 @@ Tabs.EmoteChanger:Button({
     Title = "Reset All Emotes",
     Icon = "trash-2",
     Callback = function()
-        -- Restore original wheel
         if emoteFrame then
             restoreOriginalEmotes()
         end
@@ -1404,19 +1406,14 @@ end
 Tabs.Settings:Button({ Title = "Refresh List", Icon = "refresh-cw", Callback = function() RefreshConfigDropdown() UpdateConfigList() UpdateConfigDisplay() end })
 
 Tabs.Settings:Divider()
-Tabs.Settings:Paragraph({ Title = "Info", Desc = "Press L to toggle UI\nEmote wheel auto-updates!" })
+Tabs.Settings:Paragraph({ Title = "Info", Desc = "Press L to toggle UI\nNo more double emote bug!" })
 
 -- ═══════════════════════════════════════════════════════════════
 -- INITIALIZE
 -- ═══════════════════════════════════════════════════════════════
 
--- Setup animation listener for firing replacement emotes
-setupAnimationListener()
-
--- Find emote model script early
 findEmoteModelScript()
 
--- Respawn handlers
 if player.Character then
     task.spawn(handleSingleRespawn)
 end
@@ -1437,12 +1434,12 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
     workspace.Game.Players.ChildRemoved:Connect(function(child)
         if child.Name == player.Name then
             currentTag = nil
+            pendingSlot = nil
             cleanUpLastEmoteFrame()
         end
     end)
 end
 
--- Load configs and auto-apply
 task.spawn(function()
     task.wait(1)
     
@@ -1470,5 +1467,5 @@ task.spawn(function()
 end)
 
 print("Visual Emote Changer Loaded!")
-print("Emote wheel icons update automatically!")
+print("Bug fixed: Only replacement emote plays now!")
 print("Press L to toggle UI")
