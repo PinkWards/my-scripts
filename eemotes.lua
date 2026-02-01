@@ -45,6 +45,7 @@ local Tabs = {
 local player = game:GetService("Players").LocalPlayer
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local PlayerGui = player:WaitForChild("PlayerGui")
 local Events = ReplicatedStorage:WaitForChild("Events", 10)
 local CharacterFolder = Events and Events:WaitForChild("Character", 10)
 local EmoteRemote = CharacterFolder and CharacterFolder:WaitForChild("Emote", 10)
@@ -52,12 +53,15 @@ local PassCharacterInfo = CharacterFolder and CharacterFolder:WaitForChild("Pass
 
 local remoteSignal = PassCharacterInfo and PassCharacterInfo.OnClientEvent
 local currentTag = nil
+
+-- 6 SLOTS
+local MAX_SLOTS = 6
 local currentEmotes = {"", "", "", "", "", ""}
 local selectEmotes = {"", "", "", "", "", ""}
 local emoteEnabled = {false, false, false, false, false, false}
+
 local emoteOption = 1
 local pendingSlot = nil
-
 local randomOptionEnabled = true
 
 local currentEmoteInputs = {}
@@ -69,6 +73,215 @@ local SAVE_FOLDER = "DaraHub"
 local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
 
 -- ═══════════════════════════════════════════════════════════════
+-- EMOTE WHEEL REPLACEMENT SYSTEM (NEW)
+-- ═══════════════════════════════════════════════════════════════
+
+local emoteWheelReplacementEnabled = false
+local originalEmoteData = {}
+local emoteDataSaved = false
+local emoteWheelConnection = nil
+local emoteModuleCache = {}
+
+-- Get emote module data (icon, name, etc.)
+local function GetEmoteModuleData(emoteName)
+    if emoteModuleCache[emoteName] then
+        return emoteModuleCache[emoteName]
+    end
+    
+    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+    if emotesFolder then
+        emotesFolder = emotesFolder:FindFirstChild("Emotes")
+        if emotesFolder then
+            for _, emoteModule in pairs(emotesFolder:GetChildren()) do
+                if emoteModule:IsA("ModuleScript") then
+                    if emoteModule.Name:lower():gsub("%s+", "") == emoteName:lower():gsub("%s+", "") then
+                        local success, data = pcall(function()
+                            return require(emoteModule)
+                        end)
+                        if success and data then
+                            emoteModuleCache[emoteName] = {
+                                Name = emoteModule.Name,
+                                Data = data
+                            }
+                            return emoteModuleCache[emoteName]
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Find the emote wheel frame
+local function FindEmoteWheel()
+    -- Common paths for emote wheel in Evade
+    local possiblePaths = {
+        PlayerGui:FindFirstChild("EmoteWheel"),
+        PlayerGui:FindFirstChild("Emotes"),
+        PlayerGui:FindFirstChild("MainUI") and PlayerGui.MainUI:FindFirstChild("EmoteWheel"),
+        PlayerGui:FindFirstChild("GameUI") and PlayerGui.GameUI:FindFirstChild("EmoteWheel"),
+    }
+    
+    for _, path in pairs(possiblePaths) do
+        if path then return path end
+    end
+    
+    -- Deep search
+    for _, gui in pairs(PlayerGui:GetDescendants()) do
+        if gui:IsA("Frame") or gui:IsA("ScreenGui") then
+            if gui.Name:lower():find("emote") then
+                return gui
+            end
+        end
+    end
+    
+    return nil
+end
+
+-- Find emote slots within the wheel
+local function FindEmoteSlots(emoteWheel)
+    local slots = {}
+    
+    if not emoteWheel then return slots end
+    
+    for _, child in pairs(emoteWheel:GetDescendants()) do
+        -- Look for emote buttons/slots
+        if child:IsA("ImageButton") or child:IsA("TextButton") or child:IsA("Frame") then
+            local nameLabel = child:FindFirstChild("Name") or child:FindFirstChild("EmoteName") or child:FindFirstChild("Label")
+            local iconImage = child:FindFirstChild("Icon") or child:FindFirstChild("Image") or child:FindFirstChild("EmoteIcon")
+            
+            if not iconImage and child:IsA("ImageButton") then
+                iconImage = child
+            end
+            
+            if nameLabel or iconImage then
+                table.insert(slots, {
+                    Frame = child,
+                    NameLabel = nameLabel,
+                    IconImage = iconImage
+                })
+            end
+        end
+    end
+    
+    return slots
+end
+
+-- Save original emote data
+local function SaveOriginalEmoteData()
+    local emoteWheel = FindEmoteWheel()
+    if not emoteWheel then return false end
+    
+    local slots = FindEmoteSlots(emoteWheel)
+    originalEmoteData = {}
+    
+    for i, slot in ipairs(slots) do
+        originalEmoteData[i] = {
+            Frame = slot.Frame,
+            NameLabel = slot.NameLabel,
+            IconImage = slot.IconImage,
+            OriginalName = slot.NameLabel and slot.NameLabel.Text or "",
+            OriginalIcon = slot.IconImage and (slot.IconImage.Image or "") or ""
+        }
+    end
+    
+    emoteDataSaved = #originalEmoteData > 0
+    return emoteDataSaved
+end
+
+-- Replace emote visuals in the wheel
+local function ReplaceEmoteWheelVisuals()
+    if not emoteWheelReplacementEnabled then return end
+    if not emoteDataSaved then
+        SaveOriginalEmoteData()
+    end
+    
+    local emoteWheel = FindEmoteWheel()
+    if not emoteWheel then return end
+    
+    local slots = FindEmoteSlots(emoteWheel)
+    
+    for i, slot in ipairs(slots) do
+        for j = 1, MAX_SLOTS do
+            if currentEmotes[j] ~= "" and selectEmotes[j] ~= "" then
+                local currentName = currentEmotes[j]:lower():gsub("%s+", "")
+                local slotName = ""
+                
+                if slot.NameLabel then
+                    slotName = slot.NameLabel.Text:lower():gsub("%s+", "")
+                end
+                
+                if slotName == currentName or (slot.Frame.Name and slot.Frame.Name:lower():gsub("%s+", "") == currentName) then
+                    -- Get replacement emote data
+                    local replaceData = GetEmoteModuleData(selectEmotes[j])
+                    
+                    if replaceData then
+                        -- Replace name
+                        if slot.NameLabel then
+                            slot.NameLabel.Text = replaceData.Name
+                        end
+                        
+                        -- Replace icon
+                        if slot.IconImage and replaceData.Data then
+                            if replaceData.Data.Icon then
+                                slot.IconImage.Image = replaceData.Data.Icon
+                            elseif replaceData.Data.Image then
+                                slot.IconImage.Image = replaceData.Data.Image
+                            end
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+end
+
+-- Restore original emote visuals
+local function RestoreOriginalEmoteVisuals()
+    for i, data in pairs(originalEmoteData) do
+        if data.NameLabel and data.OriginalName then
+            pcall(function()
+                data.NameLabel.Text = data.OriginalName
+            end)
+        end
+        if data.IconImage and data.OriginalIcon then
+            pcall(function()
+                data.IconImage.Image = data.OriginalIcon
+            end)
+        end
+    end
+end
+
+-- Monitor emote wheel for changes
+local function StartEmoteWheelMonitor()
+    if emoteWheelConnection then
+        emoteWheelConnection:Disconnect()
+    end
+    
+    emoteWheelConnection = PlayerGui.DescendantAdded:Connect(function(descendant)
+        if emoteWheelReplacementEnabled then
+            task.delay(0.1, function()
+                if descendant.Name:lower():find("emote") then
+                    ReplaceEmoteWheelVisuals()
+                end
+            end)
+        end
+    end)
+    
+    -- Also check periodically
+    task.spawn(function()
+        while true do
+            task.wait(1)
+            if emoteWheelReplacementEnabled then
+                ReplaceEmoteWheelVisuals()
+            end
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════
 -- COSMETICS CHANGER VARIABLES
 -- ═══════════════════════════════════════════════════════════════
 
@@ -78,7 +291,7 @@ local isSwapped = false
 local cosmetic1Input, cosmetic2Input = nil, nil
 
 -- ═══════════════════════════════════════════════════════════════
--- CONFIG SYSTEM (SAVES EMOTES + COSMETICS)
+-- CONFIG SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local allConfigs = {}
@@ -153,6 +366,7 @@ local function CreateConfig(name)
         selectEmotes = {"", "", "", "", "", ""},
         emoteOption = 1,
         randomOptionEnabled = true,
+        emoteWheelReplacement = false,
         cosmetic1 = "",
         cosmetic2 = ""
     }
@@ -169,6 +383,7 @@ local function SaveToConfig(name)
         selectEmotes = table.clone(selectEmotes),
         emoteOption = emoteOption,
         randomOptionEnabled = randomOptionEnabled,
+        emoteWheelReplacement = emoteWheelReplacementEnabled,
         cosmetic1 = cosmetic1,
         cosmetic2 = cosmetic2
     }
@@ -182,12 +397,13 @@ local function LoadFromConfig(name)
     
     local config = allConfigs[name]
     
-    for i = 1, 6 do
+    for i = 1, MAX_SLOTS do
         currentEmotes[i] = (config.currentEmotes and config.currentEmotes[i]) or ""
         selectEmotes[i] = (config.selectEmotes and config.selectEmotes[i]) or ""
     end
     emoteOption = config.emoteOption or 1
     randomOptionEnabled = config.randomOptionEnabled ~= false
+    emoteWheelReplacementEnabled = config.emoteWheelReplacement or false
     cosmetic1 = config.cosmetic1 or ""
     cosmetic2 = config.cosmetic2 or ""
     
@@ -235,6 +451,7 @@ local function DuplicateConfig(name, newName)
         selectEmotes = table.clone(original.selectEmotes or {"", "", "", "", "", ""}),
         emoteOption = original.emoteOption or 1,
         randomOptionEnabled = original.randomOptionEnabled ~= false,
+        emoteWheelReplacement = original.emoteWheelReplacement or false,
         cosmetic1 = original.cosmetic1 or "",
         cosmetic2 = original.cosmetic2 or ""
     }
@@ -411,6 +628,8 @@ end
 -- EMOTE OPTION FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════
 
+local emoteMonitorRunning = false
+
 local function SetEmoteOption(num)
     if num < 1 then num = 1 end
     if num > 3 then num = 3 end
@@ -427,6 +646,22 @@ local function SetRandomOption()
         player.Character:SetAttribute("EmoteNum", randomNum)
     end
     return randomNum
+end
+
+local function StartEmoteMonitor()
+    if emoteMonitorRunning then return end
+    emoteMonitorRunning = true
+    
+    task.spawn(function()
+        while emoteMonitorRunning do
+            task.wait(1)
+            local char = player.Character
+            if char then
+                local currentNum = randomOptionEnabled and math.random(1, 3) or emoteOption
+                char:SetAttribute("EmoteNum", currentNum)
+            end
+        end
+    end)
 end
 
 local function SetupEmoteConnections()
@@ -452,10 +687,146 @@ local function SetupEmoteConnections()
             end
         end
     end)
+    
+    StartEmoteMonitor()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- EMOTE CHANGER LOGIC
+-- EMOTE VALIDATION - DETAILED FEEDBACK
+-- ═══════════════════════════════════════════════════════════════
+
+local function NormalizeEmoteName(name)
+    return name:gsub("%s+", ""):lower()
+end
+
+local function IsValidEmote(name)
+    if name == "" then return false, "" end
+    local normalizedInput = NormalizeEmoteName(name)
+    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+    
+    if emotesFolder then
+        emotesFolder = emotesFolder:FindFirstChild("Emotes")
+        if emotesFolder then
+            for _, emoteModule in pairs(emotesFolder:GetChildren()) do
+                if emoteModule:IsA("ModuleScript") then
+                    if NormalizeEmoteName(emoteModule.Name) == normalizedInput then
+                        return true, emoteModule.Name
+                    end
+                end
+            end
+        end
+    end
+    return false, ""
+end
+
+local function ValidateAndApplyEmotes()
+    local sameEmoteSlots = {}
+    local missingEmoteSlots = {}
+    local invalidEmoteSlots = {}
+    local successfulSlots = {}
+    
+    for i = 1, MAX_SLOTS do
+        if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
+            local currentValid, currentActual = IsValidEmote(currentEmotes[i])
+            local selectValid, selectActual = IsValidEmote(selectEmotes[i])
+            
+            if not currentValid and not selectValid then
+                table.insert(invalidEmoteSlots, {
+                    slot = i,
+                    currentInvalid = true,
+                    currentName = currentEmotes[i],
+                    selectInvalid = true,
+                    selectName = selectEmotes[i]
+                })
+                emoteEnabled[i] = false
+            elseif not currentValid then
+                table.insert(invalidEmoteSlots, {
+                    slot = i,
+                    currentInvalid = true,
+                    currentName = currentEmotes[i],
+                    selectInvalid = false,
+                    selectName = selectEmotes[i]
+                })
+                emoteEnabled[i] = false
+            elseif not selectValid then
+                table.insert(invalidEmoteSlots, {
+                    slot = i,
+                    currentInvalid = false,
+                    currentName = currentEmotes[i],
+                    selectInvalid = true,
+                    selectName = selectEmotes[i]
+                })
+                emoteEnabled[i] = false
+            elseif currentActual:lower() == selectActual:lower() then
+                table.insert(sameEmoteSlots, i)
+                emoteEnabled[i] = false
+            else
+                table.insert(successfulSlots, {
+                    slot = i,
+                    current = currentActual,
+                    select = selectActual
+                })
+                emoteEnabled[i] = true
+            end
+        elseif currentEmotes[i] ~= "" or selectEmotes[i] ~= "" then
+            table.insert(missingEmoteSlots, i)
+            emoteEnabled[i] = false
+        else
+            emoteEnabled[i] = false
+        end
+    end
+    
+    -- Build detailed message
+    local message = ""
+    
+    if #successfulSlots > 0 then
+        message = message .. "<font color='#00FF00'>✓ Applied:</font>\n"
+        for _, data in ipairs(successfulSlots) do
+            message = message .. "<font color='#00FF00'>  Slot " .. data.slot .. ": " .. data.current .. " → " .. data.select .. "</font>\n"
+        end
+    end
+    
+    if #sameEmoteSlots > 0 then
+        message = message .. "<font color='#FF6B6B'>✗ Same name:</font>\n"
+        for _, slot in ipairs(sameEmoteSlots) do
+            message = message .. "<font color='#FF6B6B'>  Slot " .. slot .. "</font>\n"
+        end
+    end
+    
+    if #invalidEmoteSlots > 0 then
+        message = message .. "<font color='#FF4444'>✗ Invalid:</font>\n"
+        for _, data in ipairs(invalidEmoteSlots) do
+            if data.currentInvalid and data.selectInvalid then
+                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - Both</font>\n"
+            elseif data.currentInvalid then
+                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.currentName .. "\"</font>\n"
+            else
+                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.selectName .. "\"</font>\n"
+            end
+        end
+    end
+    
+    if #missingEmoteSlots > 0 then
+        message = message .. "<font color='#FFAA00'>⚠ Missing pair:</font>\n"
+        for _, slot in ipairs(missingEmoteSlots) do
+            message = message .. "<font color='#FFAA00'>  Slot " .. slot .. "</font>\n"
+        end
+    end
+    
+    if message == "" then
+        message = "No emotes configured"
+    end
+    
+    -- Apply emote wheel visuals if enabled
+    if emoteWheelReplacementEnabled then
+        ReplaceEmoteWheelVisuals()
+    end
+    
+    return #successfulSlots, message
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- EMOTE CHANGER LOGIC (FIRESIGNAL METHOD)
 -- ═══════════════════════════════════════════════════════════════
 
 local function ReadTagFromFolder(f)
@@ -514,36 +885,9 @@ local function FireSelect(slot)
     firesignal(remoteSignal, buf, {selectEmotes[slot]})
 end
 
-local function IsValidEmote(name)
-    if name == "" then return false end
-    local lower = name:lower():gsub("%s+", "")
-    local folder = ReplicatedStorage:FindFirstChild("Items")
-    if folder then
-        folder = folder:FindFirstChild("Emotes")
-        if folder then
-            for _, m in pairs(folder:GetChildren()) do
-                if m:IsA("ModuleScript") and m.Name:lower():gsub("%s+", "") == lower then
-                    return true
-                end
-            end
-        end
-    end
-    return false
-end
-
 local function ApplyEmotes(silent)
-    local count = 0
-    for i = 1, 6 do
-        if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-            local cv = IsValidEmote(currentEmotes[i])
-            local sv = IsValidEmote(selectEmotes[i])
-            emoteEnabled[i] = cv and sv and currentEmotes[i]:lower() ~= selectEmotes[i]:lower()
-            if emoteEnabled[i] then count = count + 1 end
-        else
-            emoteEnabled[i] = false
-        end
-    end
-    return count
+    local count, message = ValidateAndApplyEmotes()
+    return count, message
 end
 
 -- Setup remotes
@@ -563,7 +907,7 @@ if PassCharacterInfo and EmoteRemote then
         local args = {...}
         
         if method == "FireServer" and self == EmoteRemote and type(args[1]) == "string" then
-            for i = 1, 6 do
+            for i = 1, MAX_SLOTS do
                 if emoteEnabled[i] and currentEmotes[i] ~= "" and args[1] == currentEmotes[i] then
                     pendingSlot = i
                     task.spawn(function()
@@ -605,13 +949,13 @@ if PassCharacterInfo and EmoteRemote then
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- UPDATE UI FUNCTION (for smooth updates)
+-- UPDATE UI FUNCTION
 -- ═══════════════════════════════════════════════════════════════
 
-local shuffleToggle, manualDropdown
+local shuffleToggle, manualDropdown, emoteWheelToggle
 
 local function UpdateAllUI()
-    for i = 1, 6 do
+    for i = 1, MAX_SLOTS do
         pcall(function()
             if currentEmoteInputs[i] then currentEmoteInputs[i]:Set(currentEmotes[i]) end
             if selectEmoteInputs[i] then selectEmoteInputs[i]:Set(selectEmotes[i]) end
@@ -624,11 +968,12 @@ local function UpdateAllUI()
     pcall(function()
         if shuffleToggle then shuffleToggle:Set(randomOptionEnabled) end
         if manualDropdown then manualDropdown:Set(tostring(emoteOption)) end
+        if emoteWheelToggle then emoteWheelToggle:Set(emoteWheelReplacementEnabled) end
     end)
 end
 
 local function ApplyEverything(silent)
-    local emoteCount = ApplyEmotes(silent)
+    local emoteCount, emoteMessage = ApplyEmotes(silent)
     local cosmeticSuccess = false
     local cosmeticMsg = ""
     
@@ -639,14 +984,14 @@ local function ApplyEverything(silent)
     SetEmoteOption(emoteOption)
     
     if not silent then
-        local msg = "Applied " .. emoteCount .. " emote(s)"
+        local msg = emoteMessage
         if cosmeticSuccess then
-            msg = msg .. "\n" .. cosmeticMsg
+            msg = msg .. "\n\n<font color='#00FFFF'>Cosmetics: " .. cosmeticMsg .. "</font>"
         end
         WindUI:Notify({
             Title = "Applied!",
             Content = msg,
-            Duration = 2
+            Duration = 5
         })
     end
     
@@ -688,9 +1033,39 @@ manualDropdown = Tabs.EmoteChanger:Dropdown({
 })
 
 Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Emote Slots", TextSize = 16 })
 
-for i = 1, 6 do
+-- NEW: EMOTE WHEEL REPLACEMENT TOGGLE
+Tabs.EmoteChanger:Section({ Title = "Visual Options", TextSize = 16 })
+
+emoteWheelToggle = Tabs.EmoteChanger:Toggle({
+    Title = "Replace Emote Wheel Icons",
+    Desc = "Changes the icons/names in your emote wheel visually",
+    Value = emoteWheelReplacementEnabled,
+    Callback = function(v)
+        emoteWheelReplacementEnabled = v
+        if v then
+            SaveOriginalEmoteData()
+            ReplaceEmoteWheelVisuals()
+            WindUI:Notify({
+                Title = "Emote Wheel",
+                Content = "Icon replacement enabled!",
+                Duration = 2
+            })
+        else
+            RestoreOriginalEmoteVisuals()
+            WindUI:Notify({
+                Title = "Emote Wheel",
+                Content = "Icons restored to original",
+                Duration = 2
+            })
+        end
+    end
+})
+
+Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Emote Slots (6)", TextSize = 16 })
+
+for i = 1, MAX_SLOTS do
     Tabs.EmoteChanger:Paragraph({ Title = "Slot " .. i, Desc = "" })
     
     currentEmoteInputs[i] = Tabs.EmoteChanger:Input({
@@ -718,11 +1093,11 @@ Tabs.EmoteChanger:Button({
     Title = "Apply Emotes",
     Icon = "check",
     Callback = function()
-        local count = ApplyEmotes()
+        local count, message = ApplyEmotes()
         WindUI:Notify({
             Title = "Emote Changer",
-            Content = "Applied " .. count .. " emote(s)!",
-            Duration = 2
+            Content = message,
+            Duration = 5
         })
     end
 })
@@ -731,7 +1106,7 @@ Tabs.EmoteChanger:Button({
     Title = "Reset All Emotes",
     Icon = "trash-2",
     Callback = function()
-        for i = 1, 6 do
+        for i = 1, MAX_SLOTS do
             currentEmotes[i] = ""
             selectEmotes[i] = ""
             emoteEnabled[i] = false
@@ -740,7 +1115,13 @@ Tabs.EmoteChanger:Button({
                 if selectEmoteInputs[i] then selectEmoteInputs[i]:Set("") end
             end)
         end
-        WindUI:Notify({ Title = "Reset", Content = "Emotes cleared!", Duration = 1 })
+        
+        -- Restore wheel visuals
+        if emoteWheelReplacementEnabled then
+            RestoreOriginalEmoteVisuals()
+        end
+        
+        WindUI:Notify({ Title = "Reset", Content = "All emotes cleared!", Duration = 2 })
     end
 })
 
@@ -847,6 +1228,7 @@ Tabs.Visuals:Button({
             Content = msg,
             Duration = 2
         })
+        UpdateSwapStatus()
     end
 })
 
@@ -860,6 +1242,7 @@ Tabs.Visuals:Button({
             Content = msg,
             Duration = 2
         })
+        UpdateSwapStatus()
     end
 })
 
@@ -870,7 +1253,7 @@ local swapStatusParagraph = Tabs.Visuals:Paragraph({
     Desc = "No cosmetics swapped"
 })
 
-local function UpdateSwapStatus()
+function UpdateSwapStatus()
     pcall(function()
         if isSwapped then
             swapStatusParagraph:SetDesc("✓ Swapped: " .. cosmetic1 .. " ↔ " .. cosmetic2)
@@ -887,7 +1270,7 @@ end
 Tabs.Settings:Section({ Title = "Config Profiles", TextSize = 20 })
 Tabs.Settings:Paragraph({
     Title = "Manage Configs",
-    Desc = "Saves emotes + cosmetics together"
+    Desc = "Saves emotes + cosmetics + wheel settings"
 })
 Tabs.Settings:Divider()
 
@@ -928,9 +1311,11 @@ configDropdown = Tabs.Settings:Dropdown({
     Values = {"No configs yet"},
     Callback = function(selected)
         if selected and selected ~= "No configs yet" and allConfigs[selected] then
-            -- Reset cosmetics before loading new config
             if isSwapped then
                 ResetCosmetics(true)
+            end
+            if emoteWheelReplacementEnabled then
+                RestoreOriginalEmoteVisuals()
             end
             
             local success, msg = LoadFromConfig(selected)
@@ -1135,25 +1520,24 @@ Tabs.Settings:Button({
 Tabs.Settings:Divider()
 Tabs.Settings:Paragraph({
     Title = "Info",
-    Desc = "Press L to toggle UI\nAuto-applies on script load!"
+    Desc = "Press L to toggle UI\n+ Emote wheel icon replacement!"
 })
 
 -- ═══════════════════════════════════════════════════════════════
--- INITIALIZE - AUTO APPLY ON LOAD
+-- INITIALIZE
 -- ═══════════════════════════════════════════════════════════════
 
 SetupEmoteConnections()
+StartEmoteWheelMonitor()
 
 task.spawn(function()
     task.wait(1)
     
-    -- Load configs
     local loaded = LoadAllConfigs()
     RefreshConfigDropdown()
     UpdateConfigList()
     UpdateConfigDisplay()
     
-    -- Auto-load and apply last used config
     if currentConfigName ~= "" and allConfigs[currentConfigName] then
         local success = LoadFromConfig(currentConfigName)
         if success then
@@ -1161,7 +1545,6 @@ task.spawn(function()
             
             task.wait(0.5)
             
-            -- Auto apply everything
             local emoteCount, cosmeticSuccess = ApplyEverything(true)
             UpdateSwapStatus()
             
@@ -1169,6 +1552,9 @@ task.spawn(function()
             msg = msg .. "Emotes: " .. emoteCount .. " applied"
             if cosmeticSuccess then
                 msg = msg .. "\nCosmetics: Swapped!"
+            end
+            if emoteWheelReplacementEnabled then
+                msg = msg .. "\nWheel: Icons replaced!"
             end
             
             WindUI:Notify({
@@ -1187,4 +1573,5 @@ task.spawn(function()
 end)
 
 print("Visual Emote Changer Loaded!")
+print("+ Emote Wheel Icon Replacement")
 print("Press L to toggle UI")
