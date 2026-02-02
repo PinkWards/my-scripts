@@ -111,7 +111,6 @@ local function cleanSync()
     
     local currentActive = {}
     
-    -- Get all currently playing animations from target
     for _, targetTrack in targetTracks do
         if targetTrack.IsPlaying and targetTrack.Animation then
             local animId = targetTrack.Animation.AnimationId
@@ -121,7 +120,6 @@ local function cleanSync()
         end
     end
     
-    -- Stop animations that target stopped
     for animId, myTrack in pairs(tracks) do
         if not currentActive[animId] then
             myTrack:Stop(0.1)
@@ -130,11 +128,9 @@ local function cleanSync()
         end
     end
     
-    -- Play/sync animations
     for animId, targetTrack in pairs(currentActive) do
         local myTrack = tracks[animId]
         
-        -- Create new track if needed
         if not myTrack then
             local anim = Instance.new("Animation")
             anim.AnimationId = animId
@@ -150,7 +146,6 @@ local function cleanSync()
             anim:Destroy()
         end
         
-        -- Sync existing track
         if myTrack then
             local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
             if timeDiff > 0.05 then
@@ -229,7 +224,6 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- Check if target still valid
 local cacheTimer = 0
 RunService.Heartbeat:Connect(function(dt)
     if not copying then return end
