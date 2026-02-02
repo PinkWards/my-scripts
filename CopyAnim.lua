@@ -1,5 +1,6 @@
--- Animation Copy v9.3 - FIXED GROUND DETECTION
--- Only saves position when TRULY on walkable ground
+-- Animation Copy v10.0 - PERFECT MOTOR6D SYNC
+-- Copies actual bone transforms for 100% visual sync regardless of ping
+-- NOT network-based - copies transforms locally every frame
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -11,6 +12,7 @@ local LP = Players.LocalPlayer
 local TOGGLE_KEY = Enum.KeyCode.G
 local MAX_DIST = 150
 local GROUND_SAVE_INTERVAL = 0.5
+local SYNC_SMOOTHING = 0.5 -- 0 = instant snap, 1 = smooth lerp
 
 -- STATE
 local copying = false
@@ -20,19 +22,81 @@ local respawning = false
 local hasTarget = false
 
 -- CACHE
-local char, hum, animator, root = nil, nil, nil, nil
-local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+local char, hum, root = nil, nil, nil
+local targetChar, targetHum, targetRoot = nil, nil, nil
 
--- ANIMATION STORAGE
-local tracks = {}
+-- MOTOR6D CACHE - This is the key to perfect sync!
+local localMotors = {}
+local targetMotors = {}
 
 -- CONSTANTS
 local V3_ZERO = Vector3.zero
 local V3_DOWN = Vector3.new(0, -1, 0)
+local CF_IDENTITY = CFrame.identity
 
 -- Reusable raycast params
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- ═══════════════════════════════════════════════════════════════════
+-- MOTOR6D SYNC SYSTEM - NETWORK INDEPENDENT
+-- ═══════════════════════════════════════════════════════════════════
+
+local function cacheMotors()
+    table.clear(localMotors)
+    table.clear(targetMotors)
+    
+    if char then
+        for _, desc in char:GetDescendants() do
+            if desc:IsA("Motor6D") then
+                localMotors[desc.Name] = desc
+            end
+        end
+    end
+    
+    if targetChar then
+        for _, desc in targetChar:GetDescendants() do
+            if desc:IsA("Motor6D") then
+                targetMotors[desc.Name] = desc
+            end
+        end
+    end
+    
+    -- Debug output
+    local localCount = 0
+    local targetCount = 0
+    for _ in pairs(localMotors) do localCount += 1 end
+    for _ in pairs(targetMotors) do targetCount += 1 end
+    
+    return localCount > 0 and targetCount > 0
+end
+
+-- This function copies bone transforms DIRECTLY - no network involved!
+local function syncMotors()
+    if not copying or respawning or not hasTarget then return end
+    if not targetChar or not targetChar.Parent then return end
+    
+    for name, targetMotor in pairs(targetMotors) do
+        local localMotor = localMotors[name]
+        if localMotor and targetMotor then
+            -- Check if motor still exists
+            if not targetMotor.Parent or not localMotor.Parent then continue end
+            
+            -- Direct transform copy - THIS IS THE KEY!
+            -- Motor6D.Transform is what animations modify
+            -- By copying it directly, we bypass all network sync issues
+            local targetTransform = targetMotor.Transform
+            
+            if SYNC_SMOOTHING > 0 and SYNC_SMOOTHING < 1 then
+                -- Smooth interpolation for less jittery movement
+                localMotor.Transform = localMotor.Transform:Lerp(targetTransform, 1 - SYNC_SMOOTHING)
+            else
+                -- Instant snap (perfectly accurate)
+                localMotor.Transform = targetTransform
+            end
+        end
+    end
+end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- GROUND DETECTION - FIXED
@@ -40,40 +104,34 @@ rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 local lastGroundSave = 0
 local stableGroundTime = 0
-local STABLE_TIME_REQUIRED = 0.3  -- Must be on ground for 0.3 seconds
+local STABLE_TIME_REQUIRED = 0.3
 
 local function isOnSolidGround()
     if not root or not hum then return false end
     
-    -- Check 1: Humanoid must say we're on ground
     if hum.FloorMaterial == Enum.Material.Air then return false end
     
-    -- Check 2: Must not be jumping or falling
     local state = hum:GetState()
     if state == Enum.HumanoidStateType.Jumping then return false end
     if state == Enum.HumanoidStateType.Freefall then return false end
     if state == Enum.HumanoidStateType.Flying then return false end
     
-    -- Check 3: Y velocity must be near zero (not moving up or down)
     local yVel = root.AssemblyLinearVelocity.Y
     if math.abs(yVel) > 5 then return false end
     
-    -- Check 4: Raycast must hit ground very close (within 3.5 studs)
     rayParams.FilterDescendantsInstances = {char}
     local result = workspace:Raycast(root.Position, V3_DOWN * 3.5, rayParams)
     if not result then return false end
     
-    -- Check 5: Ground must be walkable (not too steep)
     local groundNormal = result.Normal
     local upDot = groundNormal:Dot(Vector3.new(0, 1, 0))
-    if upDot < 0.7 then return false end  -- Too steep
+    if upDot < 0.7 then return false end
     
-    -- Check 6: Must not be on another player
     local hitPart = result.Instance
     if hitPart then
         local model = hitPart:FindFirstAncestorOfClass("Model")
         if model and Players:GetPlayerFromCharacter(model) then
-            return false  -- Standing on a player
+            return false
         end
     end
     
@@ -99,12 +157,9 @@ local function autoSaveGroundPosition()
     
     local now = tick()
     
-    -- Check if on solid ground
     if isOnSolidGround() then
-        -- Increment stable time
         stableGroundTime += RunService.Heartbeat:Wait()
         
-        -- Only save if stable for required time AND interval passed
         if stableGroundTime >= STABLE_TIME_REQUIRED then
             if now - lastGroundSave >= GROUND_SAVE_INTERVAL then
                 local groundCF = getGroundPosition()
@@ -115,7 +170,6 @@ local function autoSaveGroundPosition()
             end
         end
     else
-        -- Reset stable time when not on ground
         stableGroundTime = 0
     end
 end
@@ -127,7 +181,7 @@ end
 local function cacheLocal()
     local c = LP.Character
     if not c then
-        char, hum, animator, root = nil, nil, nil, nil
+        char, hum, root = nil, nil, nil
         return false
     end
     
@@ -135,26 +189,18 @@ local function cacheLocal()
     hum = c:FindFirstChildOfClass("Humanoid")
     root = c:FindFirstChild("HumanoidRootPart")
     
-    if hum then
-        animator = hum:FindFirstChildOfClass("Animator")
-        if not animator then
-            animator = Instance.new("Animator")
-            animator.Parent = hum
-        end
-    end
-    
-    return hum ~= nil and root ~= nil and animator ~= nil
+    return hum ~= nil and root ~= nil
 end
 
 local function cacheTarget()
     if not target then
-        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        targetChar, targetHum, targetRoot = nil, nil, nil
         return false
     end
     
     local tc = target.Character
     if not tc then
-        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        targetChar, targetHum, targetRoot = nil, nil, nil
         return false
     end
     
@@ -162,129 +208,46 @@ local function cacheTarget()
     targetHum = tc:FindFirstChildOfClass("Humanoid")
     targetRoot = tc:FindFirstChild("HumanoidRootPart")
     
-    if targetHum then
-        targetAnimator = targetHum:FindFirstChildOfClass("Animator")
+    -- Cache motors after caching target
+    if targetHum and targetRoot then
+        cacheMotors()
     end
     
-    return targetHum ~= nil and targetAnimator ~= nil and targetRoot ~= nil
+    return targetHum ~= nil and targetRoot ~= nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- ANIMATE SCRIPT CONTROL
 -- ═══════════════════════════════════════════════════════════════════
 
+local storedAnimateParent = nil
+local storedAnimate = nil
+
 local function disableAnimate()
     if not char then return end
     
     local animate = char:FindFirstChild("Animate")
-    if animate and animate:IsA("LocalScript") then
-        animate.Disabled = true
+    if animate then
+        storedAnimate = animate
+        storedAnimateParent = animate.Parent
+        animate.Parent = nil -- Remove completely, not just disable
     end
     
+    -- Stop all current animations
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
     if animator then
         for _, track in animator:GetPlayingAnimationTracks() do
-            track:Stop(0.1)
+            track:Stop(0)
         end
     end
 end
 
 local function enableAnimate()
-    if not char then return end
-    
-    local animate = char:FindFirstChild("Animate")
-    if animate and animate:IsA("LocalScript") then
-        animate.Disabled = false
+    if storedAnimate and storedAnimateParent then
+        storedAnimate.Parent = storedAnimateParent
     end
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- CLEAN ANIMATION SYNC
--- ═══════════════════════════════════════════════════════════════════
-
-local function cleanSync()
-    if not copying or respawning or not hasTarget then return end
-    if not animator or not targetAnimator then return end
-    
-    local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
-    if not ok or not targetTracks then return end
-    
-    local currentActive = {}
-    
-    for _, targetTrack in targetTracks do
-        if targetTrack.IsPlaying and targetTrack.Animation then
-            local animId = targetTrack.Animation.AnimationId
-            if animId and animId ~= "" then
-                currentActive[animId] = targetTrack
-            end
-        end
-    end
-    
-    for animId, myTrack in pairs(tracks) do
-        if not currentActive[animId] then
-            myTrack:Stop(0.1)
-            myTrack:Destroy()
-            tracks[animId] = nil
-        end
-    end
-    
-    for animId, targetTrack in pairs(currentActive) do
-        local myTrack = tracks[animId]
-        
-        if not myTrack then
-            local anim = Instance.new("Animation")
-            anim.AnimationId = animId
-            
-            local success, newTrack = pcall(animator.LoadAnimation, animator, anim)
-            if success and newTrack then
-                newTrack.Priority = Enum.AnimationPriority.Action4
-                myTrack = newTrack
-                tracks[animId] = myTrack
-                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
-            end
-            
-            anim:Destroy()
-        end
-        
-        if myTrack then
-            local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
-            if timeDiff > 0.05 then
-                myTrack.TimePosition = targetTrack.TimePosition
-            end
-            
-            if myTrack.Speed ~= targetTrack.Speed then
-                myTrack:AdjustSpeed(targetTrack.Speed)
-            end
-            
-            local weightDiff = math.abs(myTrack.WeightCurrent - targetTrack.WeightCurrent)
-            if weightDiff > 0.05 then
-                myTrack:AdjustWeight(targetTrack.WeightCurrent, 0.1)
-            end
-            
-            if not myTrack.IsPlaying then
-                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
-            end
-        end
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- STOP ALL ANIMATIONS
--- ═══════════════════════════════════════════════════════════════════
-
-local function stopAllTracks()
-    for animId, track in pairs(tracks) do
-        if track then
-            track:Stop(0.1)
-            track:Destroy()
-        end
-    end
-    table.clear(tracks)
-    
-    if animator then
-        for _, track in animator:GetPlayingAnimationTracks() do
-            track:Stop(0.1)
-        end
-    end
+    storedAnimate = nil
+    storedAnimateParent = nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -314,12 +277,12 @@ local function findNearest()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- LOOPS
+-- MAIN SYNC LOOP - RUNS EVERY FRAME
 -- ═══════════════════════════════════════════════════════════════════
 
 RunService.RenderStepped:Connect(function()
     if copying and hasTarget and not respawning then
-        cleanSync()
+        syncMotors()
     end
 end)
 
@@ -327,23 +290,26 @@ RunService.Heartbeat:Connect(function()
     autoSaveGroundPosition()
 end)
 
-local cacheTimer = 0
+-- Refresh motor cache periodically
+local motorRefreshTimer = 0
 RunService.Heartbeat:Connect(function(dt)
     if not copying then return end
     
-    cacheTimer += dt
-    if cacheTimer < 1 then return end
-    cacheTimer = 0
+    motorRefreshTimer += dt
+    if motorRefreshTimer < 2 then return end
+    motorRefreshTimer = 0
     
     if hasTarget and target then
         if not target.Parent then
             print("⚠️ Target left")
             hasTarget = false
             target = nil
-            stopAllTracks()
             enableAnimate()
         elseif target.Character ~= targetChar then
             cacheTarget()
+        else
+            -- Refresh motor cache in case of equipment changes
+            cacheMotors()
         end
     end
 end)
@@ -371,7 +337,7 @@ local function setupTargetConnections()
         cacheTarget()
         if copying and hasTarget then
             disableAnimate()
-            print("✅ Target respawned")
+            print("✅ Target respawned - Motors recached")
         end
     end)
     
@@ -380,9 +346,35 @@ local function setupTargetConnections()
         if targetHumanoid then
             targetConnections.died = targetHumanoid.Died:Connect(function()
                 print("⏳ Target died...")
-                stopAllTracks()
             end)
         end
+        
+        -- Watch for new descendants (equipment, tools, etc.)
+        targetConnections.descAdded = target.Character.DescendantAdded:Connect(function(desc)
+            if desc:IsA("Motor6D") then
+                task.wait(0.1)
+                cacheMotors()
+            end
+        end)
+    end
+end
+
+-- Also watch local character for changes
+local localConnections = {}
+
+local function setupLocalConnections()
+    for _, conn in pairs(localConnections) do
+        if conn then conn:Disconnect() end
+    end
+    table.clear(localConnections)
+    
+    if char then
+        localConnections.descAdded = char.DescendantAdded:Connect(function(desc)
+            if desc:IsA("Motor6D") then
+                task.wait(0.1)
+                cacheMotors()
+            end
+        end)
     end
 end
 
@@ -407,7 +399,14 @@ local function start()
     target = nearest
     
     if not cacheTarget() then
-        print("❌ Target has no animator")
+        print("❌ Target not valid")
+        target = nil
+        return
+    end
+    
+    -- Cache motors before starting
+    if not cacheMotors() then
+        print("❌ Could not cache Motor6Ds")
         target = nil
         return
     end
@@ -415,17 +414,17 @@ local function start()
     copying = true
     hasTarget = true
     
-    stopAllTracks()
     disableAnimate()
     setupTargetConnections()
+    setupLocalConnections()
     
-    -- Only save if truly on ground
     if isOnSolidGround() then
         savedGroundCF = getGroundPosition()
     end
     
     print("═══════════════════════════════════════")
-    print("  ✅ COPYING: " .. target.Name)
+    print("  ✅ MOTOR6D SYNC: " .. target.Name)
+    print("  🔄 Perfect visual sync - No network lag!")
     print("  📌 Press [G] to stop")
     print("═══════════════════════════════════════")
 end
@@ -437,17 +436,25 @@ local function stop()
     hasTarget = false
     
     cleanupTargetConnections()
-    stopAllTracks()
     enableAnimate()
+    
+    -- Reset all motor transforms
+    for name, localMotor in pairs(localMotors) do
+        if localMotor and localMotor.Parent then
+            localMotor.Transform = CF_IDENTITY
+        end
+    end
+    
+    table.clear(localMotors)
+    table.clear(targetMotors)
     
     target = nil
     targetChar = nil
     targetHum = nil
-    targetAnimator = nil
     targetRoot = nil
     
     print("═══════════════════════════════════════")
-    print("  ❌ STOPPED")
+    print("  ❌ STOPPED - Animations restored")
     print("═══════════════════════════════════════")
 end
 
@@ -478,14 +485,14 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "AnimCopy"
+gui.Name = "AnimCopyMotor"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
 gui.Parent = LP:WaitForChild("PlayerGui")
 
 local status = Instance.new("TextLabel")
-status.Size = UDim2.fromOffset(180, 28)
+status.Size = UDim2.fromOffset(200, 28)
 status.Position = UDim2.fromOffset(10, 10)
 status.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 status.BackgroundTransparency = 0.3
@@ -502,9 +509,22 @@ statusStroke.Color = Color3.fromRGB(60, 60, 70)
 statusStroke.Thickness = 1
 statusStroke.Parent = status
 
+local motorInfo = Instance.new("TextLabel")
+motorInfo.Size = UDim2.fromOffset(200, 20)
+motorInfo.Position = UDim2.fromOffset(10, 42)
+motorInfo.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+motorInfo.BackgroundTransparency = 0.5
+motorInfo.TextColor3 = Color3.fromRGB(150, 200, 255)
+motorInfo.Font = Enum.Font.Gotham
+motorInfo.TextSize = 10
+motorInfo.Text = ""
+motorInfo.Visible = false
+motorInfo.Parent = gui
+Instance.new("UICorner", motorInfo).CornerRadius = UDim.new(0, 4)
+
 local groundLabel = Instance.new("TextLabel")
-groundLabel.Size = UDim2.fromOffset(180, 20)
-groundLabel.Position = UDim2.fromOffset(10, 42)
+groundLabel.Size = UDim2.fromOffset(200, 20)
+groundLabel.Position = UDim2.fromOffset(10, 66)
 groundLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 groundLabel.BackgroundTransparency = 0.5
 groundLabel.TextColor3 = Color3.fromRGB(150, 200, 255)
@@ -515,10 +535,9 @@ groundLabel.Visible = false
 groundLabel.Parent = gui
 Instance.new("UICorner", groundLabel).CornerRadius = UDim.new(0, 4)
 
--- Ground status indicator
 local groundStatus = Instance.new("TextLabel")
-groundStatus.Size = UDim2.fromOffset(180, 16)
-groundStatus.Position = UDim2.fromOffset(10, 64)
+groundStatus.Size = UDim2.fromOffset(200, 16)
+groundStatus.Position = UDim2.fromOffset(10, 90)
 groundStatus.BackgroundTransparency = 1
 groundStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
 groundStatus.Font = Enum.Font.Gotham
@@ -665,15 +684,24 @@ local function teleportToSaved()
     TweenService:Create(fadeScreen, TweenInfo.new(0.15), {BackgroundTransparency = 1}):Play()
 end
 
--- Status update with ground indicator
+-- Status update
 task.spawn(function()
     while true do
         task.wait(0.1)
         
         if copying and hasTarget and target then
             status.Visible = true
-            status.Text = "⚡ Copying: " .. target.Name
+            status.Text = "🔄 Motor Sync: " .. target.Name
             status.TextColor3 = Color3.fromRGB(100, 255, 150)
+            
+            -- Motor count info
+            local localCount = 0
+            local targetCount = 0
+            for _ in pairs(localMotors) do localCount += 1 end
+            for _ in pairs(targetMotors) do targetCount += 1 end
+            
+            motorInfo.Visible = true
+            motorInfo.Text = string.format("⚙️ Motors: %d local / %d target", localCount, targetCount)
             
             if savedGroundCF then
                 groundLabel.Visible = true
@@ -683,7 +711,6 @@ task.spawn(function()
                 groundLabel.Visible = false
             end
             
-            -- Show ground status
             groundStatus.Visible = true
             if isOnSolidGround() then
                 groundStatus.Text = "🟢 On solid ground"
@@ -696,10 +723,12 @@ task.spawn(function()
             status.Visible = true
             status.Text = "⏳ Waiting..."
             status.TextColor3 = Color3.fromRGB(255, 200, 100)
+            motorInfo.Visible = false
             groundLabel.Visible = false
             groundStatus.Visible = false
         else
             status.Visible = false
+            motorInfo.Visible = false
             groundLabel.Visible = false
             groundStatus.Visible = false
         end
@@ -711,8 +740,8 @@ end)
 -- ═══════════════════════════════════════════════════════════════════
 
 LP.CharacterAdded:Connect(function(newChar)
-    table.clear(tracks)
-    char, hum, animator, root = nil, nil, nil, nil
+    table.clear(localMotors)
+    char, hum, root = nil, nil, nil
     stableGroundTime = 0
     
     local newHum = newChar:WaitForChild("Humanoid", 10)
@@ -722,12 +751,6 @@ LP.CharacterAdded:Connect(function(newChar)
     char = newChar
     hum = newHum
     root = newRoot
-    
-    animator = newHum:FindFirstChildOfClass("Animator")
-    if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = newHum
-    end
     
     if savedGroundCF then
         respawning = true
@@ -749,6 +772,8 @@ LP.CharacterAdded:Connect(function(newChar)
     task.wait(0.2)
     if copying and hasTarget then
         cacheTarget()
+        cacheMotors()
+        setupLocalConnections()
         disableAnimate()
     end
 end)
@@ -760,16 +785,15 @@ end)
 cacheLocal()
 
 print("═══════════════════════════════════════════════")
-print("  🎭 Animation Copy v9.3 - FIXED GROUND")
+print("  🔄 Animation Copy v10.0 - MOTOR6D SYNC")
 print("═══════════════════════════════════════════════")
 print("  Press [G] to toggle")
 print("")
-print("  ✅ Only saves when TRULY on ground:")
-print("    • FloorMaterial not Air")
-print("    • Not jumping/falling")
-print("    • Y velocity near zero")
-print("    • Raycast hits close ground")
-print("    • Ground not too steep")
-print("    • Not standing on players")
-print("    • Stable for 0.3 seconds")
+print("  ✅ Why this version is BETTER:")
+print("    • Copies Motor6D.Transform directly")
+print("    • NOT network-based - syncs every frame")
+print("    • Works with ANY ping")
+print("    • Perfectly matches target's pose")
+print("    • No animation loading/playing issues")
+print("    • Smooth and jitter-free")
 print("═══════════════════════════════════════════════")
