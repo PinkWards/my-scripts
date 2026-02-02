@@ -1,5 +1,4 @@
--- Animation Copy v11 - CLEAN & SIMPLE
--- Just copies nearest player's animations perfectly
+-- Animation Copy v9.3 - CLEAN (No UI clutter)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -13,37 +12,62 @@ local MAX_DIST = 150
 -- STATE
 local copying = false
 local target = nil
-local targetChar = nil
-local myChar, myHum, myRoot = nil, nil, nil
-local storedAnimate = nil
+local hasTarget = false
+
+-- CACHE
+local char, hum, animator, root = nil, nil, nil, nil
+local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+
+-- ANIMATION STORAGE
+local tracks = {}
 
 -- ═══════════════════════════════════════════════════════════════════
--- FIND NEAREST PLAYER
+-- CACHE FUNCTIONS
 -- ═══════════════════════════════════════════════════════════════════
 
-local function findNearest()
-    if not myRoot then return nil end
+local function cacheLocal()
+    local c = LP.Character
+    if not c then
+        char, hum, animator, root = nil, nil, nil, nil
+        return false
+    end
     
-    local myPos = myRoot.Position
-    local best, bestDist = nil, MAX_DIST
+    char = c
+    hum = c:FindFirstChildOfClass("Humanoid")
+    root = c:FindFirstChild("HumanoidRootPart")
     
-    for _, player in Players:GetPlayers() do
-        if player ~= LP then
-            local char = player.Character
-            if char then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                if root then
-                    local dist = (myPos - root.Position).Magnitude
-                    if dist < bestDist then
-                        best = player
-                        bestDist = dist
-                    end
-                end
-            end
+    if hum then
+        animator = hum:FindFirstChildOfClass("Animator")
+        if not animator then
+            animator = Instance.new("Animator")
+            animator.Parent = hum
         end
     end
     
-    return best
+    return hum ~= nil and root ~= nil and animator ~= nil
+end
+
+local function cacheTarget()
+    if not target then
+        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        return false
+    end
+    
+    local tc = target.Character
+    if not tc then
+        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+        return false
+    end
+    
+    targetChar = tc
+    targetHum = tc:FindFirstChildOfClass("Humanoid")
+    targetRoot = tc:FindFirstChild("HumanoidRootPart")
+    
+    if targetHum then
+        targetAnimator = targetHum:FindFirstChildOfClass("Animator")
+    end
+    
+    return targetHum ~= nil and targetAnimator ~= nil and targetRoot ~= nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -51,49 +75,214 @@ end
 -- ═══════════════════════════════════════════════════════════════════
 
 local function disableAnimate()
-    if not myChar then return end
+    if not char then return end
     
-    -- Remove Animate script completely
-    local animate = myChar:FindFirstChild("Animate")
-    if animate then
-        storedAnimate = animate
-        animate.Parent = nil
+    local animate = char:FindFirstChild("Animate")
+    if animate and animate:IsA("LocalScript") then
+        animate.Disabled = true
     end
     
-    -- Stop all playing animations
-    if myHum then
-        local animator = myHum:FindFirstChildOfClass("Animator")
-        if animator then
-            for _, track in animator:GetPlayingAnimationTracks() do
-                track:Stop(0)
-            end
+    if animator then
+        for _, track in animator:GetPlayingAnimationTracks() do
+            track:Stop(0.1)
         end
     end
 end
 
 local function enableAnimate()
-    if storedAnimate and myChar then
-        storedAnimate.Parent = myChar
+    if not char then return end
+    
+    local animate = char:FindFirstChild("Animate")
+    if animate and animate:IsA("LocalScript") then
+        animate.Disabled = false
     end
-    storedAnimate = nil
 end
 
 -- ═══════════════════════════════════════════════════════════════════
--- MOTOR6D SYNC - PERFECT COPY EVERY FRAME
+-- ANIMATION SYNC
 -- ═══════════════════════════════════════════════════════════════════
 
-local function syncMotors()
-    if not myChar or not myChar.Parent then return end
-    if not targetChar or not targetChar.Parent then return end
+local function cleanSync()
+    if not copying or not hasTarget then return end
+    if not animator or not targetAnimator then return end
     
-    -- Get all motors from target
-    for _, part in targetChar:GetDescendants() do
-        if part:IsA("Motor6D") then
-            -- Find matching motor in my character
-            local myMotor = myChar:FindFirstChild(part.Name, true)
-            if myMotor and myMotor:IsA("Motor6D") then
-                myMotor.Transform = part.Transform
+    local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
+    if not ok or not targetTracks then return end
+    
+    local currentActive = {}
+    
+    -- Get all currently playing animations from target
+    for _, targetTrack in targetTracks do
+        if targetTrack.IsPlaying and targetTrack.Animation then
+            local animId = targetTrack.Animation.AnimationId
+            if animId and animId ~= "" then
+                currentActive[animId] = targetTrack
             end
+        end
+    end
+    
+    -- Stop animations that target stopped
+    for animId, myTrack in pairs(tracks) do
+        if not currentActive[animId] then
+            myTrack:Stop(0.1)
+            myTrack:Destroy()
+            tracks[animId] = nil
+        end
+    end
+    
+    -- Play/sync animations
+    for animId, targetTrack in pairs(currentActive) do
+        local myTrack = tracks[animId]
+        
+        -- Create new track if needed
+        if not myTrack then
+            local anim = Instance.new("Animation")
+            anim.AnimationId = animId
+            
+            local success, newTrack = pcall(animator.LoadAnimation, animator, anim)
+            if success and newTrack then
+                newTrack.Priority = Enum.AnimationPriority.Action4
+                myTrack = newTrack
+                tracks[animId] = myTrack
+                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
+            end
+            
+            anim:Destroy()
+        end
+        
+        -- Sync existing track
+        if myTrack then
+            local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
+            if timeDiff > 0.05 then
+                myTrack.TimePosition = targetTrack.TimePosition
+            end
+            
+            if myTrack.Speed ~= targetTrack.Speed then
+                myTrack:AdjustSpeed(targetTrack.Speed)
+            end
+            
+            local weightDiff = math.abs(myTrack.WeightCurrent - targetTrack.WeightCurrent)
+            if weightDiff > 0.05 then
+                myTrack:AdjustWeight(targetTrack.WeightCurrent, 0.1)
+            end
+            
+            if not myTrack.IsPlaying then
+                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
+            end
+        end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- STOP ALL ANIMATIONS
+-- ═══════════════════════════════════════════════════════════════════
+
+local function stopAllTracks()
+    for animId, track in pairs(tracks) do
+        if track then
+            track:Stop(0.1)
+            track:Destroy()
+        end
+    end
+    table.clear(tracks)
+    
+    if animator then
+        for _, track in animator:GetPlayingAnimationTracks() do
+            track:Stop(0.1)
+        end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- FIND NEAREST PLAYER
+-- ═══════════════════════════════════════════════════════════════════
+
+local function findNearest()
+    if not root then return nil end
+    
+    local myPos = root.Position
+    local bestPlayer, bestDist = nil, MAX_DIST
+    
+    for _, player in Players:GetPlayers() do
+        if player ~= LP and player.Character then
+            local playerRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if playerRoot then
+                local dist = (myPos - playerRoot.Position).Magnitude
+                if dist < bestDist then
+                    bestPlayer = player
+                    bestDist = dist
+                end
+            end
+        end
+    end
+    
+    return bestPlayer
+end
+
+-- ═══════════════════════════════════════════════════════════════════
+-- MAIN LOOP
+-- ═══════════════════════════════════════════════════════════════════
+
+RunService.RenderStepped:Connect(function()
+    if copying and hasTarget then
+        cleanSync()
+    end
+end)
+
+-- Check if target still valid
+local cacheTimer = 0
+RunService.Heartbeat:Connect(function(dt)
+    if not copying then return end
+    
+    cacheTimer += dt
+    if cacheTimer < 1 then return end
+    cacheTimer = 0
+    
+    if hasTarget and target then
+        if not target.Parent then
+            print("⚠️ Target left")
+            hasTarget = false
+            target = nil
+            stopAllTracks()
+            enableAnimate()
+        elseif target.Character ~= targetChar then
+            cacheTarget()
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════
+-- TARGET HANDLING
+-- ═══════════════════════════════════════════════════════════════════
+
+local targetConnections = {}
+
+local function cleanupTargetConnections()
+    for _, conn in pairs(targetConnections) do
+        if conn then conn:Disconnect() end
+    end
+    table.clear(targetConnections)
+end
+
+local function setupTargetConnections()
+    cleanupTargetConnections()
+    
+    if not target then return end
+    
+    targetConnections.charAdded = target.CharacterAdded:Connect(function()
+        task.wait(0.5)
+        cacheTarget()
+        if copying and hasTarget then
+            disableAnimate()
+        end
+    end)
+    
+    if target.Character then
+        local targetHumanoid = target.Character:FindFirstChildOfClass("Humanoid")
+        if targetHumanoid then
+            targetConnections.died = targetHumanoid.Died:Connect(function()
+                stopAllTracks()
+            end)
         end
     end
 end
@@ -105,38 +294,31 @@ end
 local function start()
     if copying then return end
     
-    -- Get my character
-    myChar = LP.Character
-    if not myChar then
-        warn("No character!")
+    if not cacheLocal() then
+        print("❌ No character")
         return
     end
     
-    myHum = myChar:FindFirstChildOfClass("Humanoid")
-    myRoot = myChar:FindFirstChild("HumanoidRootPart")
-    
-    if not myHum or not myRoot then
-        warn("Character not ready!")
-        return
-    end
-    
-    -- Find nearest player
     local nearest = findNearest()
     if not nearest then
-        warn("No player nearby!")
-        return
-    end
-    
-    if not nearest.Character then
-        warn("Target has no character!")
+        print("❌ No player nearby")
         return
     end
     
     target = nearest
-    targetChar = target.Character
+    
+    if not cacheTarget() then
+        print("❌ Target has no animator")
+        target = nil
+        return
+    end
     
     copying = true
+    hasTarget = true
+    
+    stopAllTracks()
     disableAnimate()
+    setupTargetConnections()
     
     print("✅ Copying: " .. target.Name)
 end
@@ -145,47 +327,20 @@ local function stop()
     if not copying then return end
     
     copying = false
+    hasTarget = false
     
-    -- Reset all motor transforms to default
-    if myChar then
-        for _, part in myChar:GetDescendants() do
-            if part:IsA("Motor6D") then
-                part.Transform = CFrame.identity
-            end
-        end
-    end
-    
+    cleanupTargetConnections()
+    stopAllTracks()
     enableAnimate()
     
     target = nil
     targetChar = nil
+    targetHum = nil
+    targetAnimator = nil
+    targetRoot = nil
     
     print("❌ Stopped")
 end
-
--- ═══════════════════════════════════════════════════════════════════
--- MAIN LOOP - SYNCS EVERY FRAME
--- ═══════════════════════════════════════════════════════════════════
-
-RunService.RenderStepped:Connect(function()
-    if not copying then return end
-    
-    -- Check if target still valid
-    if not target or not target.Parent then
-        stop()
-        return
-    end
-    
-    -- Update target character reference
-    if target.Character ~= targetChar then
-        targetChar = target.Character
-    end
-    
-    if not targetChar then return end
-    
-    -- Sync!
-    syncMotors()
-end)
 
 -- ═══════════════════════════════════════════════════════════════════
 -- INPUT
@@ -194,16 +349,12 @@ end)
 UserInputService.InputBegan:Connect(function(input, processed)
     if processed then return end
     if input.KeyCode == TOGGLE_KEY then
-        if copying then
-            stop()
-        else
-            start()
-        end
+        if copying then stop() else start() end
     end
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- HANDLE PLAYER LEAVING
+-- PLAYER LEFT
 -- ═══════════════════════════════════════════════════════════════════
 
 Players.PlayerRemoving:Connect(function(player)
@@ -213,57 +364,31 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 -- ═══════════════════════════════════════════════════════════════════
--- HANDLE RESPAWN
+-- CHARACTER RESPAWN
 -- ═══════════════════════════════════════════════════════════════════
 
 LP.CharacterAdded:Connect(function(newChar)
-    myChar = newChar
-    myHum = newChar:WaitForChild("Humanoid", 10)
-    myRoot = newChar:WaitForChild("HumanoidRootPart", 10)
+    table.clear(tracks)
+    char, hum, animator, root = nil, nil, nil, nil
     
-    task.wait(0.3)
+    local newHum = newChar:WaitForChild("Humanoid", 10)
+    local newRoot = newChar:WaitForChild("HumanoidRootPart", 10)
+    if not newHum or not newRoot then return end
     
-    if copying and target then
-        targetChar = target.Character
-        disableAnimate()
+    char = newChar
+    hum = newHum
+    root = newRoot
+    
+    animator = newHum:FindFirstChildOfClass("Animator")
+    if not animator then
+        animator = Instance.new("Animator")
+        animator.Parent = newHum
     end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- SIMPLE GUI - JUST SHOWS STATUS
--- ═══════════════════════════════════════════════════════════════════
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "AnimCopy"
-gui.ResetOnSpawn = false
-gui.Parent = LP:WaitForChild("PlayerGui")
-
-local label = Instance.new("TextLabel")
-label.Size = UDim2.fromOffset(160, 24)
-label.Position = UDim2.fromOffset(10, 10)
-label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-label.BackgroundTransparency = 0.5
-label.TextColor3 = Color3.fromRGB(255, 255, 255)
-label.Font = Enum.Font.GothamBold
-label.TextSize = 11
-label.Text = "[G] Copy Anim"
-label.Parent = gui
-
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 4)
-corner.Parent = label
-
--- Update GUI
-task.spawn(function()
-    while true do
-        task.wait(0.1)
-        if copying and target then
-            label.Text = "Copying: " .. target.Name
-            label.BackgroundColor3 = Color3.fromRGB(0, 100, 50)
-        else
-            label.Text = "[G] Copy Anim"
-            label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        end
+    
+    task.wait(0.2)
+    if copying and hasTarget then
+        cacheTarget()
+        disableAnimate()
     end
 end)
 
@@ -271,12 +396,8 @@ end)
 -- INIT
 -- ═══════════════════════════════════════════════════════════════════
 
-if LP.Character then
-    myChar = LP.Character
-    myHum = myChar:FindFirstChildOfClass("Humanoid")
-    myRoot = myChar:FindFirstChild("HumanoidRootPart")
-end
+cacheLocal()
 
-print("═══════════════════════════════")
+print("════════════════════════════════")
 print("  Animation Copy - Press [G]")
-print("═══════════════════════════════")
+print("════════════════════════════════")
