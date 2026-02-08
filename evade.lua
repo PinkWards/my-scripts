@@ -4,7 +4,7 @@ local scriptSource = nil
 
 pcall(function()
     if queue_on_teleport then
-        local scriptToQueue = game:HttpGet("YOUR_SCRIPT_URL_HERE")
+        local scriptToQueue = game:HttpGet("https://raw.githubusercontent.com/PinkWards/my-scripts/refs/heads/main/evade.lua")
         queue_on_teleport(scriptToQueue)
     end
 end)
