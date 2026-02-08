@@ -15,7 +15,7 @@ local teleportConnection
 pcall(function()
     teleportConnection = game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
         if state == Enum.TeleportState.Started then
-            print("[Evade Helper] Teleporting... Script will need re-execution")
+            print("[Evade Helper] Teleporting...")
         end
     end)
 end)
@@ -44,6 +44,10 @@ local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local Workspace = workspace
+
+-- ═══════════════════════════════════════════════════════════════
+-- STATE & CONFIG
+-- ═══════════════════════════════════════════════════════════════
 
 local State = {
     Border = false,
@@ -90,20 +94,23 @@ local ColaConfig = {
     Duration = 3.5
 }
 
--- ═══════════════════════════════════════════════════════
--- OPTIMIZED BHOP CONFIG
--- ═══════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════
+-- BHOP CONFIG (OPTIMIZED)
+-- ═══════════════════════════════════════════════════════════════
+
 local BhopConfig = {
-    PreJumpDistance = 4.5,        -- How far ahead to predict landing
-    PreJumpVelThreshold = -2,    -- Minimum downward velocity to trigger pre-jump
-    GroundRayLength = 3.2,       -- Ray length for ground detection
-    SpeedPreserveMultiplier = 1.02, -- Slight speed boost on each hop to counter friction
-    MaxPreservedSpeed = 200,     -- Cap for preserved horizontal speed
-    InstantJumpBuffer = 0.05,    -- Time window for instant re-jump after landing
-    MultiRayCount = 5,           -- Number of rays for ground detection
-    MultiRaySpread = 1.2,        -- Spread radius for multi-ray detection
-    VelocityRestoreFrames = 3,   -- Frames to restore velocity after jump
-    FrictionCompensation = 1.15, -- Multiplier to counteract ground friction
+    PreJumpDistance = 4.5,
+    PreJumpVelThreshold = -2,
+    GroundRayLength = 3.2,
+    SlopeMaxAngle = 45,
+    SpeedPreserveEnabled = true,
+    MinPreserveSpeed = 5,
+    LandingBoostFactor = 1.02,
+    JumpQueueWindow = 0.08,
+    ConsecutiveJumpBonus = 0.005,
+    MaxConsecutiveBonus = 0.05,
+    GroundCheckMultiRay = true,
+    MultiRaySpread = 1.2,
 }
 
 local Humanoid, RootPart = nil, nil
@@ -136,21 +143,20 @@ local StateChangedConn = nil
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
 local SliderMin, SliderMax = 1.0, 1.8
 
+-- BHOP state variables (optimized)
 local LastGroundState = false
 local LastJumpTick = 0
 local BHOP_COOLDOWN = 0
-
--- Speed preservation state
-local PreHopVelocity = Vector3.zero
-local HopCount = 0
-local LastHopTime = 0
-local VelocityRestoreCounter = 0
-local StoredHorizontalSpeed = 0
-local IsInBhopChain = false
-local LastLandingTime = 0
-local WasAirborne = false
-local PendingJump = false
-local FramesSinceLanding = 0
+local PreLandingQueued = false
+local LastHorizontalSpeed = 0
+local SavedHorizontalVelocity = Vector3.zero
+local ConsecutiveJumps = 0
+local LastLandingTick = 0
+local WasInAir = false
+local JumpQueued = false
+local LastGroundCheckResult = false
+local LastGroundCheckTick = 0
+local GroundCheckCacheTime = 0.005
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -160,6 +166,43 @@ local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
 EdgeRayParams.RespectCanCollide = true
+
+-- ═══════════════════════════════════════════════════════════════
+-- THEME / COLORS
+-- ═══════════════════════════════════════════════════════════════
+
+local Theme = {
+    Background = Color3.fromRGB(15, 15, 20),
+    Surface = Color3.fromRGB(22, 22, 30),
+    SurfaceLight = Color3.fromRGB(30, 30, 40),
+    Card = Color3.fromRGB(25, 25, 35),
+    Accent = Color3.fromRGB(88, 101, 242),
+    AccentHover = Color3.fromRGB(108, 121, 255),
+    AccentGlow = Color3.fromRGB(88, 101, 242),
+    Success = Color3.fromRGB(87, 242, 135),
+    Warning = Color3.fromRGB(254, 231, 92),
+    Danger = Color3.fromRGB(237, 66, 69),
+    TextPrimary = Color3.fromRGB(235, 235, 245),
+    TextSecondary = Color3.fromRGB(148, 155, 175),
+    TextMuted = Color3.fromRGB(88, 95, 115),
+    Border = Color3.fromRGB(40, 40, 55),
+    BorderAccent = Color3.fromRGB(88, 101, 242),
+    ButtonOff = Color3.fromRGB(35, 35, 48),
+    ButtonOn = Color3.fromRGB(88, 101, 242),
+    ButtonHover = Color3.fromRGB(42, 42, 58),
+    SliderBg = Color3.fromRGB(35, 35, 48),
+    SliderFill = Color3.fromRGB(88, 101, 242),
+    Shadow = Color3.fromRGB(0, 0, 0),
+}
+
+local FONT_TITLE = Enum.Font.GothamBlack
+local FONT_HEADING = Enum.Font.GothamBold
+local FONT_BODY = Enum.Font.GothamMedium
+local FONT_SMALL = Enum.Font.Gotham
+
+-- ═══════════════════════════════════════════════════════════════
+-- UTILITY FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
 
 local function SafeGetPath(...)
     local args = {...}
@@ -280,68 +323,86 @@ local function LoadNPCs()
     end
 end
 
--- ═══════════════════════════════════════════════════════
--- OPTIMIZED GROUND DETECTION - Multi-ray system
--- ═══════════════════════════════════════════════════════
-local function IsOnGroundMultiRay()
-    if not Humanoid or not RootPart then return false, nil end
+-- ═══════════════════════════════════════════════════════════════
+-- OPTIMIZED BHOP SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
+local function ValidateRayHit(rayResult)
+    if not rayResult or not rayResult.Instance then return false end
     
-    -- Fast check first
-    if Humanoid.FloorMaterial ~= Enum.Material.Air then
-        return true, RootPart.Position - Vector3.new(0, 3, 0)
+    local hitPart = rayResult.Instance
+    local hitModel = hitPart:FindFirstAncestorOfClass("Model")
+    
+    if hitModel then
+        local hitPlayer = Players:GetPlayerFromCharacter(hitModel)
+        if hitPlayer or hitModel:FindFirstChildOfClass("Humanoid") then
+            return false
+        end
     end
     
+    local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
+    return angle <= BhopConfig.SlopeMaxAngle
+end
+
+local function IsOnGroundInstant()
+    if not Humanoid or not RootPart then return false end
+    
+    local now = tick()
+    if now - LastGroundCheckTick < GroundCheckCacheTime then
+        return LastGroundCheckResult
+    end
+    LastGroundCheckTick = now
+    
+    -- Fast check: FloorMaterial
+    if Humanoid.FloorMaterial ~= Enum.Material.Air then
+        LastGroundCheckResult = true
+        return true
+    end
+    
+    -- Fast check: Humanoid state
     local state = Humanoid:GetState()
     if state == Enum.HumanoidStateType.Running or
        state == Enum.HumanoidStateType.RunningNoPhysics or
        state == Enum.HumanoidStateType.Landed then
-        return true, RootPart.Position - Vector3.new(0, 3, 0)
+        LastGroundCheckResult = true
+        return true
     end
     
-    -- Multi-ray ground detection for consistency
+    -- Primary center ray
     local pos = RootPart.Position
-    local rayLen = BhopConfig.GroundRayLength
-    local spread = BhopConfig.MultiRaySpread
+    local rayResult = Workspace:Raycast(pos, Vector3.new(0, -BhopConfig.GroundRayLength, 0), BhopRayParams)
+    if rayResult and ValidateRayHit(rayResult) then
+        LastGroundCheckResult = true
+        return true
+    end
     
-    local rayOrigins = {
-        pos,  -- Center
-        pos + Vector3.new(spread, 0, 0),
-        pos + Vector3.new(-spread, 0, 0),
-        pos + Vector3.new(0, 0, spread),
-        pos + Vector3.new(0, 0, -spread),
-    }
-    
-    for _, origin in ipairs(rayOrigins) do
-        local rayResult = Workspace:Raycast(origin, Vector3.new(0, -rayLen, 0), BhopRayParams)
-        if rayResult and rayResult.Instance then
-            local hitPart = rayResult.Instance
-            local hitModel = hitPart:FindFirstAncestorOfClass("Model")
-            
-            if hitModel then
-                local hitPlayer = Players:GetPlayerFromCharacter(hitModel)
-                if hitPlayer or hitModel:FindFirstChildOfClass("Humanoid") then
-                    continue
-                end
-            end
-            
-            local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
-            if angle <= 45 then
-                return true, rayResult.Position
+    -- Multi-ray ground detection for consistency on edges/slopes
+    if BhopConfig.GroundCheckMultiRay then
+        local spread = BhopConfig.MultiRaySpread
+        local offsets = {
+            Vector3.new(spread, 0, 0),
+            Vector3.new(-spread, 0, 0),
+            Vector3.new(0, 0, spread),
+            Vector3.new(0, 0, -spread),
+            Vector3.new(spread * 0.7, 0, spread * 0.7),
+            Vector3.new(-spread * 0.7, 0, spread * 0.7),
+            Vector3.new(spread * 0.7, 0, -spread * 0.7),
+            Vector3.new(-spread * 0.7, 0, -spread * 0.7),
+        }
+        
+        for _, offset in ipairs(offsets) do
+            local sideRay = Workspace:Raycast(pos + offset, Vector3.new(0, -BhopConfig.GroundRayLength, 0), BhopRayParams)
+            if sideRay and ValidateRayHit(sideRay) then
+                LastGroundCheckResult = true
+                return true
             end
         end
     end
     
-    return false, nil
+    LastGroundCheckResult = false
+    return false
 end
 
-local function IsOnGroundInstant()
-    local grounded, _ = IsOnGroundMultiRay()
-    return grounded
-end
-
--- ═══════════════════════════════════════════════════════
--- OPTIMIZED BHOP - Speed Preservation System
--- ═══════════════════════════════════════════════════════
 local function GetHorizontalSpeed()
     if not RootPart then return 0 end
     local vel = RootPart.AssemblyLinearVelocity
@@ -355,104 +416,67 @@ local function GetHorizontalVelocity()
 end
 
 local function PreserveSpeed()
-    if not RootPart or not IsInBhopChain then return end
-    if StoredHorizontalSpeed <= 0 then return end
+    if not BhopConfig.SpeedPreserveEnabled then return end
+    if not RootPart then return end
     
+    local currentHSpeed = GetHorizontalSpeed()
     local currentVel = RootPart.AssemblyLinearVelocity
-    local currentHorizontal = Vector3.new(currentVel.X, 0, currentVel.Z)
-    local currentSpeed = currentHorizontal.Magnitude
+    local horizontalVel = Vector3.new(currentVel.X, 0, currentVel.Z)
     
-    -- Only restore if we lost speed (friction ate it)
-    if currentSpeed < StoredHorizontalSpeed * 0.92 and currentSpeed > 1 then
-        local targetSpeed = math.min(
-            StoredHorizontalSpeed * BhopConfig.SpeedPreserveMultiplier,
-            BhopConfig.MaxPreservedSpeed
-        )
+    -- Only preserve if we had meaningful speed and are losing it
+    if LastHorizontalSpeed > BhopConfig.MinPreserveSpeed and currentHSpeed < LastHorizontalSpeed * 0.85 then
+        local preserveSpeed = LastHorizontalSpeed * BhopConfig.LandingBoostFactor
         
-        local direction
-        if currentHorizontal.Magnitude > 0.5 then
-            direction = currentHorizontal.Unit
-        else
-            -- Use camera direction as fallback
-            local camera = Workspace.CurrentCamera
-            if camera then
-                local look = camera.CFrame.LookVector
-                direction = Vector3.new(look.X, 0, look.Z)
-                if direction.Magnitude > 0.1 then
-                    direction = direction.Unit
-                else
-                    return
-                end
-            else
-                return
-            end
+        -- Apply consecutive jump bonus
+        local bonus = math.min(ConsecutiveJumps * BhopConfig.ConsecutiveJumpBonus, BhopConfig.MaxConsecutiveBonus)
+        preserveSpeed = preserveSpeed * (1 + bonus)
+        
+        if horizontalVel.Magnitude > 0.1 then
+            local dir = horizontalVel.Unit
+            RootPart.AssemblyLinearVelocity = Vector3.new(
+                dir.X * preserveSpeed,
+                currentVel.Y,
+                dir.Z * preserveSpeed
+            )
+        elseif SavedHorizontalVelocity.Magnitude > 0.1 then
+            local dir = SavedHorizontalVelocity.Unit
+            RootPart.AssemblyLinearVelocity = Vector3.new(
+                dir.X * preserveSpeed,
+                currentVel.Y,
+                dir.Z * preserveSpeed
+            )
         end
-        
-        local restoredVel = direction * targetSpeed
-        RootPart.AssemblyLinearVelocity = Vector3.new(restoredVel.X, currentVel.Y, restoredVel.Z)
     end
 end
 
 local function ExecuteJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
     
-    -- Store pre-jump velocity for preservation
-    local currentHSpeed = GetHorizontalSpeed()
-    if currentHSpeed > StoredHorizontalSpeed * 0.8 then
-        StoredHorizontalSpeed = currentHSpeed
-        PreHopVelocity = RootPart.AssemblyLinearVelocity
-    end
+    -- Save speed before jump
+    LastHorizontalSpeed = GetHorizontalSpeed()
+    SavedHorizontalVelocity = GetHorizontalVelocity()
     
-    -- Apply friction compensation before jumping
-    if IsInBhopChain and StoredHorizontalSpeed > 5 then
-        local currentVel = RootPart.AssemblyLinearVelocity
-        local horizontal = Vector3.new(currentVel.X, 0, currentVel.Z)
-        
-        if horizontal.Magnitude > 0.5 then
-            local boostedSpeed = math.min(
-                StoredHorizontalSpeed * BhopConfig.FrictionCompensation,
-                BhopConfig.MaxPreservedSpeed
-            )
-            local boostedVel = horizontal.Unit * boostedSpeed
-            RootPart.AssemblyLinearVelocity = Vector3.new(boostedVel.X, currentVel.Y, boostedVel.Z)
-        end
-    end
-    
-    -- Execute the jump
+    -- Execute jump
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    VelocityRestoreCounter = BhopConfig.VelocityRestoreFrames
     
-    -- Post-jump velocity restoration
+    -- Preserve speed immediately after state change
     task.defer(function()
-        if not RootPart or not Humanoid then return end
-        if Humanoid.Health <= 0 then return end
-        
-        local postVel = RootPart.AssemblyLinearVelocity
-        local postHorizontal = Vector3.new(postVel.X, 0, postVel.Z)
-        local postSpeed = postHorizontal.Magnitude
-        
-        -- If jump ate our speed, restore it
-        if IsInBhopChain and StoredHorizontalSpeed > 5 and postSpeed < StoredHorizontalSpeed * 0.85 then
-            local targetSpeed = math.min(StoredHorizontalSpeed, BhopConfig.MaxPreservedSpeed)
-            
-            if postHorizontal.Magnitude > 0.5 then
-                local restored = postHorizontal.Unit * targetSpeed
-                RootPart.AssemblyLinearVelocity = Vector3.new(restored.X, postVel.Y, restored.Z)
-            elseif PreHopVelocity.Magnitude > 0.5 then
-                local preH = Vector3.new(PreHopVelocity.X, 0, PreHopVelocity.Z)
-                if preH.Magnitude > 0.5 then
-                    local restored = preH.Unit * targetSpeed
-                    RootPart.AssemblyLinearVelocity = Vector3.new(restored.X, postVel.Y, restored.Z)
-                end
-            end
+        if Humanoid and RootPart and Humanoid.Health > 0 then
+            PreserveSpeed()
         end
     end)
     
-    local now = tick()
-    LastJumpTick = now
-    HopCount = HopCount + 1
-    LastHopTime = now
-    IsInBhopChain = true
+    -- Double-check preservation after a tiny delay
+    task.delay(0.01, function()
+        if Humanoid and RootPart and Humanoid.Health > 0 and holdSpace then
+            PreserveSpeed()
+        end
+    end)
+    
+    ConsecutiveJumps = ConsecutiveJumps + 1
+    LastJumpTick = tick()
+    JumpQueued = false
+    PreLandingQueued = false
 end
 
 local function SuperBhop()
@@ -465,41 +489,42 @@ local function SuperBhop()
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
     
-    local onGround, groundPos = IsOnGroundMultiRay()
+    local onGround = IsOnGroundInstant()
     local now = tick()
+    local currentSpeed = GetHorizontalSpeed()
     
-    -- Track airborne state for chain detection
+    -- Track speed continuously while in air
     if not onGround then
-        WasAirborne = true
-    end
-    
-    -- Reset bhop chain if too much time passed
-    if now - LastHopTime > 1.0 then
-        IsInBhopChain = false
-        HopCount = 0
-        StoredHorizontalSpeed = 0
-    end
-    
-    if onGround then
-        FramesSinceLanding = FramesSinceLanding + 1
-        
-        -- Store speed on first ground contact
-        if WasAirborne or not LastGroundState then
-            WasAirborne = false
-            LastLandingTime = now
-            FramesSinceLanding = 0
-            
-            local currentSpeed = GetHorizontalSpeed()
-            if currentSpeed > StoredHorizontalSpeed * 0.7 then
-                StoredHorizontalSpeed = currentSpeed
-            end
+        if currentSpeed > BhopConfig.MinPreserveSpeed then
+            LastHorizontalSpeed = math.max(LastHorizontalSpeed, currentSpeed)
+            SavedHorizontalVelocity = GetHorizontalVelocity()
         end
+        WasInAir = true
+    end
+    
+    -- Landing detection - execute queued jump immediately
+    if onGround and WasInAir then
+        WasInAir = false
+        LastLandingTick = now
         
-        -- Jump immediately - zero delay
+        if holdSpace then
+            ExecuteJump()
+            return
+        end
+    end
+    
+    -- Ground jump with speed preservation
+    if onGround then
         if not LastGroundState or (now - LastJumpTick) >= BHOP_COOLDOWN then
+            -- Save current speed before any jump
+            if currentSpeed > BhopConfig.MinPreserveSpeed then
+                LastHorizontalSpeed = currentSpeed
+                SavedHorizontalVelocity = GetHorizontalVelocity()
+            end
+            
             ExecuteJump()
             
-            -- Double-tap insurance
+            -- Backup jump attempt
             task.defer(function()
                 if Humanoid and Humanoid.Health > 0 and holdSpace then
                     if IsOnGroundInstant() then
@@ -508,25 +533,16 @@ local function SuperBhop()
                 end
             end)
         end
-        
-        -- Preserve speed while on ground (anti-friction)
-        PreserveSpeed()
     else
-        FramesSinceLanding = 0
-        
-        -- Velocity restore frames while airborne after jump
-        if VelocityRestoreCounter > 0 then
-            VelocityRestoreCounter = VelocityRestoreCounter - 1
-            PreserveSpeed()
+        -- Reset consecutive jumps if we've been in air too long without jumping
+        if now - LastJumpTick > 1.5 then
+            ConsecutiveJumps = 0
         end
     end
     
     LastGroundState = onGround
 end
 
--- ═══════════════════════════════════════════════════════
--- OPTIMIZED PRE-JUMP QUEUE - Predictive landing
--- ═══════════════════════════════════════════════════════
 local function PreJumpQueue()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -536,120 +552,95 @@ local function PreJumpQueue()
         local pos = RootPart.Position
         local vel = RootPart.AssemblyLinearVelocity
         
-        -- Store speed before landing
-        local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-        if hSpeed > StoredHorizontalSpeed * 0.8 then
-            StoredHorizontalSpeed = hSpeed
-            PreHopVelocity = vel
+        -- Predictive ground detection - cast ray further based on velocity
+        local predictiveLength = BhopConfig.PreJumpDistance
+        if vel.Y < -20 then
+            predictiveLength = predictiveLength * 1.5
         end
         
-        -- Multi-ray predictive landing detection
-        local predictedPositions = {
-            pos,
-            pos + Vector3.new(vel.X, 0, vel.Z).Unit * 1.5,  -- Slightly ahead
-        }
+        -- Center ray
+        local rayResult = Workspace:Raycast(pos, Vector3.new(0, -predictiveLength, 0), BhopRayParams)
         
-        for _, checkPos in ipairs(predictedPositions) do
-            local rayResult = Workspace:Raycast(checkPos, Vector3.new(0, -BhopConfig.PreJumpDistance, 0), BhopRayParams)
-            if rayResult then
-                local hitPart = rayResult.Instance
-                local hitModel = hitPart:FindFirstAncestorOfClass("Model")
+        -- If center misses, try offset rays for edge catching
+        if not rayResult then
+            local spread = BhopConfig.MultiRaySpread * 0.8
+            local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
+            if horizontalVel.Magnitude > 1 then
+                local moveDir = horizontalVel.Unit
+                rayResult = Workspace:Raycast(pos + moveDir * spread, Vector3.new(0, -predictiveLength, 0), BhopRayParams)
+            end
+        end
+        
+        if rayResult and ValidateRayHit(rayResult) then
+            local dist = (pos - rayResult.Position).Magnitude
+            
+            -- Dynamic pre-jump threshold based on fall speed
+            local threshold = 3.5
+            if vel.Y < BhopConfig.PreJumpVelThreshold then
+                threshold = math.clamp(3.5 + math.abs(vel.Y) * 0.04, 3.5, 6.0)
+            end
+            
+            if dist < threshold then
+                -- Save speed before pre-landing jump
+                local currentSpeed = GetHorizontalSpeed()
+                if currentSpeed > BhopConfig.MinPreserveSpeed then
+                    LastHorizontalSpeed = math.max(LastHorizontalSpeed, currentSpeed)
+                    SavedHorizontalVelocity = GetHorizontalVelocity()
+                end
                 
-                if hitModel then
-                    local hitPlayer = Players:GetPlayerFromCharacter(hitModel)
-                    if hitPlayer or hitModel:FindFirstChildOfClass("Humanoid") then
-                        continue
+                PreLandingQueued = true
+                
+                task.defer(function()
+                    if holdSpace and Humanoid and Humanoid.Health > 0 then
+                        ExecuteJump()
                     end
-                end
-                
-                local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
-                if angle > 35 then
-                    continue
-                end
-                
-                local dist = (pos - rayResult.Position).Magnitude
-                
-                -- More aggressive pre-jump - trigger earlier and with less velocity requirement
-                if vel.Y < BhopConfig.PreJumpVelThreshold and dist < BhopConfig.PreJumpDistance then
-                    -- Calculate time to impact for better prediction
-                    local timeToImpact = dist / math.max(math.abs(vel.Y), 1)
-                    
-                    if timeToImpact < 0.15 or dist < 2.5 then
-                        PendingJump = true
-                        IsInBhopChain = true
-                        
-                        task.defer(function()
-                            if holdSpace and Humanoid and Humanoid.Health > 0 then
-                                -- Pre-apply friction compensation
-                                if StoredHorizontalSpeed > 5 then
-                                    local currentVel = RootPart.AssemblyLinearVelocity
-                                    local horizontal = Vector3.new(currentVel.X, 0, currentVel.Z)
-                                    if horizontal.Magnitude > 0.5 then
-                                        local boosted = horizontal.Unit * math.min(StoredHorizontalSpeed * BhopConfig.FrictionCompensation, BhopConfig.MaxPreservedSpeed)
-                                        RootPart.AssemblyLinearVelocity = Vector3.new(boosted.X, currentVel.Y, boosted.Z)
-                                    end
-                                end
-                                
-                                Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-                                LastJumpTick = tick()
-                                HopCount = HopCount + 1
-                                LastHopTime = tick()
-                                VelocityRestoreCounter = BhopConfig.VelocityRestoreFrames
-                            end
-                        end)
-                        return -- Found a valid landing spot, exit
-                    end
-                end
+                end)
             end
         end
     end
 end
 
--- ═══════════════════════════════════════════════════════
--- CONTINUOUS SPEED PRESERVATION (runs every frame during bhop)
--- ═══════════════════════════════════════════════════════
-local function ContinuousSpeedPreservation()
-    if not holdSpace or not RootPart or not Humanoid then return end
-    if Humanoid.Health <= 0 then return end
-    if not IsInBhopChain or StoredHorizontalSpeed <= 3 then return end
-    
-    local vel = RootPart.AssemblyLinearVelocity
-    local horizontal = Vector3.new(vel.X, 0, vel.Z)
-    local currentSpeed = horizontal.Magnitude
-    
-    -- Only during ground contact moments (where friction kills speed)
-    local onGround = IsOnGroundInstant()
-    if not onGround then return end
-    
-    -- If speed dropped significantly, restore it
-    local speedRatio = currentSpeed / StoredHorizontalSpeed
-    if speedRatio < 0.88 and currentSpeed > 1 then
-        local targetSpeed = math.min(
-            StoredHorizontalSpeed * BhopConfig.SpeedPreserveMultiplier,
-            BhopConfig.MaxPreservedSpeed
-        )
-        
-        local direction
-        if horizontal.Magnitude > 0.5 then
-            direction = horizontal.Unit
-        else
-            local preH = Vector3.new(PreHopVelocity.X, 0, PreHopVelocity.Z)
-            if preH.Magnitude > 0.5 then
-                direction = preH.Unit
-            else
-                return
-            end
+-- Speed preservation on humanoid state changes
+local function OnHumanoidStateChanged(old, new)
+    if not holdSpace then
+        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
+            ConsecutiveJumps = 0
         end
-        
-        local restored = direction * targetSpeed
-        RootPart.AssemblyLinearVelocity = Vector3.new(restored.X, vel.Y, restored.Z)
+        return
     end
     
-    -- Update stored speed if we're going faster (e.g., downhill)
-    if currentSpeed > StoredHorizontalSpeed then
-        StoredHorizontalSpeed = currentSpeed
+    if new == Enum.HumanoidStateType.Landed then
+        -- Instant jump on landing
+        task.defer(function()
+            if holdSpace and Humanoid and Humanoid.Health > 0 then
+                ExecuteJump()
+            end
+        end)
+    elseif new == Enum.HumanoidStateType.Running then
+        -- Backup: if we somehow enter running state while holding space
+        task.defer(function()
+            if holdSpace and Humanoid and Humanoid.Health > 0 then
+                local speed = GetHorizontalSpeed()
+                if speed > BhopConfig.MinPreserveSpeed then
+                    LastHorizontalSpeed = speed
+                    SavedHorizontalVelocity = GetHorizontalVelocity()
+                end
+                ExecuteJump()
+            end
+        end)
+    elseif new == Enum.HumanoidStateType.Jumping then
+        -- Preserve speed right when jump initiates
+        task.defer(function()
+            if RootPart and Humanoid and Humanoid.Health > 0 then
+                PreserveSpeed()
+            end
+        end)
     end
 end
+
+-- ═══════════════════════════════════════════════════════════════
+-- GAME LOGIC (unchanged functionality)
+-- ═══════════════════════════════════════════════════════════════
 
 local LastBotCheck = 0
 
@@ -1361,7 +1352,7 @@ local function ToggleInfiniteCola(enabled)
     local speedBoostEvent = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
     
     if not toolActionEvent or not speedBoostEvent then 
-        warn("[Evade Helper] Cola events not found - feature disabled")
+        warn("[Evade Helper] Cola events not found")
         return 
     end
     
@@ -1462,249 +1453,244 @@ local function StopModeVoting()
     State.VoteMode = false
 end
 
--- ═══════════════════════════════════════════════════════
--- COMPLETELY REDESIGNED GUI - Modern glassmorphism style
--- ═══════════════════════════════════════════════════════
-
-local COLORS = {
-    Background = Color3.fromRGB(15, 15, 20),
-    Surface = Color3.fromRGB(22, 22, 30),
-    SurfaceHover = Color3.fromRGB(30, 30, 40),
-    Card = Color3.fromRGB(28, 28, 38),
-    Primary = Color3.fromRGB(88, 101, 242),    -- Discord-like blue/purple
-    PrimaryDark = Color3.fromRGB(71, 82, 196),
-    Success = Color3.fromRGB(87, 242, 135),
-    Danger = Color3.fromRGB(237, 66, 69),
-    Warning = Color3.fromRGB(254, 231, 92),
-    Text = Color3.fromRGB(220, 221, 222),
-    TextMuted = Color3.fromRGB(114, 118, 125),
-    TextDim = Color3.fromRGB(72, 75, 81),
-    Border = Color3.fromRGB(40, 40, 55),
-    ActiveGlow = Color3.fromRGB(88, 101, 242),
-    Accent = Color3.fromRGB(235, 69, 158),     -- Pink accent
-    AccentAlt = Color3.fromRGB(69, 203, 235),   -- Cyan accent
-}
+-- ═══════════════════════════════════════════════════════════════
+-- MODERN GUI SYSTEM
+-- ═══════════════════════════════════════════════════════════════
 
 local function Tween(obj, props, duration, style, direction)
     local tweenInfo = TweenInfo.new(
         duration or 0.2,
-        style or Enum.EasingStyle.Quart,
+        style or Enum.EasingStyle.Quint,
         direction or Enum.EasingDirection.Out
     )
-    TweenService:Create(obj, tweenInfo, props):Play()
+    local tween = TweenService:Create(obj, tweenInfo, props)
+    tween:Play()
+    return tween
 end
 
-local function AddShadow(parent, depth)
-    depth = depth or 4
+local function AddShadow(parent, offset, transparency)
     local shadow = Instance.new("ImageLabel")
     shadow.Name = "Shadow"
+    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
     shadow.BackgroundTransparency = 1
+    shadow.Position = UDim2.new(0.5, 0, 0.5, offset or 4)
+    shadow.Size = UDim2.new(1, 30, 1, 30)
     shadow.Image = "rbxassetid://6014261993"
     shadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
-    shadow.ImageTransparency = 0.6
+    shadow.ImageTransparency = transparency or 0.5
     shadow.ScaleType = Enum.ScaleType.Slice
     shadow.SliceCenter = Rect.new(49, 49, 450, 450)
-    shadow.Size = UDim2.new(1, depth * 6, 1, depth * 6)
-    shadow.Position = UDim2.new(0, -depth * 3, 0, -depth * 3)
-    shadow.ZIndex = parent.ZIndex - 1
+    shadow.ZIndex = -1
     shadow.Parent = parent
     return shadow
 end
 
-local function CreateModernButton(parent, text, icon, position, size, callback, toggleState)
-    local container = Instance.new("Frame")
-    container.Name = text:gsub("%s+", "")
-    container.Size = size or UDim2.new(1, -16, 0, 36)
-    container.Position = position or UDim2.new(0, 8, 0, 0)
-    container.BackgroundColor3 = COLORS.Surface
-    container.BorderSizePixel = 0
-    container.Parent = parent
+local function CreateModernButton(parent, name, text, icon, pos, size, callback)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Size = size or UDim2.new(1, -16, 0, 36)
+    btn.Position = pos or UDim2.new(0, 8, 0, 0)
+    btn.BackgroundColor3 = Theme.ButtonOff
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = parent
     
-    local corner = Instance.new("UICorner", container)
+    local corner = Instance.new("UICorner", btn)
     corner.CornerRadius = UDim.new(0, 8)
     
-    local stroke = Instance.new("UIStroke", container)
-    stroke.Color = COLORS.Border
+    local stroke = Instance.new("UIStroke", btn)
+    stroke.Color = Theme.Border
     stroke.Thickness = 1
     stroke.Transparency = 0.5
     
-    local button = Instance.new("TextButton")
-    button.Name = "Btn"
-    button.Size = UDim2.new(1, 0, 1, 0)
-    button.BackgroundTransparency = 1
-    button.Text = ""
-    button.AutoButtonColor = false
-    button.Parent = container
-    
-    -- Icon
-    if icon then
-        local iconLabel = Instance.new("TextLabel")
-        iconLabel.Name = "Icon"
-        iconLabel.Size = UDim2.new(0, 20, 0, 20)
-        iconLabel.Position = UDim2.new(0, 10, 0.5, -10)
-        iconLabel.BackgroundTransparency = 1
-        iconLabel.Text = icon
-        iconLabel.TextColor3 = COLORS.TextMuted
-        iconLabel.TextSize = 14
-        iconLabel.Font = Enum.Font.GothamBold
-        iconLabel.Parent = container
-    end
+    -- Icon/indicator dot
+    local indicator = Instance.new("Frame")
+    indicator.Name = "Indicator"
+    indicator.Size = UDim2.new(0, 6, 0, 6)
+    indicator.Position = UDim2.new(0, 12, 0.5, -3)
+    indicator.BackgroundColor3 = Theme.TextMuted
+    indicator.Parent = btn
+    Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
     
     local label = Instance.new("TextLabel")
     label.Name = "Label"
-    label.Size = UDim2.new(1, icon and -70 or -20, 1, 0)
-    label.Position = UDim2.new(0, icon and 34 or 10, 0, 0)
+    label.Size = UDim2.new(1, -40, 1, 0)
+    label.Position = UDim2.new(0, 26, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = text
-    label.TextColor3 = COLORS.Text
+    label.TextColor3 = Theme.TextSecondary
     label.TextSize = 12
-    label.Font = Enum.Font.GothamMedium
+    label.Font = FONT_BODY
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = container
+    label.Parent = btn
     
-    -- Toggle indicator
-    local indicator = Instance.new("Frame")
-    indicator.Name = "Indicator"
-    indicator.Size = UDim2.new(0, 36, 0, 18)
-    indicator.Position = UDim2.new(1, -46, 0.5, -9)
-    indicator.BackgroundColor3 = COLORS.TextDim
-    indicator.Parent = container
-    Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
-    
-    local dot = Instance.new("Frame")
-    dot.Name = "Dot"
-    dot.Size = UDim2.new(0, 14, 0, 14)
-    dot.Position = UDim2.new(0, 2, 0.5, -7)
-    dot.BackgroundColor3 = Color3.new(1, 1, 1)
-    dot.Parent = indicator
-    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
-    
-    local isActive = false
-    
-    local function SetActive(active)
-        isActive = active
-        Tween(indicator, {BackgroundColor3 = active and COLORS.Primary or COLORS.TextDim}, 0.25)
-        Tween(dot, {Position = active and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)}, 0.25)
-        Tween(stroke, {Color = active and COLORS.Primary or COLORS.Border}, 0.25)
-        
-        if icon then
-            local iconLabel = container:FindFirstChild("Icon")
-            if iconLabel then
-                Tween(iconLabel, {TextColor3 = active and COLORS.Primary or COLORS.TextMuted}, 0.25)
-            end
-        end
-    end
-    
-    container:SetAttribute("SetActive", "")
-    container.SetActive = SetActive
+    local statusText = Instance.new("TextLabel")
+    statusText.Name = "Status"
+    statusText.Size = UDim2.new(0, 30, 1, 0)
+    statusText.Position = UDim2.new(1, -38, 0, 0)
+    statusText.BackgroundTransparency = 1
+    statusText.Text = "OFF"
+    statusText.TextColor3 = Theme.TextMuted
+    statusText.TextSize = 10
+    statusText.Font = FONT_SMALL
+    statusText.Parent = btn
     
     -- Hover effects
-    button.MouseEnter:Connect(function()
-        Tween(container, {BackgroundColor3 = COLORS.SurfaceHover}, 0.15)
-    end)
-    button.MouseLeave:Connect(function()
-        Tween(container, {BackgroundColor3 = COLORS.Surface}, 0.15)
+    btn.MouseEnter:Connect(function()
+        if not btn:GetAttribute("Active") then
+            Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.15)
+        end
+        Tween(stroke, {Color = Theme.AccentGlow, Transparency = 0.3}, 0.15)
     end)
     
-    button.MouseButton1Click:Connect(function()
+    btn.MouseLeave:Connect(function()
+        if not btn:GetAttribute("Active") then
+            Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, 0.15)
+        end
+        Tween(stroke, {Color = btn:GetAttribute("Active") and Theme.AccentGlow or Theme.Border, Transparency = 0.5}, 0.15)
+    end)
+    
+    btn.MouseButton1Click:Connect(function()
         if callback then callback() end
-        -- Quick press animation
-        Tween(container, {BackgroundColor3 = COLORS.Primary}, 0.05)
-        task.delay(0.1, function()
-            Tween(container, {BackgroundColor3 = COLORS.Surface}, 0.15)
-        end)
     end)
     
-    return container, SetActive
+    return btn
 end
 
-local function CreateModernSmallButton(parent, text, position, size, callback, color)
-    local button = Instance.new("TextButton")
-    button.Name = text:gsub("%s+", "")
-    button.Size = size or UDim2.new(0, 60, 0, 28)
-    button.Position = position or UDim2.new(0, 0, 0, 0)
-    button.BackgroundColor3 = color or COLORS.Surface
-    button.Text = text
-    button.TextColor3 = COLORS.Text
-    button.TextSize = 11
-    button.Font = Enum.Font.GothamMedium
-    button.AutoButtonColor = false
-    button.BorderSizePixel = 0
-    button.Parent = parent
+local function CreateSmallButton(parent, name, text, pos, size, callback)
+    local btn = Instance.new("TextButton")
+    btn.Name = name
+    btn.Size = size or UDim2.new(0, 50, 0, 28)
+    btn.Position = pos or UDim2.new(0, 0, 0, 0)
+    btn.BackgroundColor3 = Theme.ButtonOff
+    btn.Text = text
+    btn.TextColor3 = Theme.TextSecondary
+    btn.TextSize = 11
+    btn.Font = FONT_BODY
+    btn.AutoButtonColor = false
+    btn.BorderSizePixel = 0
+    btn.Parent = parent
     
-    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
     
-    local stroke = Instance.new("UIStroke", button)
-    stroke.Color = COLORS.Border
+    btn.MouseEnter:Connect(function()
+        if not btn:GetAttribute("Active") then
+            Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.12)
+        end
+    end)
+    
+    btn.MouseLeave:Connect(function()
+        if not btn:GetAttribute("Active") then
+            Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, 0.12)
+        end
+    end)
+    
+    btn.MouseButton1Click:Connect(function()
+        if callback then callback() end
+    end)
+    
+    return btn
+end
+
+local function CreateSectionLabel(parent, text, pos)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(1, -16, 0, 20)
+    container.Position = pos
+    container.BackgroundTransparency = 1
+    container.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text:upper()
+    label.TextColor3 = Theme.TextMuted
+    label.TextSize = 9
+    label.Font = FONT_HEADING
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.LetterSpacing = 2
+    label.Parent = container
+    
+    local line = Instance.new("Frame")
+    line.Size = UDim2.new(1, -#text * 7, 0, 1)
+    line.Position = UDim2.new(0, #text * 7 + 8, 0.5, 0)
+    line.BackgroundColor3 = Theme.Border
+    line.BackgroundTransparency = 0.5
+    line.BorderSizePixel = 0
+    line.Parent = container
+    
+    return container
+end
+
+local function CreateModernInput(parent, name, placeholder, pos, size, callback)
+    local container = Instance.new("Frame")
+    container.Name = name .. "Container"
+    container.Size = size or UDim2.new(1, -16, 0, 32)
+    container.Position = pos
+    container.BackgroundColor3 = Theme.SurfaceLight
+    container.BorderSizePixel = 0
+    container.Parent = parent
+    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 6)
+    
+    local stroke = Instance.new("UIStroke", container)
+    stroke.Color = Theme.Border
     stroke.Thickness = 1
     stroke.Transparency = 0.5
     
-    button.MouseEnter:Connect(function()
-        Tween(button, {BackgroundColor3 = COLORS.SurfaceHover}, 0.15)
-    end)
-    button.MouseLeave:Connect(function()
-        Tween(button, {BackgroundColor3 = color or COLORS.Surface}, 0.15)
-    end)
-    
-    if callback then button.MouseButton1Click:Connect(callback) end
-    
-    return button
-end
-
-local function CreateSectionHeader(parent, text, y)
-    local header = Instance.new("TextLabel")
-    header.Size = UDim2.new(1, -16, 0, 20)
-    header.Position = UDim2.new(0, 8, 0, y)
-    header.BackgroundTransparency = 1
-    header.Text = text
-    header.TextColor3 = COLORS.TextMuted
-    header.TextSize = 10
-    header.Font = Enum.Font.GothamBold
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Parent = parent
-    
-    -- Subtle line under header
-    local line = Instance.new("Frame")
-    line.Size = UDim2.new(1, -16, 0, 1)
-    line.Position = UDim2.new(0, 8, 0, y + 18)
-    line.BackgroundColor3 = COLORS.Border
-    line.BackgroundTransparency = 0.5
-    line.BorderSizePixel = 0
-    line.Parent = parent
-    
-    return header
-end
-
-local function CreateModernInput(parent, placeholder, position, size, callback)
     local input = Instance.new("TextBox")
-    input.Size = size or UDim2.new(0, 120, 0, 28)
-    input.Position = position or UDim2.new(0, 0, 0, 0)
-    input.BackgroundColor3 = COLORS.Surface
+    input.Name = name
+    input.Size = UDim2.new(1, -16, 1, 0)
+    input.Position = UDim2.new(0, 8, 0, 0)
+    input.BackgroundTransparency = 1
     input.Text = ""
     input.PlaceholderText = placeholder
-    input.TextColor3 = COLORS.Text
-    input.PlaceholderColor3 = COLORS.TextDim
+    input.TextColor3 = Theme.TextPrimary
+    input.PlaceholderColor3 = Theme.TextMuted
     input.TextSize = 11
-    input.Font = Enum.Font.Gotham
+    input.Font = FONT_SMALL
     input.ClearTextOnFocus = false
-    input.BorderSizePixel = 0
-    input.Parent = parent
-    
-    Instance.new("UICorner", input).CornerRadius = UDim.new(0, 6)
-    
-    local stroke = Instance.new("UIStroke", input)
-    stroke.Color = COLORS.Border
-    stroke.Thickness = 1
+    input.Parent = container
     
     input.Focused:Connect(function()
-        Tween(stroke, {Color = COLORS.Primary}, 0.2)
+        Tween(stroke, {Color = Theme.Accent, Transparency = 0}, 0.15)
     end)
+    
     input.FocusLost:Connect(function()
-        Tween(stroke, {Color = COLORS.Border}, 0.2)
+        Tween(stroke, {Color = Theme.Border, Transparency = 0.5}, 0.15)
         if callback then callback(input.Text) end
     end)
     
     return input
+end
+
+local function SetModernButtonActive(button, active)
+    button:SetAttribute("Active", active)
+    
+    local indicator = button:FindFirstChild("Indicator")
+    local label = button:FindFirstChild("Label")
+    local status = button:FindFirstChild("Status")
+    
+    if active then
+        Tween(button, {BackgroundColor3 = Color3.fromRGB(88, 101, 242)}, 0.2) -- Theme.ButtonOn
+        if indicator then Tween(indicator, {BackgroundColor3 = Theme.Success}, 0.2) end
+        if label then Tween(label, {TextColor3 = Theme.TextPrimary}, 0.2) end
+        if status then status.Text = "ON" Tween(status, {TextColor3 = Theme.Success}, 0.2) end
+    else
+        Tween(button, {BackgroundColor3 = Theme.ButtonOff}, 0.2)
+        if indicator then Tween(indicator, {BackgroundColor3 = Theme.TextMuted}, 0.2) end
+        if label then Tween(label, {TextColor3 = Theme.TextSecondary}, 0.2) end
+        if status then status.Text = "OFF" Tween(status, {TextColor3 = Theme.TextMuted}, 0.2) end
+    end
+end
+
+local function SetSmallButtonActive(button, active)
+    button:SetAttribute("Active", active)
+    
+    if active then
+        Tween(button, {BackgroundColor3 = Theme.ButtonOn, TextColor3 = Theme.TextPrimary}, 0.15)
+    else
+        Tween(button, {BackgroundColor3 = Theme.ButtonOff, TextColor3 = Theme.TextSecondary}, 0.15)
+    end
 end
 
 local function MakeDraggable(frame)
@@ -1714,7 +1700,7 @@ local function MakeDraggable(frame)
     dragArea.Size = UDim2.new(1, 0, 0, 40)
     dragArea.Position = UDim2.new(0, 0, 0, 0)
     dragArea.BackgroundTransparency = 1
-    dragArea.ZIndex = frame.ZIndex + 10
+    dragArea.ZIndex = 10
     dragArea.Parent = frame
     
     dragArea.InputBegan:Connect(function(input)
@@ -1735,21 +1721,48 @@ local function MakeDraggable(frame)
     end)
 end
 
--- Store toggle functions for UpdateGUI
-local ToggleFunctions = {}
-
 local function UpdateGUI()
-    -- Toggle functions are called directly by their respective buttons now
+    if not GUI then return end
+    local main = GUI:FindFirstChild("Main")
+    if not main then return end
+    
+    local content = main:FindFirstChild("Content")
+    if not content then return end
+    
+    local function UpdateModern(name, active)
+        local button = content:FindFirstChild(name)
+        if button and button:IsA("TextButton") then
+            SetModernButtonActive(button, active)
+        end
+    end
+    
+    local function UpdateSmall(name, active)
+        local button = content:FindFirstChild(name)
+        if button and button:IsA("TextButton") then
+            SetSmallButtonActive(button, active)
+        end
+    end
+    
+    UpdateSmall("FOV90", Config.FOV == 90)
+    UpdateSmall("FOV120", Config.FOV == 120)
+    UpdateModern("Bright", FullbrightEnabled)
+    UpdateModern("Border", State.Border)
+    UpdateModern("Anti", State.AntiNextbot)
+    UpdateModern("Farm", State.AutoFarm)
+    UpdateModern("InfCola", State.InfiniteCola)
+    UpdateModern("UpFix", State.UpsideDownFix)
+    UpdateModern("EdgeBoost", State.EdgeBoost)
+    UpdateSmall("ColaLow", ColaConfig.Speed == 1.4)
+    UpdateSmall("ColaMed", ColaConfig.Speed == 1.6)
+    UpdateSmall("ColaHigh", ColaConfig.Speed == 1.8)
 end
 
 local function UpdateSliderUI(value)
     if not SliderTrack then return end
     local pos = math.clamp((value - SliderMin) / (SliderMax - SliderMin), 0, 1)
-    SliderFill.Size = UDim2.new(pos, 0, 1, 0)
-    SliderThumb.Position = UDim2.new(pos, -7, 0.5, -7)
-    if SliderLabel then
-        SliderLabel.Text = string.format("%.1fx", value)
-    end
+    Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, 0.1)
+    Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, 0.1)
+    SliderLabel.Text = string.format("Cola Speed: %.1fx", value)
 end
 
 local function CreateVIPPanel()
@@ -1758,22 +1771,20 @@ local function CreateVIPPanel()
     VIPPanel = Instance.new("Frame")
     VIPPanel.Name = "VIP"
     VIPPanel.Size = UDim2.new(0, 280, 0, 200)
-    VIPPanel.Position = UDim2.new(0, 310, 0, 60)
-    VIPPanel.BackgroundColor3 = COLORS.Background
+    VIPPanel.Position = UDim2.new(0, 310, 0, 50)
+    VIPPanel.BackgroundColor3 = Theme.Background
     VIPPanel.BorderSizePixel = 0
     VIPPanel.Parent = GUI
     Instance.new("UICorner", VIPPanel).CornerRadius = UDim.new(0, 12)
-    
     local vipStroke = Instance.new("UIStroke", VIPPanel)
-    vipStroke.Color = COLORS.Border
+    vipStroke.Color = Theme.Border
     vipStroke.Thickness = 1
-    
-    AddShadow(VIPPanel, 5)
+    AddShadow(VIPPanel)
     
     -- Title bar
     local titleBar = Instance.new("Frame")
     titleBar.Size = UDim2.new(1, 0, 0, 36)
-    titleBar.BackgroundColor3 = COLORS.Surface
+    titleBar.BackgroundColor3 = Theme.Surface
     titleBar.BorderSizePixel = 0
     titleBar.Parent = VIPPanel
     Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
@@ -1782,119 +1793,107 @@ local function CreateVIPPanel()
     local titleFix = Instance.new("Frame")
     titleFix.Size = UDim2.new(1, 0, 0, 12)
     titleFix.Position = UDim2.new(0, 0, 1, -12)
-    titleFix.BackgroundColor3 = COLORS.Surface
+    titleFix.BackgroundColor3 = Theme.Surface
     titleFix.BorderSizePixel = 0
     titleFix.Parent = titleBar
     
     local vipTitle = Instance.new("TextLabel")
     vipTitle.Size = UDim2.new(1, -40, 1, 0)
-    vipTitle.Position = UDim2.new(0, 12, 0, 0)
+    vipTitle.Position = UDim2.new(0, 14, 0, 0)
     vipTitle.BackgroundTransparency = 1
     vipTitle.Text = "⚡ VIP SERVER"
-    vipTitle.TextColor3 = COLORS.Warning
+    vipTitle.TextColor3 = Theme.Accent
     vipTitle.TextSize = 12
-    vipTitle.Font = Enum.Font.GothamBold
+    vipTitle.Font = FONT_HEADING
     vipTitle.TextXAlignment = Enum.TextXAlignment.Left
     vipTitle.Parent = titleBar
     
-    local closeBtn = Instance.new("TextButton")
-    closeBtn.Size = UDim2.new(0, 28, 0, 28)
-    closeBtn.Position = UDim2.new(1, -34, 0.5, -14)
-    closeBtn.BackgroundColor3 = COLORS.Danger
-    closeBtn.BackgroundTransparency = 0.8
-    closeBtn.Text = "✕"
-    closeBtn.TextColor3 = COLORS.Danger
-    closeBtn.TextSize = 12
-    closeBtn.Font = Enum.Font.GothamBold
-    closeBtn.AutoButtonColor = false
-    closeBtn.BorderSizePixel = 0
-    closeBtn.Parent = titleBar
-    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
-    closeBtn.MouseButton1Click:Connect(function() VIPPanel.Visible = false end)
+    local closeBtn = CreateSmallButton(titleBar, "X", "✕", UDim2.new(1, -32, 0, 4), UDim2.new(0, 28, 0, 28), function()
+        VIPPanel.Visible = false
+    end)
+    closeBtn.TextSize = 14
     
     local y = 44
     
-    -- Map Vote Section
-    CreateSectionHeader(VIPPanel, "MAP VOTING", y)
-    y = y + 24
+    -- Map Vote
+    local mapLabel = Instance.new("TextLabel")
+    mapLabel.Size = UDim2.new(0, 70, 0, 20)
+    mapLabel.Position = UDim2.new(0, 12, 0, y)
+    mapLabel.BackgroundTransparency = 1
+    mapLabel.Text = "Map Vote"
+    mapLabel.TextColor3 = Theme.TextSecondary
+    mapLabel.TextSize = 11
+    mapLabel.Font = FONT_BODY
+    mapLabel.TextXAlignment = Enum.TextXAlignment.Left
+    mapLabel.Parent = VIPPanel
     
-    local mapRow = Instance.new("Frame")
-    mapRow.Size = UDim2.new(1, -16, 0, 30)
-    mapRow.Position = UDim2.new(0, 8, 0, y)
-    mapRow.BackgroundTransparency = 1
-    mapRow.Parent = VIPPanel
-    
-    local autoVoteBtn = CreateModernSmallButton(mapRow, "AUTO", UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 28), nil, COLORS.Surface)
+    local autoVoteBtn = CreateSmallButton(VIPPanel, "AV", "AUTO", UDim2.new(0, 85, 0, y - 2), UDim2.new(0, 42, 0, 24), function() end)
+    autoVoteBtn.TextSize = 9
     autoVoteBtn.MouseButton1Click:Connect(function()
         if State.VoteMap then StopMapVoting() else StartMapVoting() end
-        autoVoteBtn.Text = State.VoteMap and "ON" or "AUTO"
-        autoVoteBtn.BackgroundColor3 = State.VoteMap and COLORS.Primary or COLORS.Surface
+        SetSmallButtonActive(autoVoteBtn, State.VoteMap)
     end)
     
     for i = 1, 4 do
-        local btn = CreateModernSmallButton(mapRow, tostring(i), UDim2.new(0, 54 + (i-1) * 34, 0, 0), UDim2.new(0, 30, 0, 28), function()
+        local btn = CreateSmallButton(VIPPanel, "Mp" .. i, tostring(i), UDim2.new(0, 130 + (i - 1) * 32, 0, y - 2), UDim2.new(0, 28, 0, 24), function()
             State.MapIndex = i
-            for j = 1, 4 do 
-                local b = mapRow:FindFirstChild(tostring(j)) 
-                if b then b.BackgroundColor3 = j == i and COLORS.Primary or COLORS.Surface end 
-            end
+            for j = 1, 4 do local b = VIPPanel:FindFirstChild("Mp" .. j) if b then SetSmallButtonActive(b, j == i) end end
         end)
-        if i == 1 then btn.BackgroundColor3 = COLORS.Primary end
+        btn.TextSize = 10
+        if i == 1 then SetSmallButtonActive(btn, true) end
+    end
+    
+    y = y + 32
+    
+    -- Mode Vote
+    local modeLabel = Instance.new("TextLabel")
+    modeLabel.Size = UDim2.new(0, 70, 0, 20)
+    modeLabel.Position = UDim2.new(0, 12, 0, y)
+    modeLabel.BackgroundTransparency = 1
+    modeLabel.Text = "Mode Vote"
+    modeLabel.TextColor3 = Theme.TextSecondary
+    modeLabel.TextSize = 11
+    modeLabel.Font = FONT_BODY
+    modeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    modeLabel.Parent = VIPPanel
+    
+    local autoModeBtn = CreateSmallButton(VIPPanel, "AM", "AUTO", UDim2.new(0, 85, 0, y - 2), UDim2.new(0, 42, 0, 24), function() end)
+    autoModeBtn.TextSize = 9
+    autoModeBtn.MouseButton1Click:Connect(function()
+        if State.VoteMode then StopModeVoting() else StartModeVoting() end
+        SetSmallButtonActive(autoModeBtn, State.VoteMode)
+    end)
+    
+    for i = 1, 4 do
+        local btn = CreateSmallButton(VIPPanel, "Md" .. i, tostring(i), UDim2.new(0, 130 + (i - 1) * 32, 0, y - 2), UDim2.new(0, 28, 0, 24), function()
+            State.ModeIndex = i
+            for j = 1, 4 do local b = VIPPanel:FindFirstChild("Md" .. j) if b then SetSmallButtonActive(b, j == i) end end
+        end)
+        btn.TextSize = 10
+        if i == 1 then SetSmallButtonActive(btn, true) end
     end
     
     y = y + 36
     
-    -- Mode Vote Section
-    CreateSectionHeader(VIPPanel, "MODE VOTING", y)
-    y = y + 24
-    
-    local modeRow = Instance.new("Frame")
-    modeRow.Size = UDim2.new(1, -16, 0, 30)
-    modeRow.Position = UDim2.new(0, 8, 0, y)
-    modeRow.BackgroundTransparency = 1
-    modeRow.Parent = VIPPanel
-    
-    local autoModeBtn = CreateModernSmallButton(modeRow, "AUTO", UDim2.new(0, 0, 0, 0), UDim2.new(0, 50, 0, 28), nil, COLORS.Surface)
-    autoModeBtn.MouseButton1Click:Connect(function()
-        if State.VoteMode then StopModeVoting() else StartModeVoting() end
-        autoModeBtn.Text = State.VoteMode and "ON" or "AUTO"
-        autoModeBtn.BackgroundColor3 = State.VoteMode and COLORS.Primary or COLORS.Surface
+    -- Map search
+    local mapInput = CreateModernInput(VIPPanel, "MapIn", "Search map...", UDim2.new(0, 12, 0, y), UDim2.new(0, 160, 0, 28), function(text) State.MapSearch = text end)
+    local addMapBtn = CreateSmallButton(VIPPanel, "AddM", "+", UDim2.new(0, 178, 0, y), UDim2.new(0, 28, 0, 28), function()
+        local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("AddMap", map) end
     end)
+    addMapBtn.TextSize = 14
+    local remMapBtn = CreateSmallButton(VIPPanel, "RemM", "−", UDim2.new(0, 210, 0, y), UDim2.new(0, 28, 0, 28), function()
+        local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("RemoveMap", map) end
+    end)
+    remMapBtn.TextSize = 14
     
-    for i = 1, 4 do
-        local btn = CreateModernSmallButton(modeRow, tostring(i), UDim2.new(0, 54 + (i-1) * 34, 0, 0), UDim2.new(0, 30, 0, 28), function()
-            State.ModeIndex = i
-            for j = 1, 4 do 
-                local b = modeRow:FindFirstChild(tostring(j)) 
-                if b then b.BackgroundColor3 = j == i and COLORS.Primary or COLORS.Surface end 
-            end
-        end)
-        if i == 1 then btn.BackgroundColor3 = COLORS.Primary end
-    end
+    y = y + 36
     
-    y = y + 38
-    
-    -- Admin controls
-    local adminRow = Instance.new("Frame")
-    adminRow.Size = UDim2.new(1, -16, 0, 28)
-    adminRow.Position = UDim2.new(0, 8, 0, y)
-    adminRow.BackgroundTransparency = 1
-    adminRow.Parent = VIPPanel
-    
-    local mapInput = CreateModernInput(adminRow, "Map name...", UDim2.new(0, 0, 0, 0), UDim2.new(0, 130, 0, 28), function(text) State.MapSearch = text end)
-    CreateModernSmallButton(adminRow, "+", UDim2.new(0, 134, 0, 0), UDim2.new(0, 28, 0, 28), function() local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("AddMap", map) end end, COLORS.Success)
-    CreateModernSmallButton(adminRow, "−", UDim2.new(0, 166, 0, 0), UDim2.new(0, 28, 0, 28), function() local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("RemoveMap", map) end end, COLORS.Danger)
-    
-    y = y + 34
-    
-    local modeAdminRow = Instance.new("Frame")
-    modeAdminRow.Size = UDim2.new(1, -16, 0, 28)
-    modeAdminRow.Position = UDim2.new(0, 8, 0, y)
-    modeAdminRow.BackgroundTransparency = 1
-    modeAdminRow.Parent = VIPPanel
-    
-    local modeInput = CreateModernInput(modeAdminRow, "Mode name...", UDim2.new(0, 0, 0, 0), UDim2.new(0, 130, 0, 28), function(text) State.GamemodeSearch = text end)
-    CreateModernSmallButton(modeAdminRow, "SET", UDim2.new(0, 134, 0, 0), UDim2.new(0, 60, 0, 28), function() local mode = FindInList(State.GamemodeSearch, Modes) if mode then FireAdmin("Gamemode", mode) end end, COLORS.Primary)
+    -- Mode search
+    local modeInput = CreateModernInput(VIPPanel, "ModeIn", "Search mode...", UDim2.new(0, 12, 0, y), UDim2.new(0, 160, 0, 28), function(text) State.GamemodeSearch = text end)
+    local setModeBtn = CreateSmallButton(VIPPanel, "SetM", "SET", UDim2.new(0, 178, 0, y), UDim2.new(0, 60, 0, 28), function()
+        local mode = FindInList(State.GamemodeSearch, Modes) if mode then FireAdmin("Gamemode", mode) end
+    end)
+    setModeBtn.TextSize = 9
     
     MakeDraggable(VIPPanel)
 end
@@ -1909,28 +1908,27 @@ local function CreateMainGUI()
     SafeCall(function() GUI.Parent = game:GetService("CoreGui") end)
     if not GUI.Parent then GUI.Parent = PlayerGui end
     
-    -- Main container
     local main = Instance.new("Frame")
     main.Name = "Main"
-    main.Size = UDim2.new(0, 280, 0, 480)
-    main.Position = UDim2.new(0, 20, 0, 60)
-    main.BackgroundColor3 = COLORS.Background
+    main.Size = UDim2.new(0, 280, 0, 0) -- Start collapsed for animation
+    main.Position = UDim2.new(0, 20, 0, 50)
+    main.BackgroundColor3 = Theme.Background
     main.BorderSizePixel = 0
+    main.ClipsDescendants = true
     main.Parent = GUI
-    
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
     
     local mainStroke = Instance.new("UIStroke", main)
-    mainStroke.Color = COLORS.Border
+    mainStroke.Color = Theme.Border
     mainStroke.Thickness = 1
     
-    AddShadow(main, 6)
+    AddShadow(main)
     
-    -- ═══ Title Bar ═══
+    -- Title bar
     local titleBar = Instance.new("Frame")
     titleBar.Name = "TitleBar"
-    titleBar.Size = UDim2.new(1, 0, 0, 40)
-    titleBar.BackgroundColor3 = COLORS.Surface
+    titleBar.Size = UDim2.new(1, 0, 0, 44)
+    titleBar.BackgroundColor3 = Theme.Surface
     titleBar.BorderSizePixel = 0
     titleBar.Parent = main
     Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
@@ -1938,261 +1936,246 @@ local function CreateMainGUI()
     local titleFix = Instance.new("Frame")
     titleFix.Size = UDim2.new(1, 0, 0, 12)
     titleFix.Position = UDim2.new(0, 0, 1, -12)
-    titleFix.BackgroundColor3 = COLORS.Surface
+    titleFix.BackgroundColor3 = Theme.Surface
     titleFix.BorderSizePixel = 0
     titleFix.Parent = titleBar
     
-    -- Accent gradient on title
-    local titleGradient = Instance.new("UIGradient", titleBar)
-    titleGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 30, 42)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(22, 22, 30))
-    })
-    titleGradient.Rotation = 90
+    -- Accent line under title
+    local accentLine = Instance.new("Frame")
+    accentLine.Size = UDim2.new(1, 0, 0, 2)
+    accentLine.Position = UDim2.new(0, 0, 1, -2)
+    accentLine.BackgroundColor3 = Theme.Accent
+    accentLine.BorderSizePixel = 0
+    accentLine.Parent = titleBar
     
-    local titleIcon = Instance.new("TextLabel")
-    titleIcon.Size = UDim2.new(0, 24, 0, 24)
-    titleIcon.Position = UDim2.new(0, 10, 0.5, -12)
-    titleIcon.BackgroundTransparency = 1
-    titleIcon.Text = "⚡"
-    titleIcon.TextSize = 16
-    titleIcon.Parent = titleBar
+    local gradient = Instance.new("UIGradient", accentLine)
+    gradient.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Theme.Accent),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(155, 89, 182)),
+        ColorSequenceKeypoint.new(1, Theme.Danger),
+    }
     
-    local titleText = Instance.new("TextLabel")
-    titleText.Size = UDim2.new(0, 160, 1, 0)
-    titleText.Position = UDim2.new(0, 34, 0, 0)
-    titleText.BackgroundTransparency = 1
-    titleText.Text = IsEvadeGame() and "EVADE HELPER" or "HELPER"
-    titleText.TextColor3 = COLORS.Text
-    titleText.TextSize = 14
-    titleText.Font = Enum.Font.GothamBlack
-    titleText.TextXAlignment = Enum.TextXAlignment.Left
-    titleText.Parent = titleBar
+    local titleText = IsEvadeGame() and "EVADE HELPER" or "HELPER (Universal)"
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -100, 1, 0)
+    title.Position = UDim2.new(0, 14, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "🎮  " .. titleText
+    title.TextColor3 = Theme.TextPrimary
+    title.TextSize = 13
+    title.Font = FONT_TITLE
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = titleBar
     
     local versionLabel = Instance.new("TextLabel")
     versionLabel.Size = UDim2.new(0, 30, 0, 16)
-    versionLabel.Position = UDim2.new(0, titleText.Position.X.Offset + (IsEvadeGame() and 108 or 60), 0.5, -8)
-    versionLabel.BackgroundColor3 = COLORS.Primary
+    versionLabel.Position = UDim2.new(0, 14 + #titleText * 7 + 30, 0, 14)
+    versionLabel.BackgroundColor3 = Theme.Accent
     versionLabel.Text = "V9"
-    versionLabel.TextColor3 = Color3.new(1, 1, 1)
+    versionLabel.TextColor3 = Theme.TextPrimary
     versionLabel.TextSize = 9
-    versionLabel.Font = Enum.Font.GothamBold
+    versionLabel.Font = FONT_HEADING
     versionLabel.Parent = titleBar
     Instance.new("UICorner", versionLabel).CornerRadius = UDim.new(0, 4)
     
-    -- Title buttons
-    local vipBtn = CreateModernSmallButton(titleBar, "VIP", UDim2.new(1, -74, 0.5, -12), UDim2.new(0, 36, 0, 24), CreateVIPPanel, COLORS.Warning)
-    vipBtn.TextColor3 = COLORS.Background
-    vipBtn.TextSize = 9
-    vipBtn.Font = Enum.Font.GothamBold
+    -- VIP Button
+    local vipBtn = CreateSmallButton(titleBar, "VIP", "⚡ VIP", UDim2.new(1, -78, 0, 8), UDim2.new(0, 44, 0, 28), CreateVIPPanel)
+    vipBtn.TextSize = 10
+    vipBtn.BackgroundColor3 = Color3.fromRGB(45, 40, 60)
     
-    local minimizeBtn = Instance.new("TextButton")
-    minimizeBtn.Size = UDim2.new(0, 28, 0, 24)
-    minimizeBtn.Position = UDim2.new(1, -34, 0.5, -12)
-    minimizeBtn.BackgroundColor3 = COLORS.Danger
-    minimizeBtn.BackgroundTransparency = 0.7
-    minimizeBtn.Text = "—"
-    minimizeBtn.TextColor3 = COLORS.Danger
-    minimizeBtn.TextSize = 14
-    minimizeBtn.Font = Enum.Font.GothamBold
-    minimizeBtn.AutoButtonColor = false
-    minimizeBtn.BorderSizePixel = 0
-    minimizeBtn.Parent = titleBar
-    Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(0, 6)
-    minimizeBtn.MouseButton1Click:Connect(function() main.Visible = false end)
+    -- Close button
+    local closeBtn = CreateSmallButton(titleBar, "X", "✕", UDim2.new(1, -32, 0, 8), UDim2.new(0, 28, 0, 28), function()
+        Tween(main, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
+        task.delay(0.3, function() main.Visible = false end)
+    end)
+    closeBtn.TextSize = 14
+    closeBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
+    closeBtn.TextColor3 = Theme.Danger
     
-    -- ═══ Scroll Frame for content ═══
-    local scroll = Instance.new("ScrollingFrame")
-    scroll.Name = "Content"
-    scroll.Size = UDim2.new(1, 0, 1, -44)
-    scroll.Position = UDim2.new(0, 0, 0, 44)
-    scroll.BackgroundTransparency = 1
-    scroll.ScrollBarThickness = 3
-    scroll.ScrollBarImageColor3 = COLORS.Primary
-    scroll.ScrollBarImageTransparency = 0.5
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 540)
-    scroll.BorderSizePixel = 0
-    scroll.Parent = main
+    -- Content area
+    local content = Instance.new("ScrollingFrame")
+    content.Name = "Content"
+    content.Size = UDim2.new(1, 0, 1, -46)
+    content.Position = UDim2.new(0, 0, 0, 46)
+    content.BackgroundTransparency = 1
+    content.ScrollBarThickness = 3
+    content.ScrollBarImageColor3 = Theme.Accent
+    content.BorderSizePixel = 0
+    content.CanvasSize = UDim2.new(0, 0, 0, 520)
+    content.Parent = main
     
     local y = 8
     
-    -- ═══ DISPLAY SECTION ═══
-    CreateSectionHeader(scroll, "🖥  DISPLAY", y)
-    y = y + 26
+    -- ═══ VISUAL SECTION ═══
+    CreateSectionLabel(content, "Visual", UDim2.new(0, 8, 0, y))
+    y = y + 24
     
     -- FOV Row
-    local fovRow = Instance.new("Frame")
-    fovRow.Size = UDim2.new(1, -16, 0, 32)
-    fovRow.Position = UDim2.new(0, 8, 0, y)
-    fovRow.BackgroundTransparency = 1
-    fovRow.Parent = scroll
+    local fovContainer = Instance.new("Frame")
+    fovContainer.Size = UDim2.new(1, -16, 0, 32)
+    fovContainer.Position = UDim2.new(0, 8, 0, y)
+    fovContainer.BackgroundTransparency = 1
+    fovContainer.Parent = content
     
     local fovLabel = Instance.new("TextLabel")
     fovLabel.Size = UDim2.new(0, 35, 1, 0)
     fovLabel.BackgroundTransparency = 1
     fovLabel.Text = "FOV"
-    fovLabel.TextColor3 = COLORS.TextMuted
+    fovLabel.TextColor3 = Theme.TextSecondary
     fovLabel.TextSize = 11
-    fovLabel.Font = Enum.Font.GothamMedium
+    fovLabel.Font = FONT_BODY
     fovLabel.TextXAlignment = Enum.TextXAlignment.Left
-    fovLabel.Parent = fovRow
+    fovLabel.Parent = fovContainer
     
-    local fov90Btn = CreateModernSmallButton(fovRow, "90°", UDim2.new(0, 40, 0, 2), UDim2.new(0, 45, 0, 28), function()
-        Config.FOV = 90 
-        SetFOV()
-        fov90Btn.BackgroundColor3 = COLORS.Primary
-        fovRow:FindFirstChild("120°").BackgroundColor3 = COLORS.Surface
+    local fov90 = CreateSmallButton(content, "FOV90", "90°", UDim2.new(0, 50, 0, y + 2), UDim2.new(0, 45, 0, 28), function()
+        Config.FOV = 90 SetFOV() UpdateGUI()
     end)
     
-    local fov120Btn = CreateModernSmallButton(fovRow, "120°", UDim2.new(0, 89, 0, 2), UDim2.new(0, 45, 0, 28), function()
-        Config.FOV = 120 
-        SetFOV()
-        fov120Btn.BackgroundColor3 = COLORS.Primary
-        fovRow:FindFirstChild("90°").BackgroundColor3 = COLORS.Surface
-    end)
-    fov120Btn.BackgroundColor3 = COLORS.Primary
-    
-    local brightBtn = CreateModernSmallButton(fovRow, "💡 Light", UDim2.new(0, 140, 0, 2), UDim2.new(0, 65, 0, 28), function()
-        ToggleFullbright()
-        brightBtn.BackgroundColor3 = FullbrightEnabled and COLORS.Primary or COLORS.Surface
+    local fov120 = CreateSmallButton(content, "FOV120", "120°", UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 50, 0, 28), function()
+        Config.FOV = 120 SetFOV() UpdateGUI()
     end)
     
-    y = y + 40
+    y = y + 38
+    
+    local brightBtn = CreateModernButton(content, "Bright", "Fullbright", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        ToggleFullbright() UpdateGUI()
+    end)
+    
+    y = y + 42
     
     -- ═══ GAMEPLAY SECTION ═══
-    CreateSectionHeader(scroll, "🎮  GAMEPLAY", y)
-    y = y + 26
+    CreateSectionLabel(content, "Gameplay", UDim2.new(0, 8, 0, y))
+    y = y + 24
     
-    local _, borderToggle = CreateModernButton(scroll, "No Border", "🚧", UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
-        ToggleBorder()
-        borderToggle(State.Border)
+    local borderBtn = CreateModernButton(content, "Border", "Remove Borders", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        ToggleBorder() UpdateGUI()
     end)
-    ToggleFunctions.Border = borderToggle
-    y = y + 42
-    
-    local _, antiToggle = CreateModernButton(scroll, "Anti Nextbot", "🛡", UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
-        State.AntiNextbot = not State.AntiNextbot
-        if State.AntiNextbot then LoadNPCs() end
-        antiToggle(State.AntiNextbot)
-    end)
-    ToggleFunctions.Anti = antiToggle
-    y = y + 42
-    
-    local _, farmToggle = CreateModernButton(scroll, "Auto Farm", "🎯", UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
-        State.AutoFarm = not State.AutoFarm
-        if not State.AutoFarm then CurrentTarget = nil end
-        farmToggle(State.AutoFarm)
-    end)
-    ToggleFunctions.Farm = farmToggle
-    y = y + 42
-    
-    local _, edgeToggle = CreateModernButton(scroll, "Edge Boost", "📐", UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
-        State.EdgeBoost = not State.EdgeBoost
-        SetupEdgeBoost()
-        edgeToggle(State.EdgeBoost)
-    end)
-    ToggleFunctions.Edge = edgeToggle
-    y = y + 42
-    
-    local _, upfixToggle = CreateModernButton(scroll, "Upside Down Fix", "🔄", UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
-        State.UpsideDownFix = not State.UpsideDownFix
-        ToggleUpsideDownFix(State.UpsideDownFix)
-        upfixToggle(State.UpsideDownFix)
-    end)
-    ToggleFunctions.UpFix = upfixToggle
-    y = y + 48
-    
-    -- ═══ COLA SECTION ═══
-    CreateSectionHeader(scroll, "🥤  COLA", y)
-    y = y + 26
-    
-    local colaRow = Instance.new("Frame")
-    colaRow.Size = UDim2.new(1, -16, 0, 32)
-    colaRow.Position = UDim2.new(0, 8, 0, y)
-    colaRow.BackgroundTransparency = 1
-    colaRow.Parent = scroll
-    
-    local fixColaBtn = CreateModernSmallButton(colaRow, "🔧 Fix", UDim2.new(0, 0, 0, 2), UDim2.new(0, 60, 0, 28), FixCola, COLORS.Warning)
-    fixColaBtn.TextColor3 = COLORS.Background
-    
-    local infColaBtn = CreateModernSmallButton(colaRow, "∞ Infinite", UDim2.new(0, 64, 0, 2), UDim2.new(0, 80, 0, 28), function()
-        State.InfiniteCola = not State.InfiniteCola
-        ToggleInfiniteCola(State.InfiniteCola)
-        infColaBtn.BackgroundColor3 = State.InfiniteCola and COLORS.Primary or COLORS.Surface
-    end)
-    
     y = y + 40
     
-    -- Speed Slider
-    local sliderContainer = Instance.new("Frame")
-    sliderContainer.Size = UDim2.new(1, -16, 0, 44)
-    sliderContainer.Position = UDim2.new(0, 8, 0, y)
-    sliderContainer.BackgroundColor3 = COLORS.Surface
-    sliderContainer.BorderSizePixel = 0
-    sliderContainer.Parent = scroll
-    Instance.new("UICorner", sliderContainer).CornerRadius = UDim.new(0, 8)
-    Instance.new("UIStroke", sliderContainer).Color = COLORS.Border
+    local antiBtn = CreateModernButton(content, "Anti", "Anti-Nextbot", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        State.AntiNextbot = not State.AntiNextbot
+        if State.AntiNextbot then LoadNPCs() end
+        UpdateGUI()
+    end)
+    y = y + 40
     
-    local speedTitle = Instance.new("TextLabel")
-    speedTitle.Size = UDim2.new(0, 100, 0, 16)
-    speedTitle.Position = UDim2.new(0, 10, 0, 4)
-    speedTitle.BackgroundTransparency = 1
-    speedTitle.Text = "Speed Multiplier"
-    speedTitle.TextColor3 = COLORS.TextMuted
-    speedTitle.TextSize = 9
-    speedTitle.Font = Enum.Font.GothamMedium
-    speedTitle.TextXAlignment = Enum.TextXAlignment.Left
-    speedTitle.Parent = sliderContainer
+    local farmBtn = CreateModernButton(content, "Farm", "Auto Farm", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        State.AutoFarm = not State.AutoFarm
+        if not State.AutoFarm then CurrentTarget = nil end
+        UpdateGUI()
+    end)
+    y = y + 40
+    
+    local edgeBtn = CreateModernButton(content, "EdgeBoost", "Edge Boost", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        State.EdgeBoost = not State.EdgeBoost
+        SetupEdgeBoost()
+        UpdateGUI()
+    end)
+    y = y + 40
+    
+    local upFixBtn = CreateModernButton(content, "UpFix", "Upside Down Fix", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+        State.UpsideDownFix = not State.UpsideDownFix
+        ToggleUpsideDownFix(State.UpsideDownFix)
+        UpdateGUI()
+    end)
+    y = y + 46
+    
+    -- ═══ COLA SECTION ═══
+    CreateSectionLabel(content, "Cola", UDim2.new(0, 8, 0, y))
+    y = y + 24
+    
+    -- Cola buttons row
+    local fixBtn = CreateSmallButton(content, "Fix", "🔧 Fix", UDim2.new(0, 8, 0, y), UDim2.new(0, 70, 0, 30), FixCola)
+    fixBtn.TextSize = 10
+    
+    local infColaBtn = CreateModernButton(content, "InfCola", "Infinite Cola", nil, UDim2.new(0, 84, 0, y - 3), UDim2.new(0, 188, 0, 36), function()
+        State.InfiniteCola = not State.InfiniteCola
+        ToggleInfiniteCola(State.InfiniteCola)
+        UpdateGUI()
+    end)
+    y = y + 40
+    
+    -- Speed presets
+    local presetLabel = Instance.new("TextLabel")
+    presetLabel.Size = UDim2.new(0, 50, 0, 20)
+    presetLabel.Position = UDim2.new(0, 8, 0, y + 4)
+    presetLabel.BackgroundTransparency = 1
+    presetLabel.Text = "Speed"
+    presetLabel.TextColor3 = Theme.TextMuted
+    presetLabel.TextSize = 10
+    presetLabel.Font = FONT_SMALL
+    presetLabel.TextXAlignment = Enum.TextXAlignment.Left
+    presetLabel.Parent = content
+    
+    local colaLow = CreateSmallButton(content, "ColaLow", "1.4x", UDim2.new(0, 60, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
+        ColaConfig.Speed = 1.4 UpdateSliderUI(1.4) UpdateGUI()
+    end)
+    colaLow.TextSize = 10
+    
+    local colaMed = CreateSmallButton(content, "ColaMed", "1.6x", UDim2.new(0, 112, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
+        ColaConfig.Speed = 1.6 UpdateSliderUI(1.6) UpdateGUI()
+    end)
+    colaMed.TextSize = 10
+    
+    local colaHigh = CreateSmallButton(content, "ColaHigh", "1.8x", UDim2.new(0, 164, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
+        ColaConfig.Speed = 1.8 UpdateSliderUI(1.8) UpdateGUI()
+    end)
+    colaHigh.TextSize = 10
+    
+    y = y + 34
+    
+    -- Modern slider
+    local sliderHolder = Instance.new("Frame")
+    sliderHolder.Name = "SliderHolder"
+    sliderHolder.Size = UDim2.new(1, -16, 0, 42)
+    sliderHolder.Position = UDim2.new(0, 8, 0, y)
+    sliderHolder.BackgroundTransparency = 1
+    sliderHolder.Parent = content
     
     SliderLabel = Instance.new("TextLabel")
-    SliderLabel.Size = UDim2.new(0, 40, 0, 16)
-    SliderLabel.Position = UDim2.new(1, -48, 0, 4)
+    SliderLabel.Size = UDim2.new(1, 0, 0, 16)
     SliderLabel.BackgroundTransparency = 1
-    SliderLabel.Text = string.format("%.1fx", ColaConfig.Speed)
-    SliderLabel.TextColor3 = COLORS.Primary
-    SliderLabel.TextSize = 11
-    SliderLabel.Font = Enum.Font.GothamBold
-    SliderLabel.TextXAlignment = Enum.TextXAlignment.Right
-    SliderLabel.Parent = sliderContainer
+    SliderLabel.Text = string.format("Cola Speed: %.1fx", ColaConfig.Speed)
+    SliderLabel.TextColor3 = Theme.TextSecondary
+    SliderLabel.TextSize = 10
+    SliderLabel.Font = FONT_SMALL
+    SliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+    SliderLabel.Parent = sliderHolder
     
     SliderTrack = Instance.new("Frame")
-    SliderTrack.Size = UDim2.new(1, -20, 0, 6)
-    SliderTrack.Position = UDim2.new(0, 10, 0, 28)
-    SliderTrack.BackgroundColor3 = COLORS.TextDim
+    SliderTrack.Size = UDim2.new(1, 0, 0, 6)
+    SliderTrack.Position = UDim2.new(0, 0, 0, 22)
+    SliderTrack.BackgroundColor3 = Theme.SliderBg
     SliderTrack.BorderSizePixel = 0
-    SliderTrack.Parent = sliderContainer
-    Instance.new("UICorner", SliderTrack).CornerRadius = UDim.new(1, 0)
+    SliderTrack.Parent = sliderHolder
+    Instance.new("UICorner", SliderTrack).CornerRadius = UDim.new(0, 3)
     
     local initialPos = (ColaConfig.Speed - SliderMin) / (SliderMax - SliderMin)
-    
     SliderFill = Instance.new("Frame")
     SliderFill.Size = UDim2.new(initialPos, 0, 1, 0)
-    SliderFill.BackgroundColor3 = COLORS.Primary
+    SliderFill.BackgroundColor3 = Theme.SliderFill
     SliderFill.BorderSizePixel = 0
     SliderFill.Parent = SliderTrack
-    Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(1, 0)
+    Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(0, 3)
     
-    -- Gradient on fill
-    local fillGradient = Instance.new("UIGradient", SliderFill)
-    fillGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, COLORS.Primary),
-        ColorSequenceKeypoint.new(1, COLORS.Accent)
-    })
+    -- Slider glow
+    local sliderGlow = Instance.new("UIGradient", SliderFill)
+    sliderGlow.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(88, 101, 242)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(155, 89, 182)),
+    }
     
     SliderThumb = Instance.new("Frame")
     SliderThumb.Size = UDim2.new(0, 14, 0, 14)
     SliderThumb.Position = UDim2.new(initialPos, -7, 0.5, -7)
     SliderThumb.BackgroundColor3 = Color3.new(1, 1, 1)
     SliderThumb.BorderSizePixel = 0
-    SliderThumb.ZIndex = 5
     SliderThumb.Parent = SliderTrack
     Instance.new("UICorner", SliderThumb).CornerRadius = UDim.new(1, 0)
     
-    -- Thumb glow
-    local thumbGlow = Instance.new("UIStroke", SliderThumb)
-    thumbGlow.Color = COLORS.Primary
-    thumbGlow.Thickness = 2
-    thumbGlow.Transparency = 0.3
+    local thumbStroke = Instance.new("UIStroke", SliderThumb)
+    thumbStroke.Color = Theme.Accent
+    thumbStroke.Thickness = 2
     
     local sliderDragging = false
     local function UpdateSliderFromMouse(mousePos)
@@ -2201,126 +2184,66 @@ local function CreateMainGUI()
         local val = math.round((SliderMin + pos * (SliderMax - SliderMin)) * 10) / 10
         val = math.clamp(val, SliderMin, SliderMax)
         ColaConfig.Speed = val
-        UpdateSliderUI(val)
+        Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, 0.05)
+        Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, 0.05)
+        SliderLabel.Text = string.format("Cola Speed: %.1fx", val)
+        UpdateGUI()
     end
     
-    -- Make thumb draggable
-    local thumbButton = Instance.new("TextButton")
-    thumbButton.Size = UDim2.new(1, 8, 1, 8)
-    thumbButton.Position = UDim2.new(0, -4, 0, -4)
-    thumbButton.BackgroundTransparency = 1
-    thumbButton.Text = ""
-    thumbButton.ZIndex = 6
-    thumbButton.Parent = SliderThumb
-    
-    thumbButton.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = true end end)
-    UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = false end end)
-    UserInputService.InputChanged:Connect(function(input) if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then UpdateSliderFromMouse(input.Position) end end)
-    
-    -- Click track to set
-    local trackButton = Instance.new("TextButton")
-    trackButton.Size = UDim2.new(1, 0, 1, 10)
-    trackButton.Position = UDim2.new(0, 0, 0, -5)
-    trackButton.BackgroundTransparency = 1
-    trackButton.Text = ""
-    trackButton.ZIndex = 4
-    trackButton.Parent = SliderTrack
-    trackButton.MouseButton1Click:Connect(function()
-        local mouse = UserInputService:GetMouseLocation()
-        UpdateSliderFromMouse(Vector3.new(mouse.X, mouse.Y, 0))
+    SliderThumb.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliderDragging = true
+            Tween(SliderThumb, {Size = UDim2.new(0, 18, 0, 18), Position = UDim2.new(SliderThumb.Position.X.Scale, -9, 0.5, -9)}, 0.1)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliderDragging = false
+            local currentPos = (ColaConfig.Speed - SliderMin) / (SliderMax - SliderMin)
+            Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(currentPos, -7, 0.5, -7)}, 0.1)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            UpdateSliderFromMouse(input.Position)
+        end
+    end)
+    SliderTrack.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            UpdateSliderFromMouse(input.Position)
+        end
     end)
     
-    y = y + 52
+    y = y + 36
     
     -- Duration input
-    local durRow = Instance.new("Frame")
-    durRow.Size = UDim2.new(1, -16, 0, 28)
-    durRow.Position = UDim2.new(0, 8, 0, y)
-    durRow.BackgroundTransparency = 1
-    durRow.Parent = scroll
-    
     local durLabel = Instance.new("TextLabel")
-    durLabel.Size = UDim2.new(0, 80, 1, 0)
+    durLabel.Size = UDim2.new(0, 80, 0, 20)
+    durLabel.Position = UDim2.new(0, 8, 0, y + 6)
     durLabel.BackgroundTransparency = 1
-    durLabel.Text = "Duration (s)"
-    durLabel.TextColor3 = COLORS.TextMuted
+    durLabel.Text = "Duration (sec)"
+    durLabel.TextColor3 = Theme.TextMuted
     durLabel.TextSize = 10
-    durLabel.Font = Enum.Font.GothamMedium
+    durLabel.Font = FONT_SMALL
     durLabel.TextXAlignment = Enum.TextXAlignment.Left
-    durLabel.Parent = durRow
+    durLabel.Parent = content
     
-    local durInput = CreateModernInput(durRow, "3.5", UDim2.new(0, 90, 0, 0), UDim2.new(0, 60, 0, 28), function(text) 
-        local num = tonumber(text) 
-        if num and num > 0 then ColaConfig.Duration = num end 
+    local colaDurInput = CreateModernInput(content, "ColaDur", tostring(ColaConfig.Duration), UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 70, 0, 28), function(text)
+        local num = tonumber(text)
+        if num and num > 0 then ColaConfig.Duration = num end
     end)
-    durInput.Text = tostring(ColaConfig.Duration)
     
-    -- Preset buttons
-    local presetLabel = Instance.new("TextLabel")
-    presetLabel.Size = UDim2.new(0, 50, 1, 0)
-    presetLabel.Position = UDim2.new(0, 158, 0, 0)
-    presetLabel.BackgroundTransparency = 1
-    presetLabel.Text = "Preset:"
-    presetLabel.TextColor3 = COLORS.TextDim
-    presetLabel.TextSize = 9
-    presetLabel.Font = Enum.Font.Gotham
-    presetLabel.TextXAlignment = Enum.TextXAlignment.Left
-    presetLabel.Parent = durRow
-    
-    CreateModernSmallButton(durRow, "1.4", UDim2.new(0, 200, 0, 0), UDim2.new(0, 28, 0, 28), function() ColaConfig.Speed = 1.4 UpdateSliderUI(1.4) end)
-    CreateModernSmallButton(durRow, "1.6", UDim2.new(0, 232, 0, 0), UDim2.new(0, 28, 0, 28), function() ColaConfig.Speed = 1.6 UpdateSliderUI(1.6) end)
-    
-    y = y + 40
-    
-    -- ═══ KEYBINDS INFO ═══
-    CreateSectionHeader(scroll, "⌨  KEYBINDS", y)
-    y = y + 24
-    
-    local keybinds = {
-        {"SPACE", "Bunny Hop (hold)"},
-        {"X", "Bounce (hold)"},
-        {"Q", "Carry (hold)"},
-        {"E", "Revive"},
-        {"R", "Self Resurrect"},
-        {"P", "Toggle Fullbright"},
-        {"R.SHIFT", "Toggle GUI"},
-    }
-    
-    for _, kb in ipairs(keybinds) do
-        local kbRow = Instance.new("Frame")
-        kbRow.Size = UDim2.new(1, -16, 0, 20)
-        kbRow.Position = UDim2.new(0, 8, 0, y)
-        kbRow.BackgroundTransparency = 1
-        kbRow.Parent = scroll
-        
-        local keyBadge = Instance.new("TextLabel")
-        keyBadge.Size = UDim2.new(0, 55, 0, 18)
-        keyBadge.BackgroundColor3 = COLORS.Surface
-        keyBadge.Text = kb[1]
-        keyBadge.TextColor3 = COLORS.AccentAlt
-        keyBadge.TextSize = 8
-        keyBadge.Font = Enum.Font.GothamBold
-        keyBadge.Parent = kbRow
-        Instance.new("UICorner", keyBadge).CornerRadius = UDim.new(0, 4)
-        
-        local keyDesc = Instance.new("TextLabel")
-        keyDesc.Size = UDim2.new(1, -65, 0, 18)
-        keyDesc.Position = UDim2.new(0, 60, 0, 0)
-        keyDesc.BackgroundTransparency = 1
-        keyDesc.Text = kb[2]
-        keyDesc.TextColor3 = COLORS.TextDim
-        keyDesc.TextSize = 10
-        keyDesc.Font = Enum.Font.Gotham
-        keyDesc.TextXAlignment = Enum.TextXAlignment.Left
-        keyDesc.Parent = kbRow
-        
-        y = y + 22
-    end
-    
-    y = y + 8
-    scroll.CanvasSize = UDim2.new(0, 0, 0, y)
+    -- Update canvas size
+    content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
     
     MakeDraggable(main)
+    
+    -- Open animation
+    main.Size = UDim2.new(0, 280, 0, 0)
+    main.Visible = true
+    Tween(main, {Size = UDim2.new(0, 280, 0, 480)}, 0.4, Enum.EasingStyle.Back)
+    
+    UpdateGUI()
 end
 
 local function CreateTimerGUI()
@@ -2335,50 +2258,44 @@ local function CreateTimerGUI()
     container.AnchorPoint = Vector2.new(0.5, 0)
     container.Position = UDim2.new(0.5, 0, 0.015, 0)
     container.Size = UDim2.new(0, 120, 0, 52)
-    container.BackgroundColor3 = COLORS.Background
+    container.BackgroundColor3 = Theme.Background
     container.BorderSizePixel = 0
     Instance.new("UICorner", container).CornerRadius = UDim.new(0, 10)
     
     local timerStroke = Instance.new("UIStroke", container)
-    timerStroke.Color = COLORS.Border
+    timerStroke.Color = Theme.Border
     timerStroke.Thickness = 1
     
-    AddShadow(container, 3)
+    AddShadow(container, 3, 0.6)
     
-    -- Accent bar at top
-    local accentBar = Instance.new("Frame")
-    accentBar.Size = UDim2.new(1, -20, 0, 2)
-    accentBar.Position = UDim2.new(0, 10, 0, 6)
-    accentBar.BackgroundColor3 = COLORS.Primary
-    accentBar.BorderSizePixel = 0
-    accentBar.Parent = container
-    Instance.new("UICorner", accentBar).CornerRadius = UDim.new(1, 0)
-    
-    local accentGrad = Instance.new("UIGradient", accentBar)
-    accentGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, COLORS.Primary),
-        ColorSequenceKeypoint.new(1, COLORS.Accent)
-    })
+    -- Accent top line
+    local topLine = Instance.new("Frame")
+    topLine.Size = UDim2.new(0.6, 0, 0, 2)
+    topLine.Position = UDim2.new(0.2, 0, 0, 0)
+    topLine.BackgroundColor3 = Theme.Accent
+    topLine.BorderSizePixel = 0
+    topLine.Parent = container
+    Instance.new("UICorner", topLine).CornerRadius = UDim.new(0, 1)
     
     StatusLabel = Instance.new("TextLabel", container)
-    StatusLabel.Position = UDim2.new(0.5, 0, 0, 12)
+    StatusLabel.Position = UDim2.new(0.5, 0, 0, 8)
     StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
     StatusLabel.Size = UDim2.new(1, 0, 0, 14)
     StatusLabel.BackgroundTransparency = 1
-    StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.Font = FONT_HEADING
     StatusLabel.Text = "WAITING"
-    StatusLabel.TextColor3 = COLORS.TextMuted
+    StatusLabel.TextColor3 = Theme.TextMuted
     StatusLabel.TextSize = 9
     
     TimerLabel = Instance.new("TextLabel", container)
-    TimerLabel.Position = UDim2.new(0.5, 0, 0, 26)
+    TimerLabel.Position = UDim2.new(0.5, 0, 0, 22)
     TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
-    TimerLabel.Size = UDim2.new(1, 0, 0, 22)
+    TimerLabel.Size = UDim2.new(1, 0, 0, 26)
     TimerLabel.BackgroundTransparency = 1
-    TimerLabel.Font = Enum.Font.GothamBlack
+    TimerLabel.Font = FONT_TITLE
     TimerLabel.Text = "0:00"
-    TimerLabel.TextColor3 = Color3.new(1, 1, 1)
-    TimerLabel.TextSize = 20
+    TimerLabel.TextColor3 = Theme.TextPrimary
+    TimerLabel.TextSize = 22
 end
 
 local function UpdateTimer()
@@ -2398,86 +2315,51 @@ local function UpdateTimer()
             local minutes = math.floor((timer or 0) / 60)
             local seconds = (timer or 0) % 60
             TimerLabel.Text = string.format("%d:%02d", minutes, seconds)
-            TimerLabel.TextColor3 = (roundStarted and timer and timer <= 15) and COLORS.Danger or Color3.new(1, 1, 1)
+            TimerLabel.TextColor3 = (roundStarted and timer and timer <= 15) and Theme.Danger or Theme.TextPrimary
         end
         if StatusLabel then
-            StatusLabel.Text = roundStarted and "🔴 RUNNING" or "⏳ WAITING"
-            StatusLabel.TextColor3 = roundStarted and COLORS.Success or COLORS.TextMuted
+            StatusLabel.Text = roundStarted and "⚡ RUNNING" or "⏳ WAITING"
+            StatusLabel.TextColor3 = roundStarted and Theme.Success or Theme.TextMuted
         end
     end)
 end
 
--- ═══════════════════════════════════════════════════════
--- SPEED INDICATOR HUD (shows current bhop speed)
--- ═══════════════════════════════════════════════════════
-local SpeedHUD = nil
-local SpeedLabel = nil
-
-local function CreateSpeedHUD()
-    if SpeedHUD then return end
-    
-    SpeedHUD = Instance.new("ScreenGui")
-    SpeedHUD.Name = "SpeedHUD"
-    SpeedHUD.ResetOnSpawn = false
-    SafeCall(function() SpeedHUD.Parent = game:GetService("CoreGui") end)
-    if not SpeedHUD.Parent then SpeedHUD.Parent = PlayerGui end
-    
-    local container = Instance.new("Frame", SpeedHUD)
-    container.AnchorPoint = Vector2.new(0.5, 1)
-    container.Position = UDim2.new(0.5, 0, 1, -20)
-    container.Size = UDim2.new(0, 80, 0, 28)
-    container.BackgroundColor3 = COLORS.Background
-    container.BackgroundTransparency = 0.3
-    container.BorderSizePixel = 0
-    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 8)
-    
-    SpeedLabel = Instance.new("TextLabel", container)
-    SpeedLabel.Size = UDim2.new(1, 0, 1, 0)
-    SpeedLabel.BackgroundTransparency = 1
-    SpeedLabel.Text = "0 sp/s"
-    SpeedLabel.TextColor3 = COLORS.AccentAlt
-    SpeedLabel.TextSize = 12
-    SpeedLabel.Font = Enum.Font.GothamBold
-end
-
-local LastSpeedUpdate = 0
-local function UpdateSpeedHUD()
-    if not SpeedLabel or not RootPart then return end
-    local now = tick()
-    if now - LastSpeedUpdate < 0.1 then return end
-    LastSpeedUpdate = now
-    
-    local speed = math.floor(GetHorizontalSpeed())
-    SpeedLabel.Text = speed .. " sp/s"
-    
-    if speed > 50 then
-        SpeedLabel.TextColor3 = COLORS.Success
-    elseif speed > 25 then
-        SpeedLabel.TextColor3 = COLORS.AccentAlt
-    else
-        SpeedLabel.TextColor3 = COLORS.TextMuted
-    end
-end
+-- ═══════════════════════════════════════════════════════════════
+-- INPUT HANDLING
+-- ═══════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     local key = input.KeyCode
-    if key == Enum.KeyCode.Space then 
-        holdSpace = true 
+    if key == Enum.KeyCode.Space then
+        holdSpace = true
         LastGroundState = false
-        -- Start bhop chain tracking
-        if not IsInBhopChain then
-            StoredHorizontalSpeed = GetHorizontalSpeed()
-            PreHopVelocity = RootPart and RootPart.AssemblyLinearVelocity or Vector3.zero
+        WasInAir = false
+        JumpQueued = true
+        -- Capture current speed immediately when space is pressed
+        if RootPart then
+            local speed = GetHorizontalSpeed()
+            if speed > BhopConfig.MinPreserveSpeed then
+                LastHorizontalSpeed = speed
+                SavedHorizontalVelocity = GetHorizontalVelocity()
+            end
         end
     elseif key == Enum.KeyCode.X then holdX = true
     elseif key == Enum.KeyCode.E then Revive()
     elseif key == Enum.KeyCode.R then SelfResurrect()
     elseif key == Enum.KeyCode.Q then holdQ = true
-    elseif key == Enum.KeyCode.P then ToggleFullbright()
+    elseif key == Enum.KeyCode.P then ToggleFullbright() UpdateGUI()
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
-            GUI.Main.Visible = not GUI.Main.Visible
+            local mainFrame = GUI.Main
+            if mainFrame.Visible then
+                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
+                task.delay(0.3, function() mainFrame.Visible = false end)
+            else
+                mainFrame.Visible = true
+                mainFrame.Size = UDim2.new(0, 280, 0, 0)
+                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 480)}, 0.4, Enum.EasingStyle.Back)
+            end
             if VIPPanel then VIPPanel.Visible = false end
         end
     end
@@ -2485,20 +2367,21 @@ end)
 
 UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
-    if key == Enum.KeyCode.Space then 
-        holdSpace = false 
+    if key == Enum.KeyCode.Space then
+        holdSpace = false
         LastGroundState = false
-        -- Don't immediately reset bhop chain - allow brief window
-        task.delay(0.3, function()
-            if not holdSpace then
-                IsInBhopChain = false
-                HopCount = 0
-            end
-        end)
+        ConsecutiveJumps = 0
+        WasInAir = false
+        PreLandingQueued = false
+        JumpQueued = false
     elseif key == Enum.KeyCode.Q then holdQ = false
     elseif key == Enum.KeyCode.X then holdX = false AirEnd = 0
     end
 end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- CHARACTER SETUP
+-- ═══════════════════════════════════════════════════════════════
 
 local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
@@ -2510,51 +2393,18 @@ local function SetupCharacter(character)
     LastBounce, AirEnd = 0, 0
     LastJumpTick = 0
     LastGroundState = false
-    IsInBhopChain = false
-    HopCount = 0
-    StoredHorizontalSpeed = 0
-    VelocityRestoreCounter = 0
-    PendingJump = false
-    WasAirborne = false
+    ConsecutiveJumps = 0
+    LastHorizontalSpeed = 0
+    SavedHorizontalVelocity = Vector3.zero
+    WasInAir = false
+    PreLandingQueued = false
+    JumpQueued = false
+    LastGroundCheckTick = 0
     table.clear(CachedBots)
     table.clear(CachedItems)
     
     if Humanoid then
-        -- Optimized state change handler for bhop
-        StateChangedConn = Humanoid.StateChanged:Connect(function(old, new)
-            if holdSpace then
-                if new == Enum.HumanoidStateType.Landed then
-                    -- Instant re-jump on landing
-                    LastLandingTime = tick()
-                    
-                    -- Store velocity before ground friction can eat it
-                    if RootPart then
-                        local currentSpeed = GetHorizontalSpeed()
-                        if currentSpeed > StoredHorizontalSpeed * 0.7 then
-                            StoredHorizontalSpeed = currentSpeed
-                        end
-                        PreHopVelocity = RootPart.AssemblyLinearVelocity
-                    end
-                    
-                    task.defer(function()
-                        if holdSpace and Humanoid and Humanoid.Health > 0 then
-                            ExecuteJump()
-                        end
-                    end)
-                elseif new == Enum.HumanoidStateType.Running then
-                    -- Also catch Running state for extra consistency
-                    if WasAirborne then
-                        task.defer(function()
-                            if holdSpace and Humanoid and Humanoid.Health > 0 then
-                                ExecuteJump()
-                            end
-                        end)
-                    end
-                elseif new == Enum.HumanoidStateType.Freefall then
-                    WasAirborne = true
-                end
-            end
-        end)
+        StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged)
     end
 end
 
@@ -2574,6 +2424,10 @@ for _, player in ipairs(Players:GetPlayers()) do
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- MAIN LOOP
+-- ═══════════════════════════════════════════════════════════════
+
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     local lastUpdate = 0
@@ -2581,27 +2435,17 @@ local function StartMainLoop()
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         local now = tick()
-        
-        -- Bhop system (every frame for maximum consistency)
         SuperBhop()
         PreJumpQueue()
-        ContinuousSpeedPreservation()
-        
-        -- Other movement
         Bounce()
         AirStrafe()
         DoCarry()
         
-        -- Speed HUD
-        UpdateSpeedHUD()
-        
-        -- Edge boost (60fps)
         if State.EdgeBoost and now - lastEdgeUpdate >= 0.016 then
             lastEdgeUpdate = now
             ReactiveEdgeBoost()
         end
         
-        -- Slower updates (10fps)
         if now - lastUpdate >= 0.1 then
             lastUpdate = now
             UpdateRayFilter()
@@ -2626,13 +2470,15 @@ Workspace.ChildAdded:Connect(function(child)
         LastBounce, AirEnd = 0, 0
         LastJumpTick = 0
         LastGroundState = false
+        ConsecutiveJumps = 0
+        LastHorizontalSpeed = 0
+        SavedHorizontalVelocity = Vector3.zero
         ColaDrank = false
-        IsInBhopChain = false
-        HopCount = 0
-        StoredHorizontalSpeed = 0
+        WasInAir = false
+        PreLandingQueued = false
         table.clear(CachedBots)
         table.clear(CachedItems)
-        if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
+        if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
 end)
 
@@ -2644,7 +2490,6 @@ end)
 
 CreateMainGUI()
 CreateTimerGUI()
-CreateSpeedHUD()
 UpdateTimer()
 SetFOV()
 SetupCameraFOV()
