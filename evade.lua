@@ -1603,17 +1603,16 @@ local function CreateSectionLabel(parent, text, pos)
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
-    label.Text = text:upper()
+    label.Text = "  " .. text:upper():gsub(".", "%1 "):sub(1, -2) .. "  "
     label.TextColor3 = Theme.TextMuted
     label.TextSize = 9
     label.Font = FONT_HEADING
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.LetterSpacing = 2
     label.Parent = container
     
     local line = Instance.new("Frame")
-    line.Size = UDim2.new(1, -#text * 7, 0, 1)
-    line.Position = UDim2.new(0, #text * 7 + 8, 0.5, 0)
+    line.Size = UDim2.new(1, -#text * 10 - 8, 0, 1)
+    line.Position = UDim2.new(0, #text * 10 + 8, 0.5, 0)
     line.BackgroundColor3 = Theme.Border
     line.BackgroundTransparency = 0.5
     line.BorderSizePixel = 0
