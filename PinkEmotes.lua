@@ -13,8 +13,8 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local GuiService = game:GetService("GuiService")
 
 local player = Players.LocalPlayer
-local EMOTE_URL = "https://raw.githubusercontent.com/7yd7/sniper-Emote/refs/heads/test/EmoteSniper.json"
-local ANIM_URL = "https://raw.githubusercontent.com/7yd7/sniper-Emote/refs/heads/test/AnimationSniper.json"
+local EMOTE_URL = "https://raw.githubusercontent.com/PinkWards/emote-sniper/refs/heads/main/EmoteSniper.json"
+local ANIM_URL = "https://raw.githubusercontent.com/PinkWards/emote-sniper/refs/heads/main/AnimationSniper.json"
 
 local mode = "emote"
 local currentPage, itemsPerPage, totalPages = 1, 8, 1
