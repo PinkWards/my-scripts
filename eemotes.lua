@@ -80,8 +80,42 @@ local allEmotes = {}
 local SAVE_FOLDER = "DaraHub"
 local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
 
--- For blocking original emote
 local pendingSlot = nil
+
+-- OPT: pre-built lookup table for __namecall hook (avoids loop + normalize per call)
+local emoteReplacementLookup = {} -- normalizedName -> slot index
+
+-- OPT: cache all require() results to avoid re-requiring modules
+local requiredModuleCache = {}
+
+-- OPT: cache emote display name → module name mapping (built once)
+local emoteDisplayNameToModule = {}
+local displayNameCacheBuilt = false
+
+-- OPT: cache emote model function reference
+local cachedEmoteModelFunction = nil
+
+-- OPT: cache cosmetic names list
+local cachedCosmeticNames = nil
+
+-- OPT: reusable levenshtein table
+local levD = {}
+
+-- ═══════════════════════════════════════════════════════════════
+-- OPT: CACHED REQUIRE
+-- ═══════════════════════════════════════════════════════════════
+
+local function safeRequire(moduleScript)
+    local cached = requiredModuleCache[moduleScript]
+    if cached ~= nil then
+        return true, cached
+    end
+    local success, result = pcall(require, moduleScript)
+    if success then
+        requiredModuleCache[moduleScript] = result
+    end
+    return success, result
+end
 
 -- ═══════════════════════════════════════════════════════════════
 -- CORE EMOTE FUNCTIONS
@@ -89,10 +123,21 @@ local pendingSlot = nil
 
 local function normalizeText(text)
     if not text then return "" end
-    if not normalizedCache[text] then
-        normalizedCache[text] = string.lower(text:gsub("%s+", ""))
+    local cached = normalizedCache[text]
+    if cached then return cached end
+    cached = string.lower(text:gsub("%s+", ""))
+    normalizedCache[text] = cached
+    return cached
+end
+
+-- OPT: rebuild lookup table (called only when emotes change, not per-frame)
+local function RebuildEmoteLookup()
+    table.clear(emoteReplacementLookup)
+    for i = 1, MAX_SLOTS do
+        if emoteEnabled[i] and currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
+            emoteReplacementLookup[normalizeText(currentEmotes[i])] = i
+        end
     end
-    return normalizedCache[text]
 end
 
 local function fireSelect(emoteName)
@@ -101,7 +146,6 @@ local function fireSelect(emoteName)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
     if not emoteName or emoteName == "" then return end
     
-    -- Set emote option
     if randomOptionEnabled and player.Character then
         player.Character:SetAttribute("EmoteNum", math.random(1, 3))
     elseif player.Character then
@@ -120,14 +164,14 @@ end
 local function findEmoteModelScript()
     if emoteModelScript then return emoteModelScript end
     
-    for _, script in pairs(player.PlayerScripts:GetDescendants()) do
+    for _, script in ipairs(player.PlayerScripts:GetDescendants()) do
         if script.Name == "EmoteModel" then
             emoteModelScript = script
             return script
         end
     end
     
-    for _, script in pairs(ReplicatedStorage:GetDescendants()) do
+    for _, script in ipairs(ReplicatedStorage:GetDescendants()) do
         if script.Name == "EmoteModel" then
             emoteModelScript = script
             return script
@@ -136,48 +180,70 @@ local function findEmoteModelScript()
     return nil
 end
 
-local function findEmoteModuleByDisplayName(displayName)
-    if displayName == "NONE" or not displayName then return nil end
-    
-    if emoteNameCache[displayName] ~= nil then
-        return emoteNameCache[displayName]
+-- OPT: get cached emote model function
+local function getEmoteModelFunction()
+    if cachedEmoteModelFunction then return cachedEmoteModelFunction end
+    if not emoteModelScript then findEmoteModelScript() end
+    if not emoteModelScript then return nil end
+    local success, result = safeRequire(emoteModelScript)
+    if success then
+        cachedEmoteModelFunction = result
+        return result
     end
+    return nil
+end
+
+-- OPT: build display name cache once, then simple lookup
+local function BuildEmoteDisplayNameCache()
+    if displayNameCacheBuilt then return end
     
     local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
-    if not emotesFolder then 
-        emoteNameCache[displayName] = nil
-        return nil 
-    end
+    if not emotesFolder then return end
     emotesFolder = emotesFolder:FindFirstChild("Emotes")
-    if not emotesFolder then 
-        emoteNameCache[displayName] = nil
-        return nil 
-    end
+    if not emotesFolder then return end
     
-    local normalizedDisplayName = normalizeText(displayName)
-    
-    for _, emoteModule in pairs(emotesFolder:GetChildren()) do
-        local success, emoteData = pcall(require, emoteModule)
-        if success and emoteData and emoteData.AppearanceInfo then
-            local emoteDisplayName = emoteData.AppearanceInfo.NameShorted or emoteData.AppearanceInfo.Name
-            if normalizeText(emoteDisplayName) == normalizedDisplayName then
-                emoteNameCache[displayName] = emoteModule.Name
-                return emoteModule.Name
+    for _, emoteModule in ipairs(emotesFolder:GetChildren()) do
+        if emoteModule:IsA("ModuleScript") then
+            local success, emoteData = safeRequire(emoteModule)
+            if success and emoteData and emoteData.AppearanceInfo then
+                local displayName = emoteData.AppearanceInfo.NameShorted or emoteData.AppearanceInfo.Name
+                if displayName then
+                    emoteDisplayNameToModule[normalizeText(displayName)] = emoteModule.Name
+                end
             end
         end
     end
+    displayNameCacheBuilt = true
+end
+
+-- OPT: simple lookup instead of iterating + requiring every module
+local function findEmoteModuleByDisplayName(displayName)
+    if displayName == "NONE" or not displayName then return nil end
     
-    emoteNameCache[displayName] = nil
-    return nil
+    -- Check simple cache first
+    local cached = emoteNameCache[displayName]
+    if cached ~= nil then return cached end
+    
+    -- Build full cache if needed
+    if not displayNameCacheBuilt then BuildEmoteDisplayNameCache() end
+    
+    local result = emoteDisplayNameToModule[normalizeText(displayName)]
+    emoteNameCache[displayName] = result -- cache nil too
+    return result
 end
 
 local function getEmoteFrame()
     local playerGui = player.PlayerGui
-    local shared = playerGui and playerGui:FindFirstChild("Shared")
-    local hud = shared and shared:FindFirstChild("HUD")
-    local interactors = hud and hud:FindFirstChild("Interactors")
-    local popups = interactors and interactors:FindFirstChild("Popups")
-    return popups and popups:FindFirstChild("Emote")
+    if not playerGui then return nil end
+    local shared = playerGui:FindFirstChild("Shared")
+    if not shared then return nil end
+    local hud = shared:FindFirstChild("HUD")
+    if not hud then return nil end
+    local interactors = hud:FindFirstChild("Interactors")
+    if not interactors then return nil end
+    local popups = interactors:FindFirstChild("Popups")
+    if not popups then return nil end
+    return popups:FindFirstChild("Emote")
 end
 
 local function cleanUpLastEmoteFrame()
@@ -218,16 +284,16 @@ local function saveOriginalEmoteData(frame)
 end
 
 local function restoreOriginalEmotes()
-    if not emoteModelScript then
-        findEmoteModelScript()
-    end
-    if not emoteModelScript or not emoteFrame then return end
+    local emoteModelFunction = getEmoteModelFunction()
+    if not emoteModelFunction or not emoteFrame then return end
     
-    local emoteModelFunction = require(emoteModelScript)
     local emoteWheel = emoteFrame:FindFirstChild("Wheel")
     local emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
     
     if not emoteWheel then return end
+    
+    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+    emotesFolder = emotesFolder and emotesFolder:FindFirstChild("Emotes")
     
     local function processSlot(emoteSlot, key)
         if not emoteSlot then return end
@@ -237,12 +303,11 @@ local function restoreOriginalEmotes()
         if textLabel and viewportFrame then
             local original = originalEmoteData[key]
             if original then
-                if viewportFrame:FindFirstChild("WorldModel") then
-                    viewportFrame.WorldModel:Destroy()
-                end
+                local wm = viewportFrame:FindFirstChild("WorldModel")
+                if wm then wm:Destroy() end
                 
-                if original.displayText ~= "NONE" and original.emoteName then
-                    local emoteModule = ReplicatedStorage.Items.Emotes:FindFirstChild(original.emoteName)
+                if original.displayText ~= "NONE" and original.emoteName and emotesFolder then
+                    local emoteModule = emotesFolder:FindFirstChild(original.emoteName)
                     if emoteModule then
                         emoteModelFunction(viewportFrame, original.emoteName)
                     end
@@ -267,59 +332,66 @@ end
 
 local function replaceEmotesFrame()
     if not emoteDataSaved or not emoteFrame then return false end
-    if not emoteModelScript then findEmoteModelScript() end
-    if not emoteModelScript then return false end
     
-    local emoteModelFunction = require(emoteModelScript)
+    local emoteModelFunction = getEmoteModelFunction()
+    if not emoteModelFunction then return false end
+    
     local emoteWheel = emoteFrame:FindFirstChild("Wheel")
     local emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
     
     if not emoteWheel then return false end
     
+    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+    emotesFolder = emotesFolder and emotesFolder:FindFirstChild("Emotes")
+    if not emotesFolder then return false end
+    
     local anyReplaced = false
+    
+    -- OPT: pre-normalize all current emotes once
+    local normalizedCurrents = {}
+    for j = 1, MAX_SLOTS do
+        if currentEmotes[j] ~= "" and selectEmotes[j] ~= "" and emoteEnabled[j] then
+            normalizedCurrents[j] = normalizeText(currentEmotes[j])
+        end
+    end
     
     local function processEmoteSlot(emoteSlot, wheelName, slotIndex)
         if not emoteSlot then return end
         local textLabel = emoteSlot:FindFirstChild("TextLabel")
         if not textLabel then return end
         
-        local currentText = textLabel.Text
-        local normalizedCurrent = normalizeText(currentText)
+        local normalizedCurrent = normalizeText(textLabel.Text)
         
         for j = 1, MAX_SLOTS do
-            local searchEmote = currentEmotes[j]
-            local replaceEmote = selectEmotes[j]
-            
-            if searchEmote ~= "" and replaceEmote ~= "" and emoteEnabled[j] then
-                if normalizedCurrent == normalizeText(searchEmote) then
-                    local viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
-                    if viewportFrame then
-                        local replacementModule = ReplicatedStorage.Items.Emotes:FindFirstChild(replaceEmote)
-                        if replacementModule then
-                            local key = wheelName.."_Emote"..slotIndex
-                            if not originalEmoteData[key] then
-                                originalEmoteData[key] = {
-                                    displayText = currentText,
-                                    emoteName = findEmoteModuleByDisplayName(currentText) or currentText
-                                }
-                            end
-                            
-                            if viewportFrame:FindFirstChild("WorldModel") then
-                                viewportFrame.WorldModel:Destroy()
-                            end
-                            
-                            local success, targetEmoteModule = pcall(require, replacementModule)
-                            if success and targetEmoteModule and targetEmoteModule.AppearanceInfo then
-                                local targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
-                                
-                                emoteModelFunction(viewportFrame, replaceEmote)
-                                textLabel.Text = targetDisplayName
-                                anyReplaced = true
-                            end
+            local normSearch = normalizedCurrents[j]
+            if normSearch and normalizedCurrent == normSearch then
+                local replaceEmote = selectEmotes[j]
+                local viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
+                if viewportFrame then
+                    local replacementModule = emotesFolder:FindFirstChild(replaceEmote)
+                    if replacementModule then
+                        local key = wheelName.."_Emote"..slotIndex
+                        if not originalEmoteData[key] then
+                            originalEmoteData[key] = {
+                                displayText = textLabel.Text,
+                                emoteName = findEmoteModuleByDisplayName(textLabel.Text) or textLabel.Text
+                            }
+                        end
+                        
+                        local wm = viewportFrame:FindFirstChild("WorldModel")
+                        if wm then wm:Destroy() end
+                        
+                        -- OPT: use cached require
+                        local success, targetEmoteModule = safeRequire(replacementModule)
+                        if success and targetEmoteModule and targetEmoteModule.AppearanceInfo then
+                            local targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
+                            emoteModelFunction(viewportFrame, replaceEmote)
+                            textLabel.Text = targetDisplayName
+                            anyReplaced = true
                         end
                     end
-                    break
                 end
+                break
             end
         end
     end
@@ -338,11 +410,12 @@ local function replaceEmotesFrame()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- HOOK TO BLOCK ORIGINAL EMOTE (THIS FIXES THE BUG!)
+-- OPT: HEAVILY OPTIMIZED __namecall HOOK
+-- This fires on EVERY method call in the entire game.
+-- Must reject non-matching calls as fast as possible.
 -- ═══════════════════════════════════════════════════════════════
 
 if EmoteRemote and PassCharacterInfo then
-    -- Listen for server response to fire replacement
     PassCharacterInfo.OnClientEvent:Connect(function()
         if pendingSlot then
             local slot = pendingSlot
@@ -352,33 +425,29 @@ if EmoteRemote and PassCharacterInfo then
         end
     end)
     
-    -- Hook to BLOCK original emote and fire replacement instead
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        
-        -- Intercept EmoteRemote:FireServer(emoteName)
-        if method == "FireServer" and self == EmoteRemote and type(args[1]) == "string" then
-            local emoteName = args[1]
-            
-            for i = 1, MAX_SLOTS do
-                if emoteEnabled[i] and currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-                    -- Check if this is the emote we want to replace
-                    if normalizeText(emoteName) == normalizeText(currentEmotes[i]) then
-                        -- Set pending slot for when server responds
-                        pendingSlot = i
+        -- OPT: check identity FIRST (fastest possible rejection for 99.99% of calls)
+        -- This single comparison skips everything for non-EmoteRemote calls
+        if self == EmoteRemote then
+            local method = getnamecallmethod()
+            if method == "FireServer" then
+                -- OPT: use select() instead of {...} to avoid table allocation
+                local emoteName = select(1, ...)
+                if type(emoteName) == "string" then
+                    -- OPT: single table lookup instead of loop through 6 slots
+                    local slot = emoteReplacementLookup[normalizeText(emoteName)]
+                    if slot then
+                        pendingSlot = slot
                         
-                        -- Backup: fire after short delay in case OnClientEvent doesn't trigger
                         task.spawn(function()
                             task.wait(0.15)
-                            if pendingSlot == i then
+                            if pendingSlot == slot then
                                 pendingSlot = nil
-                                fireSelect(selectEmotes[i])
+                                fireSelect(selectEmotes[slot])
                             end
                         end)
                         
-                        -- BLOCK the original emote from firing!
                         return nil
                     end
                 end
@@ -427,18 +496,21 @@ local function handleSingleRespawn()
     
     cleanupOnRespawn()
     
-    -- Find tag
     task.spawn(function()
         local startTime = tick()
         while tick() - startTime < 10 do
-            if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players") then
-                local playerFolder = workspace.Game.Players:FindFirstChild(player.Name)
-                if playerFolder then
-                    currentTag = readTagFromFolder(playerFolder)
-                    if currentTag then
-                        local tagNumber = tonumber(currentTag)
-                        if tagNumber and tagNumber >= 0 and tagNumber <= 255 then
-                            break
+            local game_folder = workspace:FindFirstChild("Game")
+            if game_folder then
+                local players_folder = game_folder:FindFirstChild("Players")
+                if players_folder then
+                    local playerFolder = players_folder:FindFirstChild(player.Name)
+                    if playerFolder then
+                        currentTag = readTagFromFolder(playerFolder)
+                        if currentTag then
+                            local tagNumber = tonumber(currentTag)
+                            if tagNumber and tagNumber >= 0 and tagNumber <= 255 then
+                                break
+                            end
                         end
                     end
                 end
@@ -449,7 +521,6 @@ local function handleSingleRespawn()
         respawnInProgress = false
     end)
     
-    -- Reapply emote wheel
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -469,7 +540,7 @@ local function handleSingleRespawn()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- COSMETICS CHANGER
+-- COSMETICS CHANGER (OPT: reuse levenshtein table, cache names)
 -- ═══════════════════════════════════════════════════════════════
 
 local cosmetic1, cosmetic2 = "", ""
@@ -480,49 +551,75 @@ local function normalize(str)
     return str:gsub("%s+", ""):lower() 
 end 
 
+-- OPT: reuse levD table instead of creating new 2D table per call
 local function levenshtein(s, t) 
     local m, n = #s, #t 
-    local d = {} 
-    for i = 0, m do d[i] = {[0] = i} end 
-    for j = 0, n do d[0][j] = j end 
+    for i = 0, m do 
+        if not levD[i] then levD[i] = {} end
+        levD[i][0] = i 
+    end 
+    for j = 0, n do levD[0][j] = j end 
     
     for i = 1, m do 
+        local si = s:sub(i,i)
+        local row = levD[i]
+        local prevRow = levD[i-1]
         for j = 1, n do 
-            local cost = (s:sub(i,i) == t:sub(j,j)) and 0 or 1 
-            d[i][j] = math.min( 
-                d[i-1][j] + 1, 
-                d[i][j-1] + 1, 
-                d[i-1][j-1] + cost 
-            ) 
+            local cost = (si == t:sub(j,j)) and 0 or 1 
+            local del = prevRow[j] + 1
+            local ins = row[j-1] + 1
+            local sub = prevRow[j-1] + cost
+            -- OPT: inline min3
+            if del < ins then
+                row[j] = del < sub and del or sub
+            else
+                row[j] = ins < sub and ins or sub
+            end
         end 
     end 
-    return d[m][n] 
+    return levD[m][n] 
 end 
 
 local function similarity(s, t) 
     local nS, nT = normalize(s), normalize(t) 
+    local maxLen = math.max(#nS, #nT)
+    if maxLen == 0 then return 1 end
     local dist = levenshtein(nS, nT) 
-    return 1 - dist / math.max(#nS, #nT) 
+    return 1 - dist / maxLen
 end 
 
-local function findSimilarCosmetic(name) 
+-- OPT: cache cosmetic names list
+local function GetCosmeticNames()
+    if cachedCosmeticNames then return cachedCosmeticNames end
+    cachedCosmeticNames = {}
     local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
+    if Cosmetics then Cosmetics = Cosmetics:FindFirstChild("Cosmetics") end
     if Cosmetics then
-        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
+        for _, c in ipairs(Cosmetics:GetChildren()) do
+            cachedCosmeticNames[#cachedCosmeticNames + 1] = c.Name
+        end
     end
-    if not Cosmetics then return name end
-    
+    return cachedCosmeticNames
+end
+
+local function findSimilarCosmetic(name) 
+    local names = GetCosmeticNames()
     local bestMatch = name 
     local bestScore = 0.5 
-    for _, c in ipairs(Cosmetics:GetChildren()) do 
-        local score = similarity(name, c.Name) 
+    for _, cName in ipairs(names) do 
+        local score = similarity(name, cName) 
         if score > bestScore then 
             bestScore = score 
-            bestMatch = c.Name 
+            bestMatch = cName
         end 
     end 
     return bestMatch 
 end 
+
+local function GetCosmeticsFolder()
+    local items = ReplicatedStorage:FindFirstChild("Items")
+    return items and items:FindFirstChild("Cosmetics")
+end
 
 local function SwapCosmetics(silent)
     if cosmetic1 == "" or cosmetic2 == "" then 
@@ -533,10 +630,7 @@ local function SwapCosmetics(silent)
         return false, "Cosmetics must be different"
     end
     
-    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
-    if Cosmetics then
-        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
-    end
+    local Cosmetics = GetCosmeticsFolder()
     if not Cosmetics then 
         return false, "Cosmetics folder not found"
     end
@@ -551,7 +645,7 @@ local function SwapCosmetics(silent)
     end 
     
     local tempRoot = Instance.new("Folder", Cosmetics) 
-    tempRoot.Name = "__temp_swap_" .. tostring(tick()):gsub("%.", "_") 
+    tempRoot.Name = "__temp_swap" 
     
     local tempA = Instance.new("Folder", tempRoot) 
     local tempB = Instance.new("Folder", tempRoot) 
@@ -576,10 +670,7 @@ local function ResetCosmetics(silent)
         return false, "No cosmetics swapped"
     end
     
-    local Cosmetics = ReplicatedStorage:FindFirstChild("Items")
-    if Cosmetics then
-        Cosmetics = Cosmetics:FindFirstChild("Cosmetics")
-    end
+    local Cosmetics = GetCosmeticsFolder()
     if not Cosmetics then 
         return false, "Cosmetics folder not found"
     end
@@ -589,7 +680,7 @@ local function ResetCosmetics(silent)
     
     if a and b then
         local tempRoot = Instance.new("Folder", Cosmetics) 
-        tempRoot.Name = "__temp_reset_" .. tostring(tick()):gsub("%.", "_") 
+        tempRoot.Name = "__temp_reset" 
         
         local tempA = Instance.new("Folder", tempRoot) 
         local tempB = Instance.new("Folder", tempRoot) 
@@ -629,7 +720,7 @@ end
 local function GetConfigNames()
     local names = {}
     for name, _ in pairs(allConfigs) do
-        table.insert(names, name)
+        names[#names + 1] = name
     end
     table.sort(names, function(a, b)
         return a:lower() < b:lower()
@@ -637,16 +728,23 @@ local function GetConfigNames()
     return names
 end
 
+-- OPT: debounce saves to avoid writing file multiple times in rapid succession
+local saveQueued = false
 local function SaveAllConfigs()
-    EnsureFolder()
-    local data = {
-        configs = allConfigs,
-        lastUsed = currentConfigName
-    }
-    pcall(function()
-        if writefile then
-            writefile(CONFIGS_FILE, HttpService:JSONEncode(data))
-        end
+    if saveQueued then return end
+    saveQueued = true
+    task.defer(function()
+        saveQueued = false
+        EnsureFolder()
+        local data = {
+            configs = allConfigs,
+            lastUsed = currentConfigName
+        }
+        pcall(function()
+            if writefile then
+                writefile(CONFIGS_FILE, HttpService:JSONEncode(data))
+            end
+        end)
     end)
 end
 
@@ -665,12 +763,10 @@ local function LoadAllConfigs()
         return HttpService:JSONDecode(content)
     end)
     
-    if success and result then
-        if result.configs then
-            allConfigs = result.configs
-            currentConfigName = result.lastUsed or ""
-            return true
-        end
+    if success and result and result.configs then
+        allConfigs = result.configs
+        currentConfigName = result.lastUsed or ""
+        return true
     end
     
     return false
@@ -775,7 +871,7 @@ local function DuplicateConfig(name, newName)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- EMOTE SCANNER
+-- EMOTE SCANNER (OPT: uses cached requires)
 -- ═══════════════════════════════════════════════════════════════
 
 local function ScanEmotes()
@@ -784,9 +880,9 @@ local function ScanEmotes()
     if emotesFolder then
         emotesFolder = emotesFolder:FindFirstChild("Emotes")
         if emotesFolder then
-            for _, emoteModule in pairs(emotesFolder:GetChildren()) do
+            for _, emoteModule in ipairs(emotesFolder:GetChildren()) do
                 if emoteModule:IsA("ModuleScript") then
-                    table.insert(allEmotes, emoteModule.Name)
+                    allEmotes[#allEmotes + 1] = emoteModule.Name
                 end
             end
         end
@@ -794,6 +890,12 @@ local function ScanEmotes()
     table.sort(allEmotes, function(a, b)
         return a:lower() < b:lower()
     end)
+    
+    -- OPT: build display name cache while we're scanning anyway
+    if not displayNameCacheBuilt then
+        BuildEmoteDisplayNameCache()
+    end
+    
     return allEmotes
 end
 
@@ -801,22 +903,36 @@ end
 -- VALIDATION & APPLY
 -- ═══════════════════════════════════════════════════════════════
 
-local function isValidEmote(emoteName)
-    if emoteName == "" then return false, "" end
-    local normalizedInput = normalizeText(emoteName)
+-- OPT: build emote name lookup set once for validation
+local emoteNameSet = nil
+local emoteNameMap = nil -- normalized -> actual
+
+local function BuildEmoteNameSet()
+    emoteNameSet = {}
+    emoteNameMap = {}
     local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
-    
     if emotesFolder then
         emotesFolder = emotesFolder:FindFirstChild("Emotes")
         if emotesFolder then
             for _, emoteModule in ipairs(emotesFolder:GetChildren()) do
                 if emoteModule:IsA("ModuleScript") then
-                    if normalizeText(emoteModule.Name) == normalizedInput then
-                        return true, emoteModule.Name
-                    end
+                    local norm = normalizeText(emoteModule.Name)
+                    emoteNameSet[norm] = true
+                    emoteNameMap[norm] = emoteModule.Name
                 end
             end
         end
+    end
+end
+
+local function isValidEmote(emoteName)
+    if emoteName == "" then return false, "" end
+    
+    if not emoteNameSet then BuildEmoteNameSet() end
+    
+    local normalized = normalizeText(emoteName)
+    if emoteNameSet[normalized] then
+        return true, emoteNameMap[normalized]
     end
     return false, ""
 end
@@ -833,93 +949,85 @@ local function ValidateAndApplyEmotes()
             local selectValid, selectActual = isValidEmote(selectEmotes[i])
             
             if not currentValid and not selectValid then
-                table.insert(invalidEmoteSlots, {
-                    slot = i,
-                    currentInvalid = true,
-                    currentName = currentEmotes[i],
-                    selectInvalid = true,
-                    selectName = selectEmotes[i]
-                })
+                invalidEmoteSlots[#invalidEmoteSlots + 1] = {
+                    slot = i, currentInvalid = true, currentName = currentEmotes[i],
+                    selectInvalid = true, selectName = selectEmotes[i]
+                }
                 emoteEnabled[i] = false
             elseif not currentValid then
-                table.insert(invalidEmoteSlots, {
-                    slot = i,
-                    currentInvalid = true,
-                    currentName = currentEmotes[i],
-                    selectInvalid = false,
-                    selectName = selectEmotes[i]
-                })
+                invalidEmoteSlots[#invalidEmoteSlots + 1] = {
+                    slot = i, currentInvalid = true, currentName = currentEmotes[i],
+                    selectInvalid = false, selectName = selectEmotes[i]
+                }
                 emoteEnabled[i] = false
             elseif not selectValid then
-                table.insert(invalidEmoteSlots, {
-                    slot = i,
-                    currentInvalid = false,
-                    currentName = currentEmotes[i],
-                    selectInvalid = true,
-                    selectName = selectEmotes[i]
-                })
+                invalidEmoteSlots[#invalidEmoteSlots + 1] = {
+                    slot = i, currentInvalid = false, currentName = currentEmotes[i],
+                    selectInvalid = true, selectName = selectEmotes[i]
+                }
                 emoteEnabled[i] = false
             elseif currentActual:lower() == selectActual:lower() then
-                table.insert(sameEmoteSlots, i)
+                sameEmoteSlots[#sameEmoteSlots + 1] = i
                 emoteEnabled[i] = false
             else
                 currentEmotes[i] = currentActual
                 selectEmotes[i] = selectActual
-                table.insert(successfulSlots, {
-                    slot = i,
-                    current = currentActual,
-                    select = selectActual
-                })
+                successfulSlots[#successfulSlots + 1] = {
+                    slot = i, current = currentActual, select = selectActual
+                }
                 emoteEnabled[i] = true
             end
         elseif currentEmotes[i] ~= "" or selectEmotes[i] ~= "" then
-            table.insert(missingEmoteSlots, i)
+            missingEmoteSlots[#missingEmoteSlots + 1] = i
             emoteEnabled[i] = false
         else
             emoteEnabled[i] = false
         end
     end
     
-    local message = ""
+    -- OPT: rebuild lookup table after validation (only when emotes change)
+    RebuildEmoteLookup()
+    
+    -- Build message with string buffer pattern
+    local parts = {}
     
     if #successfulSlots > 0 then
-        message = message .. "<font color='#00FF00'>✓ Applied:</font>\n"
+        parts[#parts + 1] = "<font color='#00FF00'>✓ Applied:</font>"
         for _, data in ipairs(successfulSlots) do
-            message = message .. "<font color='#00FF00'>  Slot " .. data.slot .. ": " .. data.current .. " → " .. data.select .. "</font>\n"
+            parts[#parts + 1] = "<font color='#00FF00'>  Slot " .. data.slot .. ": " .. data.current .. " → " .. data.select .. "</font>"
         end
     end
     
     if #sameEmoteSlots > 0 then
-        message = message .. "<font color='#FF6B6B'>✗ Same name:</font>\n"
+        parts[#parts + 1] = "<font color='#FF6B6B'>✗ Same name:</font>"
         for _, slot in ipairs(sameEmoteSlots) do
-            message = message .. "<font color='#FF6B6B'>  Slot " .. slot .. "</font>\n"
+            parts[#parts + 1] = "<font color='#FF6B6B'>  Slot " .. slot .. "</font>"
         end
     end
     
     if #invalidEmoteSlots > 0 then
-        message = message .. "<font color='#FF4444'>✗ Invalid:</font>\n"
+        parts[#parts + 1] = "<font color='#FF4444'>✗ Invalid:</font>"
         for _, data in ipairs(invalidEmoteSlots) do
             if data.currentInvalid and data.selectInvalid then
-                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - Both</font>\n"
+                parts[#parts + 1] = "<font color='#FF4444'>  Slot " .. data.slot .. " - Both</font>"
             elseif data.currentInvalid then
-                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.currentName .. "\"</font>\n"
+                parts[#parts + 1] = "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.currentName .. "\"</font>"
             else
-                message = message .. "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.selectName .. "\"</font>\n"
+                parts[#parts + 1] = "<font color='#FF4444'>  Slot " .. data.slot .. " - \"" .. data.selectName .. "\"</font>"
             end
         end
     end
     
     if #missingEmoteSlots > 0 then
-        message = message .. "<font color='#FFAA00'>⚠ Missing pair:</font>\n"
+        parts[#parts + 1] = "<font color='#FFAA00'>⚠ Missing pair:</font>"
         for _, slot in ipairs(missingEmoteSlots) do
-            message = message .. "<font color='#FFAA00'>  Slot " .. slot .. "</font>\n"
+            parts[#parts + 1] = "<font color='#FFAA00'>  Slot " .. slot .. "</font>"
         end
     end
     
-    if message == "" then
-        message = "No emotes configured"
-    end
+    local message = #parts > 0 and table.concat(parts, "\n") or "No emotes configured"
     
+    -- Clear caches that may be stale
     emoteNameCache = {}
     normalizedCache = {}
     
@@ -958,8 +1066,7 @@ local function UpdateAllUI()
 end
 
 local function ApplyEmotes(silent)
-    local count, message = ValidateAndApplyEmotes()
-    return count, message
+    return ValidateAndApplyEmotes()
 end
 
 local function ApplyEverything(silent)
@@ -1081,6 +1188,8 @@ Tabs.EmoteChanger:Button({
             end)
         end
         
+        -- OPT: clear lookup table
+        table.clear(emoteReplacementLookup)
         emoteNameCache = {}
         normalizedCache = {}
         cleanUpLastEmoteFrame()
@@ -1090,7 +1199,7 @@ Tabs.EmoteChanger:Button({
 })
 
 -- ═══════════════════════════════════════════════════════════════
--- EMOTE LIST TAB
+-- EMOTE LIST TAB (OPT: batched creation with larger yields)
 -- ═══════════════════════════════════════════════════════════════
 
 Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
@@ -1126,6 +1235,7 @@ task.spawn(function()
     
     Tabs.EmoteList:Divider()
     
+    -- OPT: batch UI creation in larger chunks, yield less often
     for i, emoteName in ipairs(allEmotes) do
         Tabs.EmoteList:Button({
             Title = emoteName,
@@ -1142,7 +1252,8 @@ task.spawn(function()
             end
         })
         
-        if i % 25 == 0 then
+        -- OPT: yield every 40 instead of 25 (fewer frame breaks during loading)
+        if i % 40 == 0 then
             task.wait()
         end
     end
@@ -1388,19 +1499,21 @@ local configListParagraph = Tabs.Settings:Paragraph({ Title = "Configs", Desc = 
 
 function UpdateConfigList()
     local names = GetConfigNames()
-    local listText = ""
     if #names == 0 then
-        listText = "No configs saved"
-    else
-        for _, name in ipairs(names) do
-            if name == currentConfigName then
-                listText = listText .. "► " .. name .. " (active)\n"
-            else
-                listText = listText .. "• " .. name .. "\n"
-            end
+        pcall(function() configListParagraph:SetDesc("No configs saved") end)
+        return
+    end
+    
+    -- OPT: use table.concat instead of repeated string concatenation
+    local parts = {}
+    for _, name in ipairs(names) do
+        if name == currentConfigName then
+            parts[#parts + 1] = "► " .. name .. " (active)"
+        else
+            parts[#parts + 1] = "• " .. name
         end
     end
-    pcall(function() configListParagraph:SetDesc(listText) end)
+    pcall(function() configListParagraph:SetDesc(table.concat(parts, "\n")) end)
 end
 
 Tabs.Settings:Button({ Title = "Refresh List", Icon = "refresh-cw", Callback = function() RefreshConfigDropdown() UpdateConfigList() UpdateConfigDisplay() end })
@@ -1442,6 +1555,10 @@ end
 
 task.spawn(function()
     task.wait(1)
+    
+    -- OPT: pre-build caches during init
+    BuildEmoteDisplayNameCache()
+    BuildEmoteNameSet()
     
     local loaded = LoadAllConfigs()
     RefreshConfigDropdown()
