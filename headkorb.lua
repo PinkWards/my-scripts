@@ -5,41 +5,61 @@ local HEADLESS_MESH_ID = "rbxassetid://1095708"
 local KORBLOX_MESH_ID = "rbxassetid://101851696"
 local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
+local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
+local UNIT_SCALE = Vector3.one
+local KORBLOX_WELD_OFFSET = CFrame.new(0, -0.8, 0)
 
-local appliedCharacters = {} -- Track what we've already applied
+-- OPT: store connections so we can clean them up on respawn (prevents memory leak)
+local activeConnections = {}
+local applied = false
+
+local function cleanupConnections()
+    for i = #activeConnections, 1, -1 do
+        local conn = activeConnections[i]
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+        activeConnections[i] = nil
+    end
+    applied = false
+end
+
+local function track(conn)
+    activeConnections[#activeConnections + 1] = conn
+    return conn
+end
 
 local function removeFace(head)
     local face = head:FindFirstChild("face")
-    if face then
-        face:Destroy()
-    end
+    if face then face:Destroy() end
 end
 
 local function applyHeadless(head)
-    if not head or head:FindFirstChild("HeadlessMesh") then return end -- Already applied check
+    if not head or head:FindFirstChild("HeadlessMesh") then return end
 
     head.Transparency = 1
     head.CanCollide = false
     removeFace(head)
 
     local mesh = Instance.new("SpecialMesh")
-    mesh.Name = "HeadlessMesh" -- Named for tracking
+    mesh.Name = "HeadlessMesh"
     mesh.MeshType = Enum.MeshType.FileMesh
     mesh.MeshId = HEADLESS_MESH_ID
-    mesh.Scale = Vector3.new(0.001, 0.001, 0.001)
+    mesh.Scale = TINY_SCALE
     mesh.Parent = head
 
-    head:GetPropertyChangedSignal("Transparency"):Connect(function()
+    -- OPT: tracked connections (cleaned up on respawn)
+    track(head:GetPropertyChangedSignal("Transparency"):Connect(function()
         if head.Transparency ~= 1 then
             head.Transparency = 1
         end
-    end)
+    end))
 
-    head.ChildAdded:Connect(function(child)
+    track(head.ChildAdded:Connect(function(child)
         if child.Name == "face" and child:IsA("Decal") then
             child:Destroy()
         end
-    end)
+    end))
 end
 
 local function applyKorbloxR6(character)
@@ -53,18 +73,20 @@ local function applyKorbloxR6(character)
     end
 
     rightLeg.Color = DARK_GREY_COLOR
-    rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
+
+    -- OPT: tracked connection
+    track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
         if rightLeg.Color ~= DARK_GREY_COLOR then
             rightLeg.Color = DARK_GREY_COLOR
         end
-    end)
+    end))
 
     local korbloxMesh = Instance.new("SpecialMesh")
     korbloxMesh.Name = "KorbloxMesh"
     korbloxMesh.MeshType = Enum.MeshType.FileMesh
     korbloxMesh.MeshId = KORBLOX_MESH_ID
     korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
-    korbloxMesh.Scale = Vector3.new(1, 1, 1)
+    korbloxMesh.Scale = UNIT_SCALE
     korbloxMesh.Parent = rightLeg
 end
 
@@ -84,27 +106,30 @@ local function applyKorbloxR15(character)
     korbloxLeg.Anchored = false
     korbloxLeg.CanCollide = false
     korbloxLeg.Color = DARK_GREY_COLOR
-    korbloxLeg.Parent = character
 
     local mesh = Instance.new("SpecialMesh")
     mesh.MeshType = Enum.MeshType.FileMesh
     mesh.MeshId = KORBLOX_MESH_ID
     mesh.TextureId = KORBLOX_TEXTURE_ID
-    mesh.Scale = Vector3.new(1, 1, 1)
+    mesh.Scale = UNIT_SCALE
     mesh.Parent = korbloxLeg
 
     local weld = Instance.new("Weld")
     weld.Part0 = rightUpperLeg
     weld.Part1 = korbloxLeg
-    weld.C0 = CFrame.new(0, -0.8, 0)
+    weld.C0 = KORBLOX_WELD_OFFSET
     weld.Parent = korbloxLeg
+
+    -- OPT: parent last (single replication event instead of multiple property changes while parented)
+    korbloxLeg.Parent = character
 end
 
 local function applyCharacter(character)
-    if appliedCharacters[character] then return end -- Already processed
-    appliedCharacters[character] = true
+    if applied then return end
+    applied = true
 
-    task.wait(0.2) -- Wait for HumanoidDescription
+    -- OPT: removed task.wait(0.2) — WaitForChild("Head") in CharacterAdded already ensures loading
+    -- If called from initial check, head exists already
 
     local head = character:FindFirstChild("Head")
     if head then
@@ -128,7 +153,8 @@ end
 
 -- Respawn handling
 player.CharacterAdded:Connect(function(character)
-    appliedCharacters = {} -- Reset tracking on respawn
-    character:WaitForChild("Head") -- Ensure character loaded
+    -- OPT: clean up old connections to prevent memory leak
+    cleanupConnections()
+    character:WaitForChild("Head")
     applyCharacter(character)
 end)
