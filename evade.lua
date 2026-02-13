@@ -95,7 +95,7 @@ local ColaConfig = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP CONFIG (OPTIMIZED)
+-- BHOP CONFIG (OPTIMIZED - reduced ray counts & cache times)
 -- ═══════════════════════════════════════════════════════════════
 
 local BhopConfig = {
@@ -109,8 +109,9 @@ local BhopConfig = {
     JumpQueueWindow = 0.08,
     ConsecutiveJumpBonus = 0.005,
     MaxConsecutiveBonus = 0.05,
+    -- OPT: reduced from 8 to 4 rays, slightly wider spread to compensate
     GroundCheckMultiRay = true,
-    MultiRaySpread = 1.2,
+    MultiRaySpread = 1.4,
 }
 
 local Humanoid, RootPart = nil, nil
@@ -143,7 +144,7 @@ local StateChangedConn = nil
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
 local SliderMin, SliderMax = 1.0, 1.8
 
--- BHOP state variables (optimized)
+-- BHOP state variables
 local LastGroundState = false
 local LastJumpTick = 0
 local BHOP_COOLDOWN = 0
@@ -156,7 +157,8 @@ local WasInAir = false
 local JumpQueued = false
 local LastGroundCheckResult = false
 local LastGroundCheckTick = 0
-local GroundCheckCacheTime = 0.005
+-- OPT: increased cache from 0.005 to 0.016 (~1 frame at 60fps)
+local GroundCheckCacheTime = 0.016
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -166,6 +168,31 @@ local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
 EdgeRayParams.RespectCanCollide = true
+
+-- ═══════════════════════════════════════════════════════════════
+-- OPT: PRE-ALLOCATED CONSTANTS (avoid per-frame garbage)
+-- ═══════════════════════════════════════════════════════════════
+
+local VEC3_ZERO = Vector3.zero
+local VEC3_DOWN = Vector3.new(0, -1, 0)
+local VEC3_Y_AXIS = Vector3.yAxis
+local VEC2_ZERO = Vector2.new(0, 0)
+
+-- OPT: pre-compute ground ray vector once
+local GROUND_RAY_VEC = Vector3.new(0, -BhopConfig.GroundRayLength, 0)
+
+-- OPT: pre-allocate multi-ray offsets (reduced from 8 to 4 cardinal directions)
+local MULTI_RAY_OFFSETS -- filled after config is set
+local function RebuildMultiRayOffsets()
+    local s = BhopConfig.MultiRaySpread
+    MULTI_RAY_OFFSETS = {
+        Vector3.new(s, 0, 0),
+        Vector3.new(-s, 0, 0),
+        Vector3.new(0, 0, s),
+        Vector3.new(0, 0, -s),
+    }
+end
+RebuildMultiRayOffsets()
 
 -- ═══════════════════════════════════════════════════════════════
 -- THEME / COLORS
@@ -221,21 +248,22 @@ local function IsEvadeGame()
     return hasNPCs or hasEvents or hasGame
 end
 
+-- OPT: increased filter update interval from 0.5 to 1.0s (players don't spawn that fast)
 local function UpdateRayFilter()
     local now = tick()
-    if now - LastRayFilterUpdate < 0.5 then return end
+    if now - LastRayFilterUpdate < 1.0 then return end
     LastRayFilterUpdate = now
     
     local filterList = {}
     
     local character = LocalPlayer.Character
     if character then
-        table.insert(filterList, character)
+        filterList[#filterList + 1] = character
     end
     
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
-            table.insert(filterList, player.Character)
+            filterList[#filterList + 1] = player.Character
         end
     end
     
@@ -243,7 +271,7 @@ local function UpdateRayFilter()
     if gameFolder then
         local gamePlayers = gameFolder:FindFirstChild("Players")
         if gamePlayers then
-            table.insert(filterList, gamePlayers)
+            filterList[#filterList + 1] = gamePlayers
         end
     end
     
@@ -261,15 +289,24 @@ local function SafeCall(func, ...)
     return success and result
 end
 
-local function GetDistance(position, bots)
-    local minDist = math.huge
+-- OPT: inlined magnitude comparison to avoid sqrt when possible
+local function GetDistanceSq(position, bots)
+    local minDistSq = math.huge
     for _, botPos in ipairs(bots) do
-        local dist = (position - botPos).Magnitude
-        if dist < minDist then
-            minDist = dist
+        local dx = position.X - botPos.X
+        local dy = position.Y - botPos.Y
+        local dz = position.Z - botPos.Z
+        local distSq = dx*dx + dy*dy + dz*dz
+        if distSq < minDistSq then
+            minDistSq = distSq
         end
     end
-    return minDist
+    return minDistSq
+end
+
+-- Keep original for cases where actual distance is needed
+local function GetDistance(position, bots)
+    return math.sqrt(GetDistanceSq(position, bots))
 end
 
 local function GetNamesFromPath(path)
@@ -280,7 +317,7 @@ local function GetNamesFromPath(path)
     end
     if folder then
         for _, child in ipairs(folder:GetChildren()) do
-            table.insert(names, child.Name)
+            names[#names + 1] = child.Name
         end
     end
     return names
@@ -327,21 +364,13 @@ end
 -- OPTIMIZED BHOP SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
+-- OPT: simplified - skip ancestor/humanoid checks for ground hits (they're filtered by RayParams)
+local COS_SLOPE_MAX = math.cos(math.rad(BhopConfig.SlopeMaxAngle))
+
 local function ValidateRayHit(rayResult)
-    if not rayResult or not rayResult.Instance then return false end
-    
-    local hitPart = rayResult.Instance
-    local hitModel = hitPart:FindFirstAncestorOfClass("Model")
-    
-    if hitModel then
-        local hitPlayer = Players:GetPlayerFromCharacter(hitModel)
-        if hitPlayer or hitModel:FindFirstChildOfClass("Humanoid") then
-            return false
-        end
-    end
-    
-    local angle = math.deg(math.acos(math.clamp(rayResult.Normal:Dot(Vector3.yAxis), -1, 1)))
-    return angle <= BhopConfig.SlopeMaxAngle
+    if not rayResult then return false end
+    -- OPT: dot product check only, skip instance ancestry (already filtered)
+    return rayResult.Normal:Dot(VEC3_Y_AXIS) >= COS_SLOPE_MAX
 end
 
 local function IsOnGroundInstant()
@@ -353,7 +382,7 @@ local function IsOnGroundInstant()
     end
     LastGroundCheckTick = now
     
-    -- Fast check: FloorMaterial
+    -- Fast check: FloorMaterial (cheapest)
     if Humanoid.FloorMaterial ~= Enum.Material.Air then
         LastGroundCheckResult = true
         return true
@@ -370,29 +399,17 @@ local function IsOnGroundInstant()
     
     -- Primary center ray
     local pos = RootPart.Position
-    local rayResult = Workspace:Raycast(pos, Vector3.new(0, -BhopConfig.GroundRayLength, 0), BhopRayParams)
-    if rayResult and ValidateRayHit(rayResult) then
+    local rayResult = Workspace:Raycast(pos, GROUND_RAY_VEC, BhopRayParams)
+    if ValidateRayHit(rayResult) then
         LastGroundCheckResult = true
         return true
     end
     
-    -- Multi-ray ground detection for consistency on edges/slopes
+    -- OPT: multi-ray reduced from 8 to 4 cardinal directions
     if BhopConfig.GroundCheckMultiRay then
-        local spread = BhopConfig.MultiRaySpread
-        local offsets = {
-            Vector3.new(spread, 0, 0),
-            Vector3.new(-spread, 0, 0),
-            Vector3.new(0, 0, spread),
-            Vector3.new(0, 0, -spread),
-            Vector3.new(spread * 0.7, 0, spread * 0.7),
-            Vector3.new(-spread * 0.7, 0, spread * 0.7),
-            Vector3.new(spread * 0.7, 0, -spread * 0.7),
-            Vector3.new(-spread * 0.7, 0, -spread * 0.7),
-        }
-        
-        for _, offset in ipairs(offsets) do
-            local sideRay = Workspace:Raycast(pos + offset, Vector3.new(0, -BhopConfig.GroundRayLength, 0), BhopRayParams)
-            if sideRay and ValidateRayHit(sideRay) then
+        for i = 1, #MULTI_RAY_OFFSETS do
+            local sideRay = Workspace:Raycast(pos + MULTI_RAY_OFFSETS[i], GROUND_RAY_VEC, BhopRayParams)
+            if ValidateRayHit(sideRay) then
                 LastGroundCheckResult = true
                 return true
             end
@@ -403,25 +420,24 @@ local function IsOnGroundInstant()
     return false
 end
 
+-- OPT: inline velocity reads to avoid extra function call overhead on hot path
 local function GetHorizontalSpeed()
     if not RootPart then return 0 end
     local vel = RootPart.AssemblyLinearVelocity
-    return Vector3.new(vel.X, 0, vel.Z).Magnitude
+    return math.sqrt(vel.X * vel.X + vel.Z * vel.Z)
 end
 
 local function GetHorizontalVelocity()
-    if not RootPart then return Vector3.zero end
+    if not RootPart then return VEC3_ZERO end
     local vel = RootPart.AssemblyLinearVelocity
     return Vector3.new(vel.X, 0, vel.Z)
 end
 
 local function PreserveSpeed()
-    if not BhopConfig.SpeedPreserveEnabled then return end
-    if not RootPart then return end
+    if not BhopConfig.SpeedPreserveEnabled or not RootPart then return end
     
-    local currentHSpeed = GetHorizontalSpeed()
     local currentVel = RootPart.AssemblyLinearVelocity
-    local horizontalVel = Vector3.new(currentVel.X, 0, currentVel.Z)
+    local currentHSpeed = math.sqrt(currentVel.X * currentVel.X + currentVel.Z * currentVel.Z)
     
     -- Only preserve if we had meaningful speed and are losing it
     if LastHorizontalSpeed > BhopConfig.MinPreserveSpeed and currentHSpeed < LastHorizontalSpeed * 0.85 then
@@ -431,24 +447,26 @@ local function PreserveSpeed()
         local bonus = math.min(ConsecutiveJumps * BhopConfig.ConsecutiveJumpBonus, BhopConfig.MaxConsecutiveBonus)
         preserveSpeed = preserveSpeed * (1 + bonus)
         
-        if horizontalVel.Magnitude > 0.1 then
-            local dir = horizontalVel.Unit
-            RootPart.AssemblyLinearVelocity = Vector3.new(
-                dir.X * preserveSpeed,
-                currentVel.Y,
-                dir.Z * preserveSpeed
-            )
+        local dirX, dirZ
+        if currentHSpeed > 0.1 then
+            local inv = 1 / currentHSpeed
+            dirX, dirZ = currentVel.X * inv, currentVel.Z * inv
         elseif SavedHorizontalVelocity.Magnitude > 0.1 then
             local dir = SavedHorizontalVelocity.Unit
-            RootPart.AssemblyLinearVelocity = Vector3.new(
-                dir.X * preserveSpeed,
-                currentVel.Y,
-                dir.Z * preserveSpeed
-            )
+            dirX, dirZ = dir.X, dir.Z
+        else
+            return
         end
+        
+        RootPart.AssemblyLinearVelocity = Vector3.new(
+            dirX * preserveSpeed,
+            currentVel.Y,
+            dirZ * preserveSpeed
+        )
     end
 end
 
+-- OPT: consolidated defers into a single post-jump task
 local function ExecuteJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
     
@@ -459,19 +477,8 @@ local function ExecuteJump()
     -- Execute jump
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
-    -- Preserve speed immediately after state change
-    task.defer(function()
-        if Humanoid and RootPart and Humanoid.Health > 0 then
-            PreserveSpeed()
-        end
-    end)
-    
-    -- Double-check preservation after a tiny delay
-    task.delay(0.01, function()
-        if Humanoid and RootPart and Humanoid.Health > 0 and holdSpace then
-            PreserveSpeed()
-        end
-    end)
+    -- OPT: single defer instead of defer + delay(0.01)
+    task.defer(PreserveSpeed)
     
     ConsecutiveJumps = ConsecutiveJumps + 1
     LastJumpTick = tick()
@@ -491,12 +498,14 @@ local function SuperBhop()
     
     local onGround = IsOnGroundInstant()
     local now = tick()
-    local currentSpeed = GetHorizontalSpeed()
     
     -- Track speed continuously while in air
     if not onGround then
+        local currentSpeed = GetHorizontalSpeed()
         if currentSpeed > BhopConfig.MinPreserveSpeed then
-            LastHorizontalSpeed = math.max(LastHorizontalSpeed, currentSpeed)
+            if currentSpeed > LastHorizontalSpeed then
+                LastHorizontalSpeed = currentSpeed
+            end
             SavedHorizontalVelocity = GetHorizontalVelocity()
         end
         WasInAir = true
@@ -506,35 +515,23 @@ local function SuperBhop()
     if onGround and WasInAir then
         WasInAir = false
         LastLandingTick = now
-        
-        if holdSpace then
-            ExecuteJump()
-            return
-        end
+        ExecuteJump()
+        LastGroundState = onGround
+        return
     end
     
     -- Ground jump with speed preservation
     if onGround then
         if not LastGroundState or (now - LastJumpTick) >= BHOP_COOLDOWN then
-            -- Save current speed before any jump
+            local currentSpeed = GetHorizontalSpeed()
             if currentSpeed > BhopConfig.MinPreserveSpeed then
                 LastHorizontalSpeed = currentSpeed
                 SavedHorizontalVelocity = GetHorizontalVelocity()
             end
-            
             ExecuteJump()
-            
-            -- Backup jump attempt
-            task.defer(function()
-                if Humanoid and Humanoid.Health > 0 and holdSpace then
-                    if IsOnGroundInstant() then
-                        ExecuteJump()
-                    end
-                end
-            end)
         end
     else
-        -- Reset consecutive jumps if we've been in air too long without jumping
+        -- Reset consecutive jumps if we've been in air too long
         if now - LastJumpTick > 1.5 then
             ConsecutiveJumps = 0
         end
@@ -543,64 +540,59 @@ local function SuperBhop()
     LastGroundState = onGround
 end
 
+-- OPT: reduced raycast count in pre-jump, removed redundant defer
 local function PreJumpQueue()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
     
     local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall then
-        local pos = RootPart.Position
-        local vel = RootPart.AssemblyLinearVelocity
-        
-        -- Predictive ground detection - cast ray further based on velocity
-        local predictiveLength = BhopConfig.PreJumpDistance
-        if vel.Y < -20 then
-            predictiveLength = predictiveLength * 1.5
-        end
-        
-        -- Center ray
-        local rayResult = Workspace:Raycast(pos, Vector3.new(0, -predictiveLength, 0), BhopRayParams)
-        
-        -- If center misses, try offset rays for edge catching
-        if not rayResult then
+    if state ~= Enum.HumanoidStateType.Freefall then return end
+    
+    local pos = RootPart.Position
+    local vel = RootPart.AssemblyLinearVelocity
+    
+    local predictiveLength = BhopConfig.PreJumpDistance
+    if vel.Y < -20 then
+        predictiveLength = predictiveLength * 1.5
+    end
+    
+    -- OPT: single center ray first, only do movement-dir ray if center misses
+    local rayVec = Vector3.new(0, -predictiveLength, 0)
+    local rayResult = Workspace:Raycast(pos, rayVec, BhopRayParams)
+    
+    if not rayResult then
+        local hSpeed = vel.X * vel.X + vel.Z * vel.Z
+        if hSpeed > 1 then
+            local inv = 1 / math.sqrt(hSpeed)
             local spread = BhopConfig.MultiRaySpread * 0.8
-            local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
-            if horizontalVel.Magnitude > 1 then
-                local moveDir = horizontalVel.Unit
-                rayResult = Workspace:Raycast(pos + moveDir * spread, Vector3.new(0, -predictiveLength, 0), BhopRayParams)
-            end
+            local offsetPos = Vector3.new(pos.X + vel.X * inv * spread, pos.Y, pos.Z + vel.Z * inv * spread)
+            rayResult = Workspace:Raycast(offsetPos, rayVec, BhopRayParams)
+        end
+    end
+    
+    if rayResult and ValidateRayHit(rayResult) then
+        local dist = pos.Y - rayResult.Position.Y
+        
+        local threshold = 3.5
+        if vel.Y < BhopConfig.PreJumpVelThreshold then
+            threshold = math.clamp(3.5 + math.abs(vel.Y) * 0.04, 3.5, 6.0)
         end
         
-        if rayResult and ValidateRayHit(rayResult) then
-            local dist = (pos - rayResult.Position).Magnitude
-            
-            -- Dynamic pre-jump threshold based on fall speed
-            local threshold = 3.5
-            if vel.Y < BhopConfig.PreJumpVelThreshold then
-                threshold = math.clamp(3.5 + math.abs(vel.Y) * 0.04, 3.5, 6.0)
-            end
-            
-            if dist < threshold then
-                -- Save speed before pre-landing jump
-                local currentSpeed = GetHorizontalSpeed()
-                if currentSpeed > BhopConfig.MinPreserveSpeed then
-                    LastHorizontalSpeed = math.max(LastHorizontalSpeed, currentSpeed)
-                    SavedHorizontalVelocity = GetHorizontalVelocity()
+        if dist < threshold then
+            local currentSpeed = GetHorizontalSpeed()
+            if currentSpeed > BhopConfig.MinPreserveSpeed then
+                if currentSpeed > LastHorizontalSpeed then
+                    LastHorizontalSpeed = currentSpeed
                 end
-                
-                PreLandingQueued = true
-                
-                task.defer(function()
-                    if holdSpace and Humanoid and Humanoid.Health > 0 then
-                        ExecuteJump()
-                    end
-                end)
+                SavedHorizontalVelocity = GetHorizontalVelocity()
             end
+            PreLandingQueued = true
+            ExecuteJump()
         end
     end
 end
 
--- Speed preservation on humanoid state changes
+-- OPT: simplified state handler, removed redundant defer chains
 local function OnHumanoidStateChanged(old, new)
     if not holdSpace then
         if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
@@ -609,15 +601,7 @@ local function OnHumanoidStateChanged(old, new)
         return
     end
     
-    if new == Enum.HumanoidStateType.Landed then
-        -- Instant jump on landing
-        task.defer(function()
-            if holdSpace and Humanoid and Humanoid.Health > 0 then
-                ExecuteJump()
-            end
-        end)
-    elseif new == Enum.HumanoidStateType.Running then
-        -- Backup: if we somehow enter running state while holding space
+    if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
         task.defer(function()
             if holdSpace and Humanoid and Humanoid.Health > 0 then
                 local speed = GetHorizontalSpeed()
@@ -629,47 +613,50 @@ local function OnHumanoidStateChanged(old, new)
             end
         end)
     elseif new == Enum.HumanoidStateType.Jumping then
-        -- Preserve speed right when jump initiates
-        task.defer(function()
-            if RootPart and Humanoid and Humanoid.Health > 0 then
-                PreserveSpeed()
-            end
-        end)
+        task.defer(PreserveSpeed)
     end
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GAME LOGIC (unchanged functionality)
+-- GAME LOGIC
 -- ═══════════════════════════════════════════════════════════════
 
 local LastBotCheck = 0
 
+-- OPT: increased bot cache from 0.1 to 0.15s
 local function GetBots()
     local now = tick()
-    if now - LastBotCheck < 0.1 then
+    if now - LastBotCheck < 0.15 then
         return CachedBots
     end
     LastBotCheck = now
     
     if not NPCLoaded then LoadNPCs() end
-    table.clear(CachedBots)
+    
+    local count = 0
     
     if not CachedGame then
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    if not CachedGame then return CachedBots end
-    
-    local gamePlayers = CachedGame:FindFirstChild("Players")
-    if gamePlayers then
-        for _, model in ipairs(gamePlayers:GetChildren()) do
-            if model:IsA("Model") and NPCNames[model.Name] then
-                local hrp = model:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    table.insert(CachedBots, hrp.Position)
+    if CachedGame then
+        local gamePlayers = CachedGame:FindFirstChild("Players")
+        if gamePlayers then
+            for _, model in ipairs(gamePlayers:GetChildren()) do
+                if model:IsA("Model") and NPCNames[model.Name] then
+                    local hrp = model:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        count = count + 1
+                        CachedBots[count] = hrp.Position
+                    end
                 end
             end
         end
+    end
+    
+    -- OPT: trim excess entries instead of table.clear + rebuild
+    for i = count + 1, #CachedBots do
+        CachedBots[i] = nil
     end
     
     return CachedBots
@@ -677,23 +664,30 @@ end
 
 local LastItemCheck = 0
 
+-- OPT: increased item cache from 0.1 to 0.15s, reuse table slots
 local function GetItems()
     local now = tick()
-    if now - LastItemCheck < 0.1 then
+    if now - LastItemCheck < 0.15 then
         return CachedItems
     end
     LastItemCheck = now
     
-    table.clear(CachedItems)
+    local count = 0
     
     if not CachedGame then
         CachedGame = Workspace:FindFirstChild("Game")
     end
     
-    if not CachedGame then return CachedItems end
+    if not CachedGame then
+        for i = 1, #CachedItems do CachedItems[i] = nil end
+        return CachedItems
+    end
     
     local effects = CachedGame:FindFirstChild("Effects")
-    if not effects then return CachedItems end
+    if not effects then
+        for i = 1, #CachedItems do CachedItems[i] = nil end
+        return CachedItems
+    end
     
     for _, containerName in ipairs({"Tickets", "Collectables"}) do
         local container = effects:FindFirstChild(containerName)
@@ -708,11 +702,23 @@ local function GetItems()
                     end
                     
                     if part and part.Parent then
-                        table.insert(CachedItems, {object = item, position = part.Position})
+                        count = count + 1
+                        -- OPT: reuse table entry if exists
+                        local entry = CachedItems[count]
+                        if entry then
+                            entry.object = item
+                            entry.position = part.Position
+                        else
+                            CachedItems[count] = {object = item, position = part.Position}
+                        end
                     end
                 end
             end
         end
+    end
+    
+    for i = count + 1, #CachedItems do
+        CachedItems[i] = nil
     end
     
     return CachedItems
@@ -733,7 +739,7 @@ local function FindSafeSpot(myPos, bots)
         if spawnsFolder then
             for _, spawn in ipairs(spawnsFolder:GetChildren()) do
                 if spawn:IsA("BasePart") then
-                    table.insert(safeLocations, spawn.Position + Vector3.new(0, 5, 0))
+                    safeLocations[#safeLocations + 1] = spawn.Position + Vector3.new(0, 5, 0)
                 end
             end
         end
@@ -741,7 +747,7 @@ local function FindSafeSpot(myPos, bots)
     
     local securityPart = Workspace:FindFirstChild("SecurityPart")
     if securityPart then
-        table.insert(safeLocations, securityPart.Position + Vector3.new(0, 5, 0))
+        safeLocations[#safeLocations + 1] = securityPart.Position + Vector3.new(0, 5, 0)
     end
     
     for _, player in ipairs(Players:GetPlayers()) do
@@ -749,16 +755,18 @@ local function FindSafeSpot(myPos, bots)
             local hrp = player.Character:FindFirstChild("HumanoidRootPart")
             local isDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
             if hrp and not isDowned then
-                table.insert(safeLocations, hrp.Position + Vector3.new(0, 3, 0))
+                safeLocations[#safeLocations + 1] = hrp.Position + Vector3.new(0, 3, 0)
             end
         end
     end
     
-    local bestLocation, bestDistance = nil, 0
+    -- OPT: use squared distance to avoid sqrt
+    local bestLocation, bestDistSq = nil, 0
+    local safeSq = Config.SafeDistance * Config.SafeDistance
     for _, location in ipairs(safeLocations) do
-        local minDist = GetDistance(location, bots)
-        if minDist > bestDistance and minDist >= Config.SafeDistance then
-            bestDistance = minDist
+        local minDistSq = GetDistanceSq(location, bots)
+        if minDistSq > bestDistSq and minDistSq >= safeSq then
+            bestDistSq = minDistSq
             bestLocation = location
         end
     end
@@ -788,17 +796,18 @@ local function Teleport(pos)
     
     task.defer(function()
         if hrp and hrp.Parent then
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
+            hrp.AssemblyLinearVelocity = VEC3_ZERO
+            hrp.AssemblyAngularVelocity = VEC3_ZERO
         end
     end)
 end
 
+-- OPT: increased check interval from 0.15 to 0.2, use squared distance
 local function AntiNextbot()
     if not State.AntiNextbot then return end
     
     local now = tick()
-    if now - LastAntiCheck < 0.15 then return end
+    if now - LastAntiCheck < 0.2 then return end
     LastAntiCheck = now
     
     local character = LocalPlayer.Character
@@ -812,9 +821,10 @@ local function AntiNextbot()
     if #bots == 0 then return end
     
     local myPos = hrp.Position
-    local closestDist = GetDistance(myPos, bots)
+    local closestDistSq = GetDistanceSq(myPos, bots)
+    local dangerSq = Config.DangerThreshold * Config.DangerThreshold
     
-    if closestDist <= Config.DangerThreshold then
+    if closestDistSq <= dangerSq then
         local safeSpot = FindSafeSpot(myPos, bots)
         if safeSpot then
             Teleport(safeSpot)
@@ -824,11 +834,12 @@ end
 
 local LastFarmTick = 0
 
+-- OPT: increased farm tick from 0.05 to 0.08
 local function AutoFarm()
     if not State.AutoFarm then return end
     
     local now = tick()
-    if now - LastFarmTick < 0.05 then return end
+    if now - LastFarmTick < 0.08 then return end
     LastFarmTick = now
     
     local character = LocalPlayer.Character
@@ -867,7 +878,6 @@ local function AutoFarm()
             CurrentTarget = nil
             FarmStart = 0
         else
-            local freshPos = nil
             local obj = CurrentTarget.object
             local part
             
@@ -878,15 +888,12 @@ local function AutoFarm()
             end
             
             if part and part.Parent then
-                freshPos = part.Position
-            end
-            
-            if freshPos then
+                local freshPos = part.Position
                 Teleport(freshPos)
                 CurrentTarget.position = freshPos
             end
             
-            if tick() - FarmStart >= 0.25 then
+            if now - FarmStart >= 0.25 then
                 CurrentTarget = nil
                 FarmStart = 0
             end
@@ -895,13 +902,16 @@ local function AutoFarm()
     end
     
     local myPos = hrp.Position
-    local nearestItem, nearestDist = nil, math.huge
+    local nearestItem, nearestDistSq = nil, math.huge
     
     for _, item in ipairs(items) do
         if item.object and item.object.Parent then
-            local dist = (myPos - item.position).Magnitude
-            if dist < nearestDist then
-                nearestDist = dist
+            local dx = myPos.X - item.position.X
+            local dy = myPos.Y - item.position.Y
+            local dz = myPos.Z - item.position.Z
+            local distSq = dx*dx + dy*dy + dz*dz
+            if distSq < nearestDistSq then
+                nearestDistSq = distSq
                 nearestItem = item
             end
         end
@@ -909,7 +919,7 @@ local function AutoFarm()
     
     if nearestItem then
         CurrentTarget = nearestItem
-        FarmStart = tick()
+        FarmStart = now
         Teleport(nearestItem.position)
     end
 end
@@ -930,7 +940,7 @@ local function ToggleUpsideDownFix(enabled)
             local cf = camera.CFrame
             local rx, ry, rz = cf:ToEulerAnglesXYZ()
             
-            if math.abs(rz) > math.rad(90) then
+            if math.abs(rz) > 1.5708 then -- math.rad(90) pre-computed
                 camera.CFrame = CFrame.new(cf.Position) * CFrame.Angles(rx, ry, 0)
             end
         end)
@@ -959,18 +969,25 @@ local function Bounce()
     if not camera then return end
     
     local look = camera.CFrame.LookVector
-    local forward = Vector3.new(look.X, 0, look.Z)
-    forward = forward.Magnitude > 0.1 and forward.Unit or Vector3.new(0, 0, -1)
+    local fx, fz = look.X, look.Z
+    local fMag = math.sqrt(fx*fx + fz*fz)
+    if fMag > 0.1 then
+        local inv = 1 / fMag
+        fx, fz = fx * inv, fz * inv
+    else
+        fx, fz = 0, -1
+    end
     
     root.AssemblyLinearVelocity = Vector3.new(
-        forward.X * BounceConfig.Boost,
+        fx * BounceConfig.Boost,
         BounceConfig.Power,
-        forward.Z * BounceConfig.Boost
+        fz * BounceConfig.Boost
     )
     
     AirEnd = now + BounceConfig.AirDuration
 end
 
+-- OPT: reduced allocations in air strafe
 local function AirStrafe()
     if tick() > AirEnd then return end
     
@@ -989,30 +1006,39 @@ local function AirStrafe()
     if not moveLeft and not moveRight and not moveForward then return end
     
     local vel = root.AssemblyLinearVelocity
-    local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
     
     local camera = Workspace.CurrentCamera
     if not camera then return end
     
-    local strafeDir = Vector3.zero
-    if moveLeft then strafeDir = strafeDir - camera.CFrame.RightVector end
-    if moveRight then strafeDir = strafeDir + camera.CFrame.RightVector end
-    if moveForward then strafeDir = strafeDir + camera.CFrame.LookVector end
+    local cf = camera.CFrame
+    local right = cf.RightVector
+    local look = cf.LookVector
     
-    strafeDir = Vector3.new(strafeDir.X, 0, strafeDir.Z)
+    -- OPT: compute strafe direction inline
+    local sx, sz = 0, 0
+    if moveLeft then sx = sx - right.X; sz = sz - right.Z end
+    if moveRight then sx = sx + right.X; sz = sz + right.Z end
+    if moveForward then sx = sx + look.X; sz = sz + look.Z end
     
-    if strafeDir.Magnitude > 0.1 then
-        strafeDir = strafeDir.Unit
-        local newVel = horizontalVel + strafeDir * BounceConfig.AirGain
-        
-        if newVel.Magnitude > BounceConfig.AirMax then
-            newVel = newVel.Unit * BounceConfig.AirMax
-        end
-        
-        root.AssemblyLinearVelocity = Vector3.new(newVel.X, vel.Y, newVel.Z)
+    local sMag = math.sqrt(sx*sx + sz*sz)
+    if sMag < 0.1 then return end
+    
+    local inv = 1 / sMag
+    sx, sz = sx * inv, sz * inv
+    
+    local newX = vel.X + sx * BounceConfig.AirGain
+    local newZ = vel.Z + sz * BounceConfig.AirGain
+    local newMag = math.sqrt(newX*newX + newZ*newZ)
+    
+    if newMag > BounceConfig.AirMax then
+        local scale = BounceConfig.AirMax / newMag
+        newX, newZ = newX * scale, newZ * scale
     end
+    
+    root.AssemblyLinearVelocity = Vector3.new(newX, vel.Y, newZ)
 end
 
+-- OPT: reduced edge detection directions from 7 to 3 (movement + sides)
 local function DetectEdge(position, direction)
     local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
     if not centerRay then return false, nil end
@@ -1024,18 +1050,20 @@ local function DetectEdge(position, direction)
         return true, centerRay.Position.Y
     end
     
-    local heightDiff = centerRay.Position.Y - edgeRay.Position.Y
-    if heightDiff >= EdgeConfig.MinEdge then
+    if centerRay.Position.Y - edgeRay.Position.Y >= EdgeConfig.MinEdge then
         return true, centerRay.Position.Y
     end
     
     return false, nil
 end
 
+-- OPT: reduced from 7 directions to 3, early-exit on cooldown
 local function ReactiveEdgeBoost()
-    if not State.EdgeBoost then return end
-    if not Humanoid or not RootPart then return end
+    if not State.EdgeBoost or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
+    
+    local now = tick()
+    if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
     
     local character = LocalPlayer.Character
     if not character then return end
@@ -1043,29 +1071,25 @@ local function ReactiveEdgeBoost()
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
     
-    local now = tick()
-    if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
-    
     local vel = RootPart.AssemblyLinearVelocity
-    local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
-    local horizontalSpeed = horizontalVel.Magnitude
+    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
+    local minSpeedSq = EdgeConfig.MinSpeed * EdgeConfig.MinSpeed
     
-    if horizontalSpeed < EdgeConfig.MinSpeed then return end
+    if hSpeedSq < minSpeedSq then return end
     
     local playerPos = RootPart.Position
-    local moveDir = horizontalVel.Unit
+    local invSpeed = 1 / math.sqrt(hSpeedSq)
+    local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
     
-    local checkDirections = {
-        moveDir,
-        (moveDir + RootPart.CFrame.RightVector * 0.5).Unit,
-        (moveDir - RootPart.CFrame.RightVector * 0.5).Unit,
-        RootPart.CFrame.LookVector,
-        -RootPart.CFrame.LookVector,
-        RootPart.CFrame.RightVector,
-        -RootPart.CFrame.RightVector
+    -- OPT: only 3 directions instead of 7
+    local rightVec = RootPart.CFrame.RightVector
+    local checkDirs = {
+        Vector3.new(moveDirX, 0, moveDirZ),
+        Vector3.new(moveDirX * 0.7 + rightVec.X * 0.7, 0, moveDirZ * 0.7 + rightVec.Z * 0.7).Unit,
+        Vector3.new(moveDirX * 0.7 - rightVec.X * 0.7, 0, moveDirZ * 0.7 - rightVec.Z * 0.7).Unit,
     }
     
-    for _, dir in ipairs(checkDirections) do
+    for _, dir in ipairs(checkDirs) do
         local isEdge, groundY = DetectEdge(playerPos, dir)
         
         if isEdge and groundY then
@@ -1074,7 +1098,6 @@ local function ReactiveEdgeBoost()
             
             if heightAboveGround < 1.5 and heightAboveGround > -0.5 then
                 local boostAmount = EdgeConfig.Boost
-                
                 if vel.Y < 0 then
                     boostAmount = boostAmount * 1.2
                 end
@@ -1109,38 +1132,45 @@ local function EdgeBoostTouchHandler(hit)
     if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
     
     local vel = RootPart.AssemblyLinearVelocity
-    local horizontalSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
+    local minSq = EdgeConfig.MinSpeed * 0.5
+    minSq = minSq * minSq
     
-    if horizontalSpeed < EdgeConfig.MinSpeed * 0.5 then return end
+    if hSpeedSq < minSq then return end
     
-    local partTop = hit.Position.Y + (hit.Size.Y / 2)
-    
-    local isNearEdge = false
+    local partTop = hit.Position.Y + (hit.Size.Y * 0.5)
     local hitPos = hit.Position
-    local directions = {
-        Vector3.new(hit.Size.X/2 + 0.5, 0, 0),
-        Vector3.new(-hit.Size.X/2 - 0.5, 0, 0),
-        Vector3.new(0, 0, hit.Size.Z/2 + 0.5),
-        Vector3.new(0, 0, -hit.Size.Z/2 - 0.5)
+    local halfX, halfZ = hit.Size.X * 0.5 + 0.5, hit.Size.Z * 0.5 + 0.5
+    
+    -- OPT: check only 2 directions based on player movement instead of 4
+    local playerPos = RootPart.Position
+    local invSpeed = 1 / math.sqrt(hSpeedSq)
+    local moveDirX = vel.X * invSpeed
+    local moveDirZ = vel.Z * invSpeed
+    
+    local offsets = {
+        Vector3.new(moveDirX > 0 and halfX or -halfX, 0, 0),
+        Vector3.new(0, 0, moveDirZ > 0 and halfZ or -halfZ),
     }
     
-    for _, offset in ipairs(directions) do
+    for _, offset in ipairs(offsets) do
         local checkPos = Vector3.new(hitPos.X + offset.X, partTop + 1, hitPos.Z + offset.Z)
         local ray = Workspace:Raycast(checkPos, Vector3.new(0, -3, 0), EdgeRayParams)
         
         if not ray or math.abs(partTop - ray.Position.Y) >= EdgeConfig.MinEdge then
-            local distToEdge = (RootPart.Position - Vector3.new(hitPos.X + offset.X, RootPart.Position.Y, hitPos.Z + offset.Z)).Magnitude
-            if distToEdge < EdgeConfig.DetectionRange + 1 then
-                isNearEdge = true
-                break
+            local dx = playerPos.X - (hitPos.X + offset.X)
+            local dz = playerPos.Z - (hitPos.Z + offset.Z)
+            local distToEdgeSq = dx*dx + dz*dz
+            local rangeSq = (EdgeConfig.DetectionRange + 1)
+            rangeSq = rangeSq * rangeSq
+            
+            if distToEdgeSq < rangeSq then
+                local boostAmount = EdgeConfig.Boost * 0.8
+                RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
+                EdgeConfig.LastTime = now
+                return
             end
         end
-    end
-    
-    if isNearEdge then
-        local boostAmount = EdgeConfig.Boost * 0.8
-        RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
-        EdgeConfig.LastTime = now
     end
 end
 
@@ -1157,17 +1187,17 @@ local function SetupEdgeBoost()
     
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") then
-            local conn = part.Touched:Connect(EdgeBoostTouchHandler)
-            table.insert(EdgeTouchConnections, conn)
+            EdgeTouchConnections[#EdgeTouchConnections + 1] = part.Touched:Connect(EdgeBoostTouchHandler)
         end
     end
 end
 
+-- OPT: increased carry check from 0.4 to 0.5
 local function DoCarry()
     if not holdQ then return end
     
     local now = tick()
-    if now - LastCarry < 0.4 then return end
+    if now - LastCarry < 0.5 then return end
     LastCarry = now
     
     local character = LocalPlayer.Character
@@ -1177,22 +1207,29 @@ local function DoCarry()
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if not hrp or isDowned then return end
     
+    local myPos = hrp.Position
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local otherChar = player.Character
             
-            if otherHrp and (hrp.Position - otherHrp.Position).Magnitude <= 8 then
-                local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
-                local otherHum = otherChar:FindFirstChild("Humanoid")
-                local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
-                
-                if otherDowned or isPhysics then
-                    SafeCall(function()
-                        local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
-                        if event then event:FireServer("Carry", nil, player.Name) end
-                    end)
-                    return
+            if otherHrp then
+                local dx = myPos.X - otherHrp.Position.X
+                local dy = myPos.Y - otherHrp.Position.Y
+                local dz = myPos.Z - otherHrp.Position.Z
+                if dx*dx + dy*dy + dz*dz <= 64 then -- 8^2
+                    local otherChar = player.Character
+                    local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
+                    local otherHum = otherChar:FindFirstChild("Humanoid")
+                    local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
+                    
+                    if otherDowned or isPhysics then
+                        SafeCall(function()
+                            local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                            if event then event:FireServer("Carry", nil, player.Name) end
+                        end)
+                        return
+                    end
                 end
             end
         end
@@ -1206,6 +1243,8 @@ local function Revive()
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     
+    local myPos = hrp.Position
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local otherChar = player.Character
@@ -1213,7 +1252,10 @@ local function Revive()
             
             local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
             if otherHrp and otherDowned then
-                if (hrp.Position - otherHrp.Position).Magnitude <= 15 then
+                local dx = myPos.X - otherHrp.Position.X
+                local dy = myPos.Y - otherHrp.Position.Y
+                local dz = myPos.Z - otherHrp.Position.Z
+                if dx*dx + dy*dy + dz*dz <= 225 then -- 15^2
                     SafeCall(function()
                         local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
                         if event then event:FireServer("Revive", true, player.Name) end
@@ -1252,9 +1294,10 @@ local function ToggleBorder()
     local invisParts = mapFolder and mapFolder:FindFirstChild("InvisParts")
     
     if invisParts then
+        local targetCollide = not State.Border
         for _, obj in ipairs(invisParts:GetDescendants()) do
             if obj:IsA("BasePart") then
-                obj.CanCollide = not State.Border
+                obj.CanCollide = targetCollide
             end
         end
     end
@@ -1404,8 +1447,9 @@ end
 
 local function FindInList(name, list)
     if not name or name == "" then return nil end
+    local nameLower = name:lower()
     for _, item in ipairs(list) do
-        if item:lower() == name:lower() then
+        if item:lower() == nameLower then
             return item
         end
     end
@@ -1454,7 +1498,7 @@ local function StopModeVoting()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MODERN GUI SYSTEM
+-- MODERN GUI SYSTEM (OPT: reduced shadow/stroke usage)
 -- ═══════════════════════════════════════════════════════════════
 
 local function Tween(obj, props, duration, style, direction)
@@ -1468,6 +1512,7 @@ local function Tween(obj, props, duration, style, direction)
     return tween
 end
 
+-- OPT: shadow is optional, skip on low-priority elements
 local function AddShadow(parent, offset, transparency)
     local shadow = Instance.new("ImageLabel")
     shadow.Name = "Shadow"
@@ -1496,20 +1541,16 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     btn.BorderSizePixel = 0
     btn.Parent = parent
     
-    local corner = Instance.new("UICorner", btn)
-    corner.CornerRadius = UDim.new(0, 8)
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
     
-    local stroke = Instance.new("UIStroke", btn)
-    stroke.Color = Theme.Border
-    stroke.Thickness = 1
-    stroke.Transparency = 0.5
+    -- OPT: removed UIStroke from buttons (saves instances, reduces render cost)
     
-    -- Icon/indicator dot
     local indicator = Instance.new("Frame")
     indicator.Name = "Indicator"
     indicator.Size = UDim2.new(0, 6, 0, 6)
     indicator.Position = UDim2.new(0, 12, 0.5, -3)
     indicator.BackgroundColor3 = Theme.TextMuted
+    indicator.BorderSizePixel = 0
     indicator.Parent = btn
     Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
     
@@ -1536,19 +1577,17 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     statusText.Font = FONT_SMALL
     statusText.Parent = btn
     
-    -- Hover effects
+    -- OPT: simplified hover - no stroke animation
     btn.MouseEnter:Connect(function()
         if not btn:GetAttribute("Active") then
             Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.15)
         end
-        Tween(stroke, {Color = Theme.AccentGlow, Transparency = 0.3}, 0.15)
     end)
     
     btn.MouseLeave:Connect(function()
         if not btn:GetAttribute("Active") then
             Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, 0.15)
         end
-        Tween(stroke, {Color = btn:GetAttribute("Active") and Theme.AccentGlow or Theme.Border, Transparency = 0.5}, 0.15)
     end)
     
     btn.MouseButton1Click:Connect(function()
@@ -1631,11 +1670,6 @@ local function CreateModernInput(parent, name, placeholder, pos, size, callback)
     container.Parent = parent
     Instance.new("UICorner", container).CornerRadius = UDim.new(0, 6)
     
-    local stroke = Instance.new("UIStroke", container)
-    stroke.Color = Theme.Border
-    stroke.Thickness = 1
-    stroke.Transparency = 0.5
-    
     local input = Instance.new("TextBox")
     input.Name = name
     input.Size = UDim2.new(1, -16, 1, 0)
@@ -1650,12 +1684,7 @@ local function CreateModernInput(parent, name, placeholder, pos, size, callback)
     input.ClearTextOnFocus = false
     input.Parent = container
     
-    input.Focused:Connect(function()
-        Tween(stroke, {Color = Theme.Accent, Transparency = 0}, 0.15)
-    end)
-    
     input.FocusLost:Connect(function()
-        Tween(stroke, {Color = Theme.Border, Transparency = 0.5}, 0.15)
         if callback then callback(input.Text) end
     end)
     
@@ -1670,7 +1699,7 @@ local function SetModernButtonActive(button, active)
     local status = button:FindFirstChild("Status")
     
     if active then
-        Tween(button, {BackgroundColor3 = Color3.fromRGB(88, 101, 242)}, 0.2) -- Theme.ButtonOn
+        Tween(button, {BackgroundColor3 = Color3.fromRGB(88, 101, 242)}, 0.2)
         if indicator then Tween(indicator, {BackgroundColor3 = Theme.Success}, 0.2) end
         if label then Tween(label, {TextColor3 = Theme.TextPrimary}, 0.2) end
         if status then status.Text = "ON" Tween(status, {TextColor3 = Theme.Success}, 0.2) end
@@ -1780,7 +1809,6 @@ local function CreateVIPPanel()
     vipStroke.Thickness = 1
     AddShadow(VIPPanel)
     
-    -- Title bar
     local titleBar = Instance.new("Frame")
     titleBar.Size = UDim2.new(1, 0, 0, 36)
     titleBar.BackgroundColor3 = Theme.Surface
@@ -1788,7 +1816,6 @@ local function CreateVIPPanel()
     titleBar.Parent = VIPPanel
     Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 12)
     
-    -- Fix bottom corners of title bar
     local titleFix = Instance.new("Frame")
     titleFix.Size = UDim2.new(1, 0, 0, 12)
     titleFix.Position = UDim2.new(0, 0, 1, -12)
@@ -1814,7 +1841,6 @@ local function CreateVIPPanel()
     
     local y = 44
     
-    -- Map Vote
     local mapLabel = Instance.new("TextLabel")
     mapLabel.Size = UDim2.new(0, 70, 0, 20)
     mapLabel.Position = UDim2.new(0, 12, 0, y)
@@ -1844,7 +1870,6 @@ local function CreateVIPPanel()
     
     y = y + 32
     
-    -- Mode Vote
     local modeLabel = Instance.new("TextLabel")
     modeLabel.Size = UDim2.new(0, 70, 0, 20)
     modeLabel.Position = UDim2.new(0, 12, 0, y)
@@ -1874,7 +1899,6 @@ local function CreateVIPPanel()
     
     y = y + 36
     
-    -- Map search
     local mapInput = CreateModernInput(VIPPanel, "MapIn", "Search map...", UDim2.new(0, 12, 0, y), UDim2.new(0, 160, 0, 28), function(text) State.MapSearch = text end)
     local addMapBtn = CreateSmallButton(VIPPanel, "AddM", "+", UDim2.new(0, 178, 0, y), UDim2.new(0, 28, 0, 28), function()
         local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("AddMap", map) end
@@ -1887,7 +1911,6 @@ local function CreateVIPPanel()
     
     y = y + 36
     
-    -- Mode search
     local modeInput = CreateModernInput(VIPPanel, "ModeIn", "Search mode...", UDim2.new(0, 12, 0, y), UDim2.new(0, 160, 0, 28), function(text) State.GamemodeSearch = text end)
     local setModeBtn = CreateSmallButton(VIPPanel, "SetM", "SET", UDim2.new(0, 178, 0, y), UDim2.new(0, 60, 0, 28), function()
         local mode = FindInList(State.GamemodeSearch, Modes) if mode then FireAdmin("Gamemode", mode) end
@@ -1909,7 +1932,7 @@ local function CreateMainGUI()
     
     local main = Instance.new("Frame")
     main.Name = "Main"
-    main.Size = UDim2.new(0, 280, 0, 0) -- Start collapsed for animation
+    main.Size = UDim2.new(0, 280, 0, 0)
     main.Position = UDim2.new(0, 20, 0, 50)
     main.BackgroundColor3 = Theme.Background
     main.BorderSizePixel = 0
@@ -1923,7 +1946,6 @@ local function CreateMainGUI()
     
     AddShadow(main)
     
-    -- Title bar
     local titleBar = Instance.new("Frame")
     titleBar.Name = "TitleBar"
     titleBar.Size = UDim2.new(1, 0, 0, 44)
@@ -1939,7 +1961,6 @@ local function CreateMainGUI()
     titleFix.BorderSizePixel = 0
     titleFix.Parent = titleBar
     
-    -- Accent line under title
     local accentLine = Instance.new("Frame")
     accentLine.Size = UDim2.new(1, 0, 0, 2)
     accentLine.Position = UDim2.new(0, 0, 1, -2)
@@ -1977,12 +1998,10 @@ local function CreateMainGUI()
     versionLabel.Parent = titleBar
     Instance.new("UICorner", versionLabel).CornerRadius = UDim.new(0, 4)
     
-    -- VIP Button
     local vipBtn = CreateSmallButton(titleBar, "VIP", "⚡ VIP", UDim2.new(1, -78, 0, 8), UDim2.new(0, 44, 0, 28), CreateVIPPanel)
     vipBtn.TextSize = 10
     vipBtn.BackgroundColor3 = Color3.fromRGB(45, 40, 60)
     
-    -- Close button
     local closeBtn = CreateSmallButton(titleBar, "X", "✕", UDim2.new(1, -32, 0, 8), UDim2.new(0, 28, 0, 28), function()
         Tween(main, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
         task.delay(0.3, function() main.Visible = false end)
@@ -1991,7 +2010,6 @@ local function CreateMainGUI()
     closeBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
     closeBtn.TextColor3 = Theme.Danger
     
-    -- Content area
     local content = Instance.new("ScrollingFrame")
     content.Name = "Content"
     content.Size = UDim2.new(1, 0, 1, -46)
@@ -2005,11 +2023,9 @@ local function CreateMainGUI()
     
     local y = 8
     
-    -- ═══ VISUAL SECTION ═══
     CreateSectionLabel(content, "Visual", UDim2.new(0, 8, 0, y))
     y = y + 24
     
-    -- FOV Row
     local fovContainer = Instance.new("Frame")
     fovContainer.Size = UDim2.new(1, -16, 0, 32)
     fovContainer.Position = UDim2.new(0, 8, 0, y)
@@ -2026,75 +2042,71 @@ local function CreateMainGUI()
     fovLabel.TextXAlignment = Enum.TextXAlignment.Left
     fovLabel.Parent = fovContainer
     
-    local fov90 = CreateSmallButton(content, "FOV90", "90°", UDim2.new(0, 50, 0, y + 2), UDim2.new(0, 45, 0, 28), function()
+    CreateSmallButton(content, "FOV90", "90°", UDim2.new(0, 50, 0, y + 2), UDim2.new(0, 45, 0, 28), function()
         Config.FOV = 90 SetFOV() UpdateGUI()
     end)
     
-    local fov120 = CreateSmallButton(content, "FOV120", "120°", UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 50, 0, 28), function()
+    CreateSmallButton(content, "FOV120", "120°", UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 50, 0, 28), function()
         Config.FOV = 120 SetFOV() UpdateGUI()
     end)
     
     y = y + 38
     
-    local brightBtn = CreateModernButton(content, "Bright", "Fullbright", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "Bright", "Fullbright", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         ToggleFullbright() UpdateGUI()
     end)
     
     y = y + 42
     
-    -- ═══ GAMEPLAY SECTION ═══
     CreateSectionLabel(content, "Gameplay", UDim2.new(0, 8, 0, y))
     y = y + 24
     
-    local borderBtn = CreateModernButton(content, "Border", "Remove Borders", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "Border", "Remove Borders", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         ToggleBorder() UpdateGUI()
     end)
     y = y + 40
     
-    local antiBtn = CreateModernButton(content, "Anti", "Anti-Nextbot", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "Anti", "Anti-Nextbot", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         State.AntiNextbot = not State.AntiNextbot
         if State.AntiNextbot then LoadNPCs() end
         UpdateGUI()
     end)
     y = y + 40
     
-    local farmBtn = CreateModernButton(content, "Farm", "Auto Farm", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "Farm", "Auto Farm", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         State.AutoFarm = not State.AutoFarm
         if not State.AutoFarm then CurrentTarget = nil end
         UpdateGUI()
     end)
     y = y + 40
     
-    local edgeBtn = CreateModernButton(content, "EdgeBoost", "Edge Boost", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "EdgeBoost", "Edge Boost", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         State.EdgeBoost = not State.EdgeBoost
         SetupEdgeBoost()
         UpdateGUI()
     end)
     y = y + 40
     
-    local upFixBtn = CreateModernButton(content, "UpFix", "Upside Down Fix", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
+    CreateModernButton(content, "UpFix", "Upside Down Fix", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function()
         State.UpsideDownFix = not State.UpsideDownFix
         ToggleUpsideDownFix(State.UpsideDownFix)
         UpdateGUI()
     end)
     y = y + 46
     
-    -- ═══ COLA SECTION ═══
     CreateSectionLabel(content, "Cola", UDim2.new(0, 8, 0, y))
     y = y + 24
     
-    -- Cola buttons row
     local fixBtn = CreateSmallButton(content, "Fix", "🔧 Fix", UDim2.new(0, 8, 0, y), UDim2.new(0, 70, 0, 30), FixCola)
     fixBtn.TextSize = 10
     
-    local infColaBtn = CreateModernButton(content, "InfCola", "Infinite Cola", nil, UDim2.new(0, 84, 0, y - 3), UDim2.new(0, 188, 0, 36), function()
+    CreateModernButton(content, "InfCola", "Infinite Cola", nil, UDim2.new(0, 84, 0, y - 3), UDim2.new(0, 188, 0, 36), function()
         State.InfiniteCola = not State.InfiniteCola
         ToggleInfiniteCola(State.InfiniteCola)
         UpdateGUI()
     end)
     y = y + 40
     
-    -- Speed presets
     local presetLabel = Instance.new("TextLabel")
     presetLabel.Size = UDim2.new(0, 50, 0, 20)
     presetLabel.Position = UDim2.new(0, 8, 0, y + 4)
@@ -2123,7 +2135,6 @@ local function CreateMainGUI()
     
     y = y + 34
     
-    -- Modern slider
     local sliderHolder = Instance.new("Frame")
     sliderHolder.Name = "SliderHolder"
     sliderHolder.Size = UDim2.new(1, -16, 0, 42)
@@ -2157,7 +2168,6 @@ local function CreateMainGUI()
     SliderFill.Parent = SliderTrack
     Instance.new("UICorner", SliderFill).CornerRadius = UDim.new(0, 3)
     
-    -- Slider glow
     local sliderGlow = Instance.new("UIGradient", SliderFill)
     sliderGlow.Color = ColorSequence.new{
         ColorSequenceKeypoint.new(0, Color3.fromRGB(88, 101, 242)),
@@ -2215,7 +2225,6 @@ local function CreateMainGUI()
     
     y = y + 36
     
-    -- Duration input
     local durLabel = Instance.new("TextLabel")
     durLabel.Size = UDim2.new(0, 80, 0, 20)
     durLabel.Position = UDim2.new(0, 8, 0, y + 6)
@@ -2227,17 +2236,15 @@ local function CreateMainGUI()
     durLabel.TextXAlignment = Enum.TextXAlignment.Left
     durLabel.Parent = content
     
-    local colaDurInput = CreateModernInput(content, "ColaDur", tostring(ColaConfig.Duration), UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 70, 0, 28), function(text)
+    CreateModernInput(content, "ColaDur", tostring(ColaConfig.Duration), UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 70, 0, 28), function(text)
         local num = tonumber(text)
         if num and num > 0 then ColaConfig.Duration = num end
     end)
     
-    -- Update canvas size
     content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
     
     MakeDraggable(main)
     
-    -- Open animation
     main.Size = UDim2.new(0, 280, 0, 0)
     main.Visible = true
     Tween(main, {Size = UDim2.new(0, 280, 0, 480)}, 0.4, Enum.EasingStyle.Back)
@@ -2265,9 +2272,8 @@ local function CreateTimerGUI()
     timerStroke.Color = Theme.Border
     timerStroke.Thickness = 1
     
-    AddShadow(container, 3, 0.6)
+    -- OPT: removed shadow from timer (always visible, saves render)
     
-    -- Accent top line
     local topLine = Instance.new("Frame")
     topLine.Size = UDim2.new(0.6, 0, 0, 2)
     topLine.Position = UDim2.new(0.2, 0, 0, 0)
@@ -2335,7 +2341,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         LastGroundState = false
         WasInAir = false
         JumpQueued = true
-        -- Capture current speed immediately when space is pressed
         if RootPart then
             local speed = GetHorizontalSpeed()
             if speed > BhopConfig.MinPreserveSpeed then
@@ -2394,7 +2399,7 @@ local function SetupCharacter(character)
     LastGroundState = false
     ConsecutiveJumps = 0
     LastHorizontalSpeed = 0
-    SavedHorizontalVelocity = Vector3.zero
+    SavedHorizontalVelocity = VEC3_ZERO
     WasInAir = false
     PreLandingQueued = false
     JumpQueued = false
@@ -2408,45 +2413,60 @@ local function SetupCharacter(character)
 end
 
 Players.PlayerAdded:Connect(function(player)
-    player.CharacterAdded:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
-    player.CharacterRemoving:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
+    player.CharacterAdded:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
+    player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-    if player == LocalPlayer then CleanupAll() else task.delay(0.1, ForceUpdateRayFilter) end
+    if player == LocalPlayer then CleanupAll() else task.delay(0.2, ForceUpdateRayFilter) end
 end)
 
 for _, player in ipairs(Players:GetPlayers()) do
     if player ~= LocalPlayer then
-        player.CharacterAdded:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
-        player.CharacterRemoving:Connect(function() task.delay(0.1, ForceUpdateRayFilter) end)
+        player.CharacterAdded:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
+        player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
     end
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP
+-- MAIN LOOP (OPT: split into RenderStepped + Heartbeat)
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
-    local lastUpdate = 0
-    local lastEdgeUpdate = 0
+    if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
+    -- OPT: RenderStepped = only frame-critical movement (bhop, bounce, strafe)
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
-        local now = tick()
         SuperBhop()
         PreJumpQueue()
         Bounce()
         AirStrafe()
-        DoCarry()
-        
-        if State.EdgeBoost and now - lastEdgeUpdate >= 0.016 then
-            lastEdgeUpdate = now
-            ReactiveEdgeBoost()
+    end)
+    
+    -- OPT: Heartbeat = everything else (non-visual, lower priority)
+    local slowAccum = 0
+    local edgeAccum = 0
+    
+    Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
+        -- Edge boost ~30fps instead of 60fps
+        if State.EdgeBoost then
+            edgeAccum = edgeAccum + dt
+            if edgeAccum >= 0.033 then
+                edgeAccum = 0
+                ReactiveEdgeBoost()
+            end
         end
         
-        if now - lastUpdate >= 0.1 then
-            lastUpdate = now
+        -- Carry check (has internal cooldown but skip the call entirely)
+        if holdQ then
+            DoCarry()
+        end
+        
+        -- Slow updates ~10fps
+        slowAccum = slowAccum + dt
+        if slowAccum >= 0.1 then
+            slowAccum = 0
             UpdateRayFilter()
             AntiNextbot()
             AutoFarm()
@@ -2471,7 +2491,7 @@ Workspace.ChildAdded:Connect(function(child)
         LastGroundState = false
         ConsecutiveJumps = 0
         LastHorizontalSpeed = 0
-        SavedHorizontalVelocity = Vector3.zero
+        SavedHorizontalVelocity = VEC3_ZERO
         ColaDrank = false
         WasInAir = false
         PreLandingQueued = false
@@ -2482,9 +2502,9 @@ Workspace.ChildAdded:Connect(function(child)
 end)
 
 LocalPlayer.Idled:Connect(function()
-    VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+    VirtualUser:Button2Down(VEC2_ZERO, Workspace.CurrentCamera.CFrame)
     task.wait(1)
-    VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+    VirtualUser:Button2Up(VEC2_ZERO, Workspace.CurrentCamera.CFrame)
 end)
 
 CreateMainGUI()
