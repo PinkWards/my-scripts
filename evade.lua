@@ -90,7 +90,7 @@ local EdgeConfig = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- FIXED INFINITE COLA WITH CUSTOMIZABLE SPEED
+-- FIXED INFINITE COLA (arg 20 confirmed)
 -- ═══════════════════════════════════════════════════════════════
 
 local ColaSettings = {
@@ -104,18 +104,10 @@ local ColaSettings = {
 local ColaSpeedPresets = {
     {name = "Normal",    speed = 1.4},
     {name = "Fast",      speed = 1.6},
-    {name = "Very Fast", speed = 1.8},
+    {name = "VeryFast",  speed = 1.8},
     {name = "Ultra",     speed = 2.0},
     {name = "Insane",    speed = 2.5},
     {name = "Max",       speed = 3.0},
-}
-
-local ColaDurationPresets = {
-    {name = "Normal",    duration = 3.5},
-    {name = "Long",      duration = 5.0},
-    {name = "Very Long", duration = 8.0},
-    {name = "Ultra",     duration = 12.0},
-    {name = "Infinite",  duration = 999},
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -150,7 +142,6 @@ local LastRayFilterUpdate = 0
 local LastEdgeCheck = 0
 
 local CurrentTarget, FarmStart = nil, 0
-local ColaDrank = false
 local NPCNames = {}
 local NPCLoaded = false
 local CachedBots, CachedItems = {}, {}
@@ -1304,6 +1295,137 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
     end
 end)
 
+-- ═══════════════════════════════════════════════════════════════
+-- COLA HOOK FUNCTIONS (FIXED - arg 20)
+-- ═══════════════════════════════════════════════════════════════
+
+local function InstallColaHook()
+    if ColaSettings.HookInstalled then return end
+
+    local ToolAction = ReplicatedStorage.Events.Character.ToolAction
+    local SpeedBoost = ReplicatedStorage.Events.Character.SpeedBoost
+
+    if not ToolAction or not SpeedBoost then
+        warn("[Cola] Events not found")
+        return
+    end
+
+    local mt = getrawmetatable(game)
+    ColaSettings.OldNamecall = mt.__namecall
+
+    local lastBlock = 0
+    local boostLoop = nil
+
+    setreadonly(mt, false)
+
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+
+        if method == "FireServer" and self == ToolAction then
+            if args[1] == 0 and args[2] == 20 then
+                if ColaSettings.Active then
+                    local now = tick()
+                    if now - lastBlock < 0.3 then
+                        return nil
+                    end
+                    lastBlock = now
+
+                    task.spawn(function()
+                        task.wait(0.3)
+                        if ColaSettings.Active then
+                            firesignal(
+                                SpeedBoost.OnClientEvent,
+                                "Cola",
+                                ColaSettings.Speed,
+                                ColaSettings.Duration,
+                                Color3.fromRGB(199, 141, 93)
+                            )
+                        end
+                    end)
+
+                    if boostLoop then
+                        pcall(function() task.cancel(boostLoop) end)
+                    end
+
+                    boostLoop = task.spawn(function()
+                        while ColaSettings.Active do
+                            task.wait(ColaSettings.Duration - 0.3)
+                            if ColaSettings.Active then
+                                firesignal(
+                                    SpeedBoost.OnClientEvent,
+                                    "Cola",
+                                    ColaSettings.Speed,
+                                    ColaSettings.Duration,
+                                    Color3.fromRGB(199, 141, 93)
+                                )
+                            end
+                        end
+                    end)
+
+                    return nil
+                end
+            end
+        end
+
+        return ColaSettings.OldNamecall(self, ...)
+    end)
+
+    setreadonly(mt, true)
+    ColaSettings.HookInstalled = true
+end
+
+local function UninstallColaHook()
+    if not ColaSettings.HookInstalled then return end
+
+    local mt = getrawmetatable(game)
+
+    if ColaSettings.OldNamecall then
+        setreadonly(mt, false)
+        mt.__namecall = ColaSettings.OldNamecall
+        setreadonly(mt, true)
+    end
+
+    ColaSettings.HookInstalled = false
+    ColaSettings.OldNamecall = nil
+end
+
+local function ToggleInfiniteColaFixed(state)
+    ColaSettings.Active = state
+    State.InfiniteCola = state
+
+    if state then
+        InstallColaHook()
+    else
+        UninstallColaHook()
+    end
+end
+
+local function FixCola()
+    SafeCall(function()
+        local eventPath = SafeGetPath(LocalPlayer, "PlayerScripts", "Events", "temporary_events", "UseKeybind")
+        if not eventPath then return end
+
+        local mt = getrawmetatable(eventPath)
+        local oldNamecall = mt.__namecall
+
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            local args = {...}
+
+            if method == "Fire" and self == eventPath and args[1] and args[1].Key == "Cola" then
+                local toolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+                if toolAction then toolAction:FireServer(0, 20) end
+                return task.wait()
+            end
+
+            return oldNamecall(self, ...)
+        end)
+        setreadonly(mt, true)
+    end)
+end
+
 local function ToggleFullbright()
     FullbrightEnabled = not FullbrightEnabled
     
@@ -1328,131 +1450,6 @@ local function ToggleFullbright()
         Lighting.ClockTime = SavedLighting[4]
         Lighting.FogEnd = SavedLighting[5]
     end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- FIXED COLA HOOK FUNCTIONS
--- ═══════════════════════════════════════════════════════════════
-
-local function InstallColaHook()
-    if ColaSettings.HookInstalled then return end
-    
-    local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
-    local SpeedBoost = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
-    
-    if not ToolAction or not SpeedBoost then
-        warn("[Cola] Could not find ToolAction or SpeedBoost events")
-        return
-    end
-    
-    local mt = getrawmetatable(ToolAction)
-    ColaSettings.OldNamecall = mt.__namecall
-    
-    local lastBlock = 0
-    
-    setreadonly(mt, false)
-    
-    mt.__namecall = newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        
-        if method == "FireServer" and self == ToolAction and args[2] == 19 then
-            if ColaSettings.Active then
-                local now = tick()
-                if now - lastBlock < 0.1 then
-                    return nil
-                end
-                lastBlock = now
-                
-                task.spawn(function()
-                    task.wait(0.3)
-                    if ColaSettings.Active then
-                        firesignal(
-                            SpeedBoost.OnClientEvent,
-                            "Cola",
-                            ColaSettings.Speed,
-                            ColaSettings.Duration,
-                            Color3.fromRGB(199, 141, 93)
-                        )
-                    end
-                end)
-                
-                task.spawn(function()
-                    task.wait(ColaSettings.Duration - 0.5)
-                    if ColaSettings.Active then
-                        firesignal(
-                            SpeedBoost.OnClientEvent,
-                            "Cola",
-                            ColaSettings.Speed,
-                            ColaSettings.Duration,
-                            Color3.fromRGB(199, 141, 93)
-                        )
-                    end
-                end)
-                
-                return nil
-            end
-        end
-        
-        return ColaSettings.OldNamecall(self, ...)
-    end)
-    
-    setreadonly(mt, true)
-    ColaSettings.HookInstalled = true
-end
-
-local function UninstallColaHook()
-    if not ColaSettings.HookInstalled then return end
-    
-    local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
-    if not ToolAction then return end
-    
-    local mt = getrawmetatable(ToolAction)
-    
-    if ColaSettings.OldNamecall then
-        setreadonly(mt, false)
-        mt.__namecall = ColaSettings.OldNamecall
-        setreadonly(mt, true)
-    end
-    
-    ColaSettings.HookInstalled = false
-    ColaSettings.OldNamecall = nil
-end
-
-local function ToggleInfiniteColaFixed(state)
-    ColaSettings.Active = state
-    State.InfiniteCola = state
-    
-    if state then
-        InstallColaHook()
-    else
-        UninstallColaHook()
-    end
-end
-
-local function FixCola()
-    SafeCall(function()
-        local eventPath = SafeGetPath(LocalPlayer, "PlayerScripts", "Events", "temporary_events", "UseKeybind")
-        if not eventPath then return end
-        
-        local mt = getrawmetatable(eventPath)
-        local oldNamecall = mt.__namecall
-        
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = {...}
-            
-            if method == "Fire" and self == eventPath and args[1] and args[1].Key == "Cola" then
-                local toolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
-                if toolAction then toolAction:FireServer(0, 19) end
-                return task.wait()
-            end
-            
-            return oldNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-    end)
 end
 
 local function GetVoteEvent()
@@ -1791,10 +1788,9 @@ local function UpdateGUI()
     UpdateModern("UpFix", State.UpsideDownFix)
     UpdateModern("EdgeBoost", State.EdgeBoost)
     
-    -- Update cola speed buttons
     for _, preset in ipairs(ColaSpeedPresets) do
-        local btnName = "Cola" .. preset.name:gsub(" ", "")
-        UpdateSmall(btnName, ColaSettings.Speed == preset.speed)
+        local btnName = "Cola" .. preset.name
+        UpdateSmall(btnName, math.abs(ColaSettings.Speed - preset.speed) < 0.05)
     end
 end
 
@@ -1840,14 +1836,14 @@ local function CreateVIPPanel()
     vipTitle.Size = UDim2.new(1, -40, 1, 0)
     vipTitle.Position = UDim2.new(0, 14, 0, 0)
     vipTitle.BackgroundTransparency = 1
-    vipTitle.Text = "⚡ VIP SERVER"
+    vipTitle.Text = "VIP SERVER"
     vipTitle.TextColor3 = Theme.Accent
     vipTitle.TextSize = 12
     vipTitle.Font = FONT_HEADING
     vipTitle.TextXAlignment = Enum.TextXAlignment.Left
     vipTitle.Parent = titleBar
     
-    local closeBtn = CreateSmallButton(titleBar, "X", "✕", UDim2.new(1, -32, 0, 4), UDim2.new(0, 28, 0, 28), function()
+    local closeBtn = CreateSmallButton(titleBar, "X", "X", UDim2.new(1, -32, 0, 4), UDim2.new(0, 28, 0, 28), function()
         VIPPanel.Visible = false
     end)
     closeBtn.TextSize = 14
@@ -1917,7 +1913,7 @@ local function CreateVIPPanel()
         local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("AddMap", map) end
     end)
     addMapBtn.TextSize = 14
-    local remMapBtn = CreateSmallButton(VIPPanel, "RemM", "−", UDim2.new(0, 210, 0, y), UDim2.new(0, 28, 0, 28), function()
+    local remMapBtn = CreateSmallButton(VIPPanel, "RemM", "-", UDim2.new(0, 210, 0, y), UDim2.new(0, 28, 0, 28), function()
         local map = FindInList(State.MapSearch, Maps) if map then FireAdmin("RemoveMap", map) end
     end)
     remMapBtn.TextSize = 14
@@ -1993,7 +1989,7 @@ local function CreateMainGUI()
     title.Size = UDim2.new(1, -100, 1, 0)
     title.Position = UDim2.new(0, 14, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "🎮  " .. titleText
+    title.Text = titleText
     title.TextColor3 = Theme.TextPrimary
     title.TextSize = 13
     title.Font = FONT_TITLE
@@ -2002,20 +1998,20 @@ local function CreateMainGUI()
     
     local versionLabel = Instance.new("TextLabel")
     versionLabel.Size = UDim2.new(0, 30, 0, 16)
-    versionLabel.Position = UDim2.new(0, 14 + #titleText * 7 + 30, 0, 14)
+    versionLabel.Position = UDim2.new(0, 14 + #titleText * 7 + 10, 0, 14)
     versionLabel.BackgroundColor3 = Theme.Accent
-    versionLabel.Text = "V9"
+    versionLabel.Text = "V10"
     versionLabel.TextColor3 = Theme.TextPrimary
     versionLabel.TextSize = 9
     versionLabel.Font = FONT_HEADING
     versionLabel.Parent = titleBar
     Instance.new("UICorner", versionLabel).CornerRadius = UDim.new(0, 4)
     
-    local vipBtn = CreateSmallButton(titleBar, "VIP", "⚡ VIP", UDim2.new(1, -78, 0, 8), UDim2.new(0, 44, 0, 28), CreateVIPPanel)
+    local vipBtn = CreateSmallButton(titleBar, "VIP", "VIP", UDim2.new(1, -78, 0, 8), UDim2.new(0, 44, 0, 28), CreateVIPPanel)
     vipBtn.TextSize = 10
     vipBtn.BackgroundColor3 = Color3.fromRGB(45, 40, 60)
     
-    local closeBtn = CreateSmallButton(titleBar, "X", "✕", UDim2.new(1, -32, 0, 8), UDim2.new(0, 28, 0, 28), function()
+    local closeBtn = CreateSmallButton(titleBar, "X", "X", UDim2.new(1, -32, 0, 8), UDim2.new(0, 28, 0, 28), function()
         Tween(main, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
         task.delay(0.3, function() main.Visible = false end)
     end)
@@ -2031,12 +2027,11 @@ local function CreateMainGUI()
     content.ScrollBarThickness = 3
     content.ScrollBarImageColor3 = Theme.Accent
     content.BorderSizePixel = 0
-    content.CanvasSize = UDim2.new(0, 0, 0, 600)
+    content.CanvasSize = UDim2.new(0, 0, 0, 620)
     content.Parent = main
     
     local y = 8
     
-    -- VISUAL SECTION
     CreateSectionLabel(content, "Visual", UDim2.new(0, 8, 0, y))
     y = y + 24
     
@@ -2056,11 +2051,11 @@ local function CreateMainGUI()
     fovLabel.TextXAlignment = Enum.TextXAlignment.Left
     fovLabel.Parent = fovContainer
     
-    CreateSmallButton(content, "FOV90", "90°", UDim2.new(0, 50, 0, y + 2), UDim2.new(0, 45, 0, 28), function()
+    CreateSmallButton(content, "FOV90", "90", UDim2.new(0, 50, 0, y + 2), UDim2.new(0, 45, 0, 28), function()
         Config.FOV = 90 SetFOV() UpdateGUI()
     end)
     
-    CreateSmallButton(content, "FOV120", "120°", UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 50, 0, 28), function()
+    CreateSmallButton(content, "FOV120", "120", UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 50, 0, 28), function()
         Config.FOV = 120 SetFOV() UpdateGUI()
     end)
     
@@ -2072,7 +2067,6 @@ local function CreateMainGUI()
     
     y = y + 42
     
-    -- GAMEPLAY SECTION
     CreateSectionLabel(content, "Gameplay", UDim2.new(0, 8, 0, y))
     y = y + 24
     
@@ -2109,11 +2103,10 @@ local function CreateMainGUI()
     end)
     y = y + 46
     
-    -- COLA SECTION
     CreateSectionLabel(content, "Cola", UDim2.new(0, 8, 0, y))
     y = y + 24
     
-    local fixBtn = CreateSmallButton(content, "Fix", "🔧 Fix", UDim2.new(0, 8, 0, y), UDim2.new(0, 70, 0, 30), FixCola)
+    local fixBtn = CreateSmallButton(content, "Fix", "Fix", UDim2.new(0, 8, 0, y), UDim2.new(0, 70, 0, 30), FixCola)
     fixBtn.TextSize = 10
     
     CreateModernButton(content, "InfCola", "Infinite Cola", nil, UDim2.new(0, 84, 0, y - 3), UDim2.new(0, 188, 0, 36), function()
@@ -2122,7 +2115,6 @@ local function CreateMainGUI()
     end)
     y = y + 40
     
-    -- COLA SPEED PRESETS
     local presetLabel = Instance.new("TextLabel")
     presetLabel.Size = UDim2.new(0, 50, 0, 20)
     presetLabel.Position = UDim2.new(0, 8, 0, y + 4)
@@ -2136,7 +2128,7 @@ local function CreateMainGUI()
     
     local presetX = 60
     for _, preset in ipairs(ColaSpeedPresets) do
-        local btnName = "Cola" .. preset.name:gsub(" ", "")
+        local btnName = "Cola" .. preset.name
         local btnText = string.format("%.1fx", preset.speed)
         local btnWidth = #btnText * 7 + 16
         
@@ -2152,7 +2144,6 @@ local function CreateMainGUI()
     
     y = y + 34
     
-    -- COLA SPEED SLIDER
     local sliderHolder = Instance.new("Frame")
     sliderHolder.Name = "SliderHolder"
     sliderHolder.Size = UDim2.new(1, -16, 0, 42)
@@ -2243,7 +2234,6 @@ local function CreateMainGUI()
     
     y = y + 36
     
-    -- COLA DURATION
     local durLabel = Instance.new("TextLabel")
     durLabel.Size = UDim2.new(0, 80, 0, 20)
     durLabel.Position = UDim2.new(0, 8, 0, y + 6)
@@ -2340,7 +2330,7 @@ local function UpdateTimer()
             TimerLabel.TextColor3 = (roundStarted and timer and timer <= 15) and Theme.Danger or Theme.TextPrimary
         end
         if StatusLabel then
-            StatusLabel.Text = roundStarted and "⚡ RUNNING" or "⏳ WAITING"
+            StatusLabel.Text = roundStarted and "RUNNING" or "WAITING"
             StatusLabel.TextColor3 = roundStarted and Theme.Success or Theme.TextMuted
         end
     end)
@@ -2807,7 +2797,6 @@ Workspace.ChildAdded:Connect(function(child)
         ConsecutiveJumps = 0
         LastHorizontalSpeed = 0
         SavedHorizontalVelocity = VEC3_ZERO
-        ColaDrank = false
         WasInAir = false
         PreLandingQueued = false
         table.clear(CachedBots)
