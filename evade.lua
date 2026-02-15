@@ -89,13 +89,37 @@ local EdgeConfig = {
     RayDepth = 5
 }
 
-local ColaConfig = {
+-- ═══════════════════════════════════════════════════════════════
+-- FIXED INFINITE COLA WITH CUSTOMIZABLE SPEED
+-- ═══════════════════════════════════════════════════════════════
+
+local ColaSettings = {
     Speed = 1.4,
-    Duration = 3.5
+    Duration = 3.5,
+    Active = false,
+    HookInstalled = false,
+    OldNamecall = nil,
+}
+
+local ColaSpeedPresets = {
+    {name = "Normal",    speed = 1.4},
+    {name = "Fast",      speed = 1.6},
+    {name = "Very Fast", speed = 1.8},
+    {name = "Ultra",     speed = 2.0},
+    {name = "Insane",    speed = 2.5},
+    {name = "Max",       speed = 3.0},
+}
+
+local ColaDurationPresets = {
+    {name = "Normal",    duration = 3.5},
+    {name = "Long",      duration = 5.0},
+    {name = "Very Long", duration = 8.0},
+    {name = "Ultra",     duration = 12.0},
+    {name = "Infinite",  duration = 999},
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP CONFIG (OPTIMIZED - reduced ray counts & cache times)
+-- BHOP CONFIG
 -- ═══════════════════════════════════════════════════════════════
 
 local BhopConfig = {
@@ -109,7 +133,6 @@ local BhopConfig = {
     JumpQueueWindow = 0.08,
     ConsecutiveJumpBonus = 0.005,
     MaxConsecutiveBonus = 0.05,
-    -- OPT: reduced from 8 to 4 rays, slightly wider spread to compensate
     GroundCheckMultiRay = true,
     MultiRaySpread = 1.4,
 }
@@ -142,9 +165,8 @@ local CachedGame = nil
 local StateChangedConn = nil
 
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
-local SliderMin, SliderMax = 1.0, 1.8
+local SliderMin, SliderMax = 1.4, 3.0
 
--- BHOP state variables
 local LastGroundState = false
 local LastJumpTick = 0
 local BHOP_COOLDOWN = 0
@@ -157,7 +179,6 @@ local WasInAir = false
 local JumpQueued = false
 local LastGroundCheckResult = false
 local LastGroundCheckTick = 0
--- OPT: increased cache from 0.005 to 0.016 (~1 frame at 60fps)
 local GroundCheckCacheTime = 0.016
 
 local BhopRayParams = RaycastParams.new()
@@ -170,7 +191,7 @@ EdgeRayParams.IgnoreWater = true
 EdgeRayParams.RespectCanCollide = true
 
 -- ═══════════════════════════════════════════════════════════════
--- OPT: PRE-ALLOCATED CONSTANTS (avoid per-frame garbage)
+-- PRE-ALLOCATED CONSTANTS
 -- ═══════════════════════════════════════════════════════════════
 
 local VEC3_ZERO = Vector3.zero
@@ -178,11 +199,9 @@ local VEC3_DOWN = Vector3.new(0, -1, 0)
 local VEC3_Y_AXIS = Vector3.yAxis
 local VEC2_ZERO = Vector2.new(0, 0)
 
--- OPT: pre-compute ground ray vector once
 local GROUND_RAY_VEC = Vector3.new(0, -BhopConfig.GroundRayLength, 0)
 
--- OPT: pre-allocate multi-ray offsets (reduced from 8 to 4 cardinal directions)
-local MULTI_RAY_OFFSETS -- filled after config is set
+local MULTI_RAY_OFFSETS
 local function RebuildMultiRayOffsets()
     local s = BhopConfig.MultiRaySpread
     MULTI_RAY_OFFSETS = {
@@ -248,7 +267,6 @@ local function IsEvadeGame()
     return hasNPCs or hasEvents or hasGame
 end
 
--- OPT: increased filter update interval from 0.5 to 1.0s (players don't spawn that fast)
 local function UpdateRayFilter()
     local now = tick()
     if now - LastRayFilterUpdate < 1.0 then return end
@@ -289,7 +307,6 @@ local function SafeCall(func, ...)
     return success and result
 end
 
--- OPT: inlined magnitude comparison to avoid sqrt when possible
 local function GetDistanceSq(position, bots)
     local minDistSq = math.huge
     for _, botPos in ipairs(bots) do
@@ -304,7 +321,6 @@ local function GetDistanceSq(position, bots)
     return minDistSq
 end
 
--- Keep original for cases where actual distance is needed
 local function GetDistance(position, bots)
     return math.sqrt(GetDistanceSq(position, bots))
 end
@@ -361,15 +377,13 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- OPTIMIZED BHOP SYSTEM
+-- BHOP SYSTEM (FIXED - raycast only, no player triggers)
 -- ═══════════════════════════════════════════════════════════════
 
--- OPT: simplified - skip ancestor/humanoid checks for ground hits (they're filtered by RayParams)
 local COS_SLOPE_MAX = math.cos(math.rad(BhopConfig.SlopeMaxAngle))
 
 local function ValidateRayHit(rayResult)
     if not rayResult then return false end
-    -- OPT: dot product check only, skip instance ancestry (already filtered)
     return rayResult.Normal:Dot(VEC3_Y_AXIS) >= COS_SLOPE_MAX
 end
 
@@ -382,10 +396,6 @@ local function IsOnGroundInstant()
     end
     LastGroundCheckTick = now
     
-    -- REMOVED: FloorMaterial check (triggers on players)
-    -- REMOVED: Humanoid state check (triggers on players)
-    
-    -- Only use raycasts which properly filter out players
     local pos = RootPart.Position
     local rayResult = Workspace:Raycast(pos, GROUND_RAY_VEC, BhopRayParams)
     if ValidateRayHit(rayResult) then
@@ -407,7 +417,6 @@ local function IsOnGroundInstant()
     return false
 end
 
--- OPT: inline velocity reads to avoid extra function call overhead on hot path
 local function GetHorizontalSpeed()
     if not RootPart then return 0 end
     local vel = RootPart.AssemblyLinearVelocity
@@ -426,11 +435,9 @@ local function PreserveSpeed()
     local currentVel = RootPart.AssemblyLinearVelocity
     local currentHSpeed = math.sqrt(currentVel.X * currentVel.X + currentVel.Z * currentVel.Z)
     
-    -- Only preserve if we had meaningful speed and are losing it
     if LastHorizontalSpeed > BhopConfig.MinPreserveSpeed and currentHSpeed < LastHorizontalSpeed * 0.85 then
         local preserveSpeed = LastHorizontalSpeed * BhopConfig.LandingBoostFactor
         
-        -- Apply consecutive jump bonus
         local bonus = math.min(ConsecutiveJumps * BhopConfig.ConsecutiveJumpBonus, BhopConfig.MaxConsecutiveBonus)
         preserveSpeed = preserveSpeed * (1 + bonus)
         
@@ -453,18 +460,14 @@ local function PreserveSpeed()
     end
 end
 
--- OPT: consolidated defers into a single post-jump task
 local function ExecuteJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
     
-    -- Save speed before jump
     LastHorizontalSpeed = GetHorizontalSpeed()
     SavedHorizontalVelocity = GetHorizontalVelocity()
     
-    -- Execute jump
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
-    -- OPT: single defer instead of defer + delay(0.01)
     task.defer(PreserveSpeed)
     
     ConsecutiveJumps = ConsecutiveJumps + 1
@@ -486,7 +489,6 @@ local function SuperBhop()
     local onGround = IsOnGroundInstant()
     local now = tick()
     
-    -- Track speed continuously while in air
     if not onGround then
         local currentSpeed = GetHorizontalSpeed()
         if currentSpeed > BhopConfig.MinPreserveSpeed then
@@ -498,7 +500,6 @@ local function SuperBhop()
         WasInAir = true
     end
     
-    -- Landing detection - execute queued jump immediately
     if onGround and WasInAir then
         WasInAir = false
         LastLandingTick = now
@@ -507,7 +508,6 @@ local function SuperBhop()
         return
     end
     
-    -- Ground jump with speed preservation
     if onGround then
         if not LastGroundState or (now - LastJumpTick) >= BHOP_COOLDOWN then
             local currentSpeed = GetHorizontalSpeed()
@@ -518,7 +518,6 @@ local function SuperBhop()
             ExecuteJump()
         end
     else
-        -- Reset consecutive jumps if we've been in air too long
         if now - LastJumpTick > 1.5 then
             ConsecutiveJumps = 0
         end
@@ -527,7 +526,6 @@ local function SuperBhop()
     LastGroundState = onGround
 end
 
--- OPT: reduced raycast count in pre-jump, removed redundant defer
 local function PreJumpQueue()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -543,7 +541,6 @@ local function PreJumpQueue()
         predictiveLength = predictiveLength * 1.5
     end
     
-    -- OPT: single center ray first, only do movement-dir ray if center misses
     local rayVec = Vector3.new(0, -predictiveLength, 0)
     local rayResult = Workspace:Raycast(pos, rayVec, BhopRayParams)
     
@@ -579,7 +576,6 @@ local function PreJumpQueue()
     end
 end
 
--- OPT: simplified state handler, removed redundant defer chains
 local function OnHumanoidStateChanged(old, new)
     if not holdSpace then
         if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
@@ -610,7 +606,6 @@ end
 
 local LastBotCheck = 0
 
--- OPT: increased bot cache from 0.1 to 0.15s
 local function GetBots()
     local now = tick()
     if now - LastBotCheck < 0.15 then
@@ -641,7 +636,6 @@ local function GetBots()
         end
     end
     
-    -- OPT: trim excess entries instead of table.clear + rebuild
     for i = count + 1, #CachedBots do
         CachedBots[i] = nil
     end
@@ -651,7 +645,6 @@ end
 
 local LastItemCheck = 0
 
--- OPT: increased item cache from 0.1 to 0.15s, reuse table slots
 local function GetItems()
     local now = tick()
     if now - LastItemCheck < 0.15 then
@@ -690,7 +683,6 @@ local function GetItems()
                     
                     if part and part.Parent then
                         count = count + 1
-                        -- OPT: reuse table entry if exists
                         local entry = CachedItems[count]
                         if entry then
                             entry.object = item
@@ -747,7 +739,6 @@ local function FindSafeSpot(myPos, bots)
         end
     end
     
-    -- OPT: use squared distance to avoid sqrt
     local bestLocation, bestDistSq = nil, 0
     local safeSq = Config.SafeDistance * Config.SafeDistance
     for _, location in ipairs(safeLocations) do
@@ -789,7 +780,6 @@ local function Teleport(pos)
     end)
 end
 
--- OPT: increased check interval from 0.15 to 0.2, use squared distance
 local function AntiNextbot()
     if not State.AntiNextbot then return end
     
@@ -821,7 +811,6 @@ end
 
 local LastFarmTick = 0
 
--- OPT: increased farm tick from 0.05 to 0.08
 local function AutoFarm()
     if not State.AutoFarm then return end
     
@@ -927,7 +916,7 @@ local function ToggleUpsideDownFix(enabled)
             local cf = camera.CFrame
             local rx, ry, rz = cf:ToEulerAnglesXYZ()
             
-            if math.abs(rz) > 1.5708 then -- math.rad(90) pre-computed
+            if math.abs(rz) > 1.5708 then
                 camera.CFrame = CFrame.new(cf.Position) * CFrame.Angles(rx, ry, 0)
             end
         end)
@@ -974,7 +963,6 @@ local function Bounce()
     AirEnd = now + BounceConfig.AirDuration
 end
 
--- OPT: reduced allocations in air strafe
 local function AirStrafe()
     if tick() > AirEnd then return end
     
@@ -1001,7 +989,6 @@ local function AirStrafe()
     local right = cf.RightVector
     local look = cf.LookVector
     
-    -- OPT: compute strafe direction inline
     local sx, sz = 0, 0
     if moveLeft then sx = sx - right.X; sz = sz - right.Z end
     if moveRight then sx = sx + right.X; sz = sz + right.Z end
@@ -1025,7 +1012,6 @@ local function AirStrafe()
     root.AssemblyLinearVelocity = Vector3.new(newX, vel.Y, newZ)
 end
 
--- OPT: reduced edge detection directions from 7 to 3 (movement + sides)
 local function DetectEdge(position, direction)
     local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
     if not centerRay then return false, nil end
@@ -1044,7 +1030,6 @@ local function DetectEdge(position, direction)
     return false, nil
 end
 
--- OPT: reduced from 7 directions to 3, early-exit on cooldown
 local function ReactiveEdgeBoost()
     if not State.EdgeBoost or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -1068,7 +1053,6 @@ local function ReactiveEdgeBoost()
     local invSpeed = 1 / math.sqrt(hSpeedSq)
     local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
     
-    -- OPT: only 3 directions instead of 7
     local rightVec = RootPart.CFrame.RightVector
     local checkDirs = {
         Vector3.new(moveDirX, 0, moveDirZ),
@@ -1129,7 +1113,6 @@ local function EdgeBoostTouchHandler(hit)
     local hitPos = hit.Position
     local halfX, halfZ = hit.Size.X * 0.5 + 0.5, hit.Size.Z * 0.5 + 0.5
     
-    -- OPT: check only 2 directions based on player movement instead of 4
     local playerPos = RootPart.Position
     local invSpeed = 1 / math.sqrt(hSpeedSq)
     local moveDirX = vel.X * invSpeed
@@ -1179,7 +1162,6 @@ local function SetupEdgeBoost()
     end
 end
 
--- OPT: increased carry check from 0.4 to 0.5
 local function DoCarry()
     if not holdQ then return end
     
@@ -1204,7 +1186,7 @@ local function DoCarry()
                 local dx = myPos.X - otherHrp.Position.X
                 local dy = myPos.Y - otherHrp.Position.Y
                 local dz = myPos.Z - otherHrp.Position.Z
-                if dx*dx + dy*dy + dz*dz <= 64 then -- 8^2
+                if dx*dx + dy*dy + dz*dz <= 64 then
                     local otherChar = player.Character
                     local otherDowned = SafeCall(function() return otherChar:GetAttribute("Downed") end)
                     local otherHum = otherChar:FindFirstChild("Humanoid")
@@ -1242,7 +1224,7 @@ local function Revive()
                 local dx = myPos.X - otherHrp.Position.X
                 local dy = myPos.Y - otherHrp.Position.Y
                 local dz = myPos.Z - otherHrp.Position.Z
-                if dx*dx + dy*dy + dz*dz <= 225 then -- 15^2
+                if dx*dx + dy*dy + dz*dz <= 225 then
                     SafeCall(function()
                         local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
                         if event then event:FireServer("Revive", true, player.Name) end
@@ -1348,6 +1330,106 @@ local function ToggleFullbright()
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- FIXED COLA HOOK FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
+
+local function InstallColaHook()
+    if ColaSettings.HookInstalled then return end
+    
+    local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+    local SpeedBoost = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
+    
+    if not ToolAction or not SpeedBoost then
+        warn("[Cola] Could not find ToolAction or SpeedBoost events")
+        return
+    end
+    
+    local mt = getrawmetatable(ToolAction)
+    ColaSettings.OldNamecall = mt.__namecall
+    
+    local lastBlock = 0
+    
+    setreadonly(mt, false)
+    
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        
+        if method == "FireServer" and self == ToolAction and args[2] == 19 then
+            if ColaSettings.Active then
+                local now = tick()
+                if now - lastBlock < 0.1 then
+                    return nil
+                end
+                lastBlock = now
+                
+                task.spawn(function()
+                    task.wait(0.3)
+                    if ColaSettings.Active then
+                        firesignal(
+                            SpeedBoost.OnClientEvent,
+                            "Cola",
+                            ColaSettings.Speed,
+                            ColaSettings.Duration,
+                            Color3.fromRGB(199, 141, 93)
+                        )
+                    end
+                end)
+                
+                task.spawn(function()
+                    task.wait(ColaSettings.Duration - 0.5)
+                    if ColaSettings.Active then
+                        firesignal(
+                            SpeedBoost.OnClientEvent,
+                            "Cola",
+                            ColaSettings.Speed,
+                            ColaSettings.Duration,
+                            Color3.fromRGB(199, 141, 93)
+                        )
+                    end
+                end)
+                
+                return nil
+            end
+        end
+        
+        return ColaSettings.OldNamecall(self, ...)
+    end)
+    
+    setreadonly(mt, true)
+    ColaSettings.HookInstalled = true
+end
+
+local function UninstallColaHook()
+    if not ColaSettings.HookInstalled then return end
+    
+    local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+    if not ToolAction then return end
+    
+    local mt = getrawmetatable(ToolAction)
+    
+    if ColaSettings.OldNamecall then
+        setreadonly(mt, false)
+        mt.__namecall = ColaSettings.OldNamecall
+        setreadonly(mt, true)
+    end
+    
+    ColaSettings.HookInstalled = false
+    ColaSettings.OldNamecall = nil
+end
+
+local function ToggleInfiniteColaFixed(state)
+    ColaSettings.Active = state
+    State.InfiniteCola = state
+    
+    if state then
+        InstallColaHook()
+    else
+        UninstallColaHook()
+    end
+end
+
 local function FixCola()
     SafeCall(function()
         local eventPath = SafeGetPath(LocalPlayer, "PlayerScripts", "Events", "temporary_events", "UseKeybind")
@@ -1371,61 +1453,6 @@ local function FixCola()
         end)
         setreadonly(mt, true)
     end)
-end
-
-local ColaOldNamecall = nil
-
-local function ToggleInfiniteCola(enabled)
-    State.InfiniteCola = enabled
-    
-    local toolActionEvent = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
-    local speedBoostEvent = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
-    
-    if not toolActionEvent or not speedBoostEvent then 
-        warn("[Evade Helper] Cola events not found")
-        return 
-    end
-    
-    if enabled then
-        local mt = getrawmetatable(toolActionEvent)
-        
-        ColaOldNamecall = ColaOldNamecall or mt.__namecall
-        local rateLimit = 0
-        
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = {...}
-            
-            if method == "FireServer" and self == toolActionEvent and args[2] == 19 then
-                local currentTime = tick()
-                if currentTime - rateLimit >= 0.1 then
-                    rateLimit = currentTime
-                    ColaDrank = true
-                    
-                    task.delay(2.14, function()
-                        if State.InfiniteCola then
-                            firesignal(speedBoostEvent.OnClientEvent, "Cola", ColaConfig.Speed, ColaConfig.Duration, Color3.fromRGB(199, 141, 93))
-                        end
-                    end)
-                    return nil
-                end
-            end
-            
-            return ColaOldNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-    else
-        ColaDrank = false
-        
-        if ColaOldNamecall then
-            local mt = getrawmetatable(toolActionEvent)
-            
-            setreadonly(mt, false)
-            mt.__namecall = ColaOldNamecall
-            setreadonly(mt, true)
-        end
-    end
 end
 
 local function GetVoteEvent()
@@ -1485,7 +1512,7 @@ local function StopModeVoting()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MODERN GUI SYSTEM (OPT: reduced shadow/stroke usage)
+-- GUI SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local function Tween(obj, props, duration, style, direction)
@@ -1499,7 +1526,6 @@ local function Tween(obj, props, duration, style, direction)
     return tween
 end
 
--- OPT: shadow is optional, skip on low-priority elements
 local function AddShadow(parent, offset, transparency)
     local shadow = Instance.new("ImageLabel")
     shadow.Name = "Shadow"
@@ -1529,8 +1555,6 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     btn.Parent = parent
     
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
-    
-    -- OPT: removed UIStroke from buttons (saves instances, reduces render cost)
     
     local indicator = Instance.new("Frame")
     indicator.Name = "Indicator"
@@ -1564,7 +1588,6 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     statusText.Font = FONT_SMALL
     statusText.Parent = btn
     
-    -- OPT: simplified hover - no stroke animation
     btn.MouseEnter:Connect(function()
         if not btn:GetAttribute("Active") then
             Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.15)
@@ -1764,12 +1787,15 @@ local function UpdateGUI()
     UpdateModern("Border", State.Border)
     UpdateModern("Anti", State.AntiNextbot)
     UpdateModern("Farm", State.AutoFarm)
-    UpdateModern("InfCola", State.InfiniteCola)
+    UpdateModern("InfCola", ColaSettings.Active)
     UpdateModern("UpFix", State.UpsideDownFix)
     UpdateModern("EdgeBoost", State.EdgeBoost)
-    UpdateSmall("ColaLow", ColaConfig.Speed == 1.4)
-    UpdateSmall("ColaMed", ColaConfig.Speed == 1.6)
-    UpdateSmall("ColaHigh", ColaConfig.Speed == 1.8)
+    
+    -- Update cola speed buttons
+    for _, preset in ipairs(ColaSpeedPresets) do
+        local btnName = "Cola" .. preset.name:gsub(" ", "")
+        UpdateSmall(btnName, ColaSettings.Speed == preset.speed)
+    end
 end
 
 local function UpdateSliderUI(value)
@@ -2005,11 +2031,12 @@ local function CreateMainGUI()
     content.ScrollBarThickness = 3
     content.ScrollBarImageColor3 = Theme.Accent
     content.BorderSizePixel = 0
-    content.CanvasSize = UDim2.new(0, 0, 0, 520)
+    content.CanvasSize = UDim2.new(0, 0, 0, 600)
     content.Parent = main
     
     local y = 8
     
+    -- VISUAL SECTION
     CreateSectionLabel(content, "Visual", UDim2.new(0, 8, 0, y))
     y = y + 24
     
@@ -2045,6 +2072,7 @@ local function CreateMainGUI()
     
     y = y + 42
     
+    -- GAMEPLAY SECTION
     CreateSectionLabel(content, "Gameplay", UDim2.new(0, 8, 0, y))
     y = y + 24
     
@@ -2081,6 +2109,7 @@ local function CreateMainGUI()
     end)
     y = y + 46
     
+    -- COLA SECTION
     CreateSectionLabel(content, "Cola", UDim2.new(0, 8, 0, y))
     y = y + 24
     
@@ -2088,12 +2117,12 @@ local function CreateMainGUI()
     fixBtn.TextSize = 10
     
     CreateModernButton(content, "InfCola", "Infinite Cola", nil, UDim2.new(0, 84, 0, y - 3), UDim2.new(0, 188, 0, 36), function()
-        State.InfiniteCola = not State.InfiniteCola
-        ToggleInfiniteCola(State.InfiniteCola)
+        ToggleInfiniteColaFixed(not ColaSettings.Active)
         UpdateGUI()
     end)
     y = y + 40
     
+    -- COLA SPEED PRESETS
     local presetLabel = Instance.new("TextLabel")
     presetLabel.Size = UDim2.new(0, 50, 0, 20)
     presetLabel.Position = UDim2.new(0, 8, 0, y + 4)
@@ -2105,23 +2134,25 @@ local function CreateMainGUI()
     presetLabel.TextXAlignment = Enum.TextXAlignment.Left
     presetLabel.Parent = content
     
-    local colaLow = CreateSmallButton(content, "ColaLow", "1.4x", UDim2.new(0, 60, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
-        ColaConfig.Speed = 1.4 UpdateSliderUI(1.4) UpdateGUI()
-    end)
-    colaLow.TextSize = 10
-    
-    local colaMed = CreateSmallButton(content, "ColaMed", "1.6x", UDim2.new(0, 112, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
-        ColaConfig.Speed = 1.6 UpdateSliderUI(1.6) UpdateGUI()
-    end)
-    colaMed.TextSize = 10
-    
-    local colaHigh = CreateSmallButton(content, "ColaHigh", "1.8x", UDim2.new(0, 164, 0, y + 2), UDim2.new(0, 48, 0, 26), function()
-        ColaConfig.Speed = 1.8 UpdateSliderUI(1.8) UpdateGUI()
-    end)
-    colaHigh.TextSize = 10
+    local presetX = 60
+    for _, preset in ipairs(ColaSpeedPresets) do
+        local btnName = "Cola" .. preset.name:gsub(" ", "")
+        local btnText = string.format("%.1fx", preset.speed)
+        local btnWidth = #btnText * 7 + 16
+        
+        local btn = CreateSmallButton(content, btnName, btnText, UDim2.new(0, presetX, 0, y + 2), UDim2.new(0, btnWidth, 0, 26), function()
+            ColaSettings.Speed = preset.speed
+            UpdateSliderUI(preset.speed)
+            UpdateGUI()
+        end)
+        btn.TextSize = 10
+        
+        presetX = presetX + btnWidth + 4
+    end
     
     y = y + 34
     
+    -- COLA SPEED SLIDER
     local sliderHolder = Instance.new("Frame")
     sliderHolder.Name = "SliderHolder"
     sliderHolder.Size = UDim2.new(1, -16, 0, 42)
@@ -2132,7 +2163,7 @@ local function CreateMainGUI()
     SliderLabel = Instance.new("TextLabel")
     SliderLabel.Size = UDim2.new(1, 0, 0, 16)
     SliderLabel.BackgroundTransparency = 1
-    SliderLabel.Text = string.format("Cola Speed: %.1fx", ColaConfig.Speed)
+    SliderLabel.Text = string.format("Cola Speed: %.1fx", ColaSettings.Speed)
     SliderLabel.TextColor3 = Theme.TextSecondary
     SliderLabel.TextSize = 10
     SliderLabel.Font = FONT_SMALL
@@ -2147,7 +2178,7 @@ local function CreateMainGUI()
     SliderTrack.Parent = sliderHolder
     Instance.new("UICorner", SliderTrack).CornerRadius = UDim.new(0, 3)
     
-    local initialPos = (ColaConfig.Speed - SliderMin) / (SliderMax - SliderMin)
+    local initialPos = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin)
     SliderFill = Instance.new("Frame")
     SliderFill.Size = UDim2.new(initialPos, 0, 1, 0)
     SliderFill.BackgroundColor3 = Theme.SliderFill
@@ -2179,7 +2210,7 @@ local function CreateMainGUI()
         local pos = math.clamp((mousePos.X - SliderTrack.AbsolutePosition.X) / SliderTrack.AbsoluteSize.X, 0, 1)
         local val = math.round((SliderMin + pos * (SliderMax - SliderMin)) * 10) / 10
         val = math.clamp(val, SliderMin, SliderMax)
-        ColaConfig.Speed = val
+        ColaSettings.Speed = val
         Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, 0.05)
         Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, 0.05)
         SliderLabel.Text = string.format("Cola Speed: %.1fx", val)
@@ -2195,7 +2226,7 @@ local function CreateMainGUI()
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             sliderDragging = false
-            local currentPos = (ColaConfig.Speed - SliderMin) / (SliderMax - SliderMin)
+            local currentPos = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin)
             Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(currentPos, -7, 0.5, -7)}, 0.1)
         end
     end)
@@ -2212,6 +2243,7 @@ local function CreateMainGUI()
     
     y = y + 36
     
+    -- COLA DURATION
     local durLabel = Instance.new("TextLabel")
     durLabel.Size = UDim2.new(0, 80, 0, 20)
     durLabel.Position = UDim2.new(0, 8, 0, y + 6)
@@ -2223,9 +2255,9 @@ local function CreateMainGUI()
     durLabel.TextXAlignment = Enum.TextXAlignment.Left
     durLabel.Parent = content
     
-    CreateModernInput(content, "ColaDur", tostring(ColaConfig.Duration), UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 70, 0, 28), function(text)
+    CreateModernInput(content, "ColaDur", tostring(ColaSettings.Duration), UDim2.new(0, 100, 0, y + 2), UDim2.new(0, 70, 0, 28), function(text)
         local num = tonumber(text)
-        if num and num > 0 then ColaConfig.Duration = num end
+        if num and num > 0 then ColaSettings.Duration = num end
     end)
     
     content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
@@ -2258,8 +2290,6 @@ local function CreateTimerGUI()
     local timerStroke = Instance.new("UIStroke", container)
     timerStroke.Color = Theme.Border
     timerStroke.Thickness = 1
-    
-    -- OPT: removed shadow from timer (always visible, saves render)
     
     local topLine = Instance.new("Frame")
     topLine.Size = UDim2.new(0.6, 0, 0, 2)
@@ -2414,30 +2444,23 @@ for _, player in ipairs(Players:GetPlayers()) do
         player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
     end
 end
+
 -- ═══════════════════════════════════════════════════════════════
 -- AUTO TRIMP & EDGE JUMP SYSTEM
--- Automatically jumps when approaching edges or small obstacles
--- Uses game's native jump events for proper trimp physics
 -- ═══════════════════════════════════════════════════════════════
 
 local AutoTrimpConfig = {
     Enabled = true,
-    
-    -- Edge detection
-    EdgeRayForward = 3.5,        -- How far ahead to check for edges
-    EdgeDropThreshold = 1.5,     -- Minimum drop to count as an edge
-    EdgeSpeedMin = 6,            -- Minimum speed to trigger edge trimp
-    EdgeCooldown = 0.18,         -- Cooldown between edge jumps
-    
-    -- Obstacle/chair detection  
-    ObstacleRayForward = 2.5,    -- How far ahead to check for obstacles
-    ObstacleMinHeight = 0.3,     -- Min obstacle height to jump over
-    ObstacleMaxHeight = 4.5,     -- Max obstacle height (won't try to jump over walls)
-    ObstacleCooldown = 0.15,     -- Cooldown between obstacle jumps
-    
-    -- General
-    GroundCheckDepth = 4,        -- How deep to raycast for ground
-    PlayerFilterEnabled = true,  -- Filter out player characters from rays
+    EdgeRayForward = 3.5,
+    EdgeDropThreshold = 1.5,
+    EdgeSpeedMin = 6,
+    EdgeCooldown = 0.18,
+    ObstacleRayForward = 2.5,
+    ObstacleMinHeight = 0.3,
+    ObstacleMaxHeight = 4.5,
+    ObstacleCooldown = 0.15,
+    GroundCheckDepth = 4,
+    PlayerFilterEnabled = true,
 }
 
 local AutoTrimpState = {
@@ -2446,7 +2469,6 @@ local AutoTrimpState = {
     LastFilterUpdate = 0,
 }
 
--- Separate ray params for auto-trimp (filters players)
 local TrimpRayParams = RaycastParams.new()
 TrimpRayParams.FilterType = Enum.RaycastFilterType.Exclude
 TrimpRayParams.RespectCanCollide = true
@@ -2459,14 +2481,12 @@ local function UpdateTrimpRayFilter()
     
     local filterList = {}
     
-    -- Filter ALL player characters so we never detect players as ground/obstacles
     for _, player in ipairs(Players:GetPlayers()) do
         if player.Character then
             filterList[#filterList + 1] = player.Character
         end
     end
     
-    -- Also filter game's NPC/player folder
     local gameFolder = Workspace:FindFirstChild("Game")
     if gameFolder then
         local gamePlayers = gameFolder:FindFirstChild("Players")
@@ -2478,7 +2498,6 @@ local function UpdateTrimpRayFilter()
     TrimpRayParams.FilterDescendantsInstances = filterList
 end
 
--- Fire the game's native jump events for proper trimp physics
 local function FireNativeJump()
     pcall(function()
         local events = LocalPlayer.PlayerScripts.Events.temporary_events
@@ -2493,7 +2512,6 @@ local function FireNativeEndJump()
     end)
 end
 
--- Combined native + humanoid jump for maximum trimp effect
 local function ExecuteTrimpJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
     
@@ -2503,16 +2521,13 @@ local function ExecuteTrimpJump()
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
     
-    -- Fire native events FIRST - this is what gives proper trimp physics
     FireNativeJump()
     
-    -- Small delay then end jump to complete the cycle
     task.delay(0.08, function()
         FireNativeEndJump()
     end)
 end
 
--- Detect if we're approaching an edge (ground drops away ahead of us)
 local function CheckEdgeAhead()
     if not RootPart or not Humanoid then return false end
     
@@ -2525,7 +2540,6 @@ local function CheckEdgeAhead()
     
     if hSpeedSq < minSpeedSq then return false end
     
-    -- Must be on or very near ground
     if Humanoid.FloorMaterial == Enum.Material.Air then
         local state = Humanoid:GetState()
         if state ~= Enum.HumanoidStateType.Running and 
@@ -2539,7 +2553,6 @@ local function CheckEdgeAhead()
     local moveDirX = vel.X / hSpeed
     local moveDirZ = vel.Z / hSpeed
     
-    -- Cast down at our current position to find ground height
     local groundRay = Workspace:Raycast(
         pos, 
         Vector3.new(0, -AutoTrimpConfig.GroundCheckDepth, 0), 
@@ -2550,7 +2563,6 @@ local function CheckEdgeAhead()
     
     local currentGroundY = groundRay.Position.Y
     
-    -- Cast down AHEAD of us in movement direction
     local aheadPos = Vector3.new(
         pos.X + moveDirX * AutoTrimpConfig.EdgeRayForward,
         pos.Y,
@@ -2563,9 +2575,7 @@ local function CheckEdgeAhead()
         TrimpRayParams
     )
     
-    -- If no ground ahead OR ground is significantly lower = edge
     if not aheadRay then
-        -- Complete void ahead - definitely an edge
         AutoTrimpState.LastEdgeJump = now
         return true
     end
@@ -2578,7 +2588,6 @@ local function CheckEdgeAhead()
         return true
     end
     
-    -- Also check at half distance for closer edges
     local halfPos = Vector3.new(
         pos.X + moveDirX * (AutoTrimpConfig.EdgeRayForward * 0.5),
         pos.Y,
@@ -2605,7 +2614,6 @@ local function CheckEdgeAhead()
     return false
 end
 
--- Detect obstacles (chairs, small walls) ahead that we should jump onto/over
 local function CheckObstacleAhead()
     if not RootPart or not Humanoid then return false end
     
@@ -2615,10 +2623,8 @@ local function CheckObstacleAhead()
     local vel = RootPart.AssemblyLinearVelocity
     local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
     
-    -- Need some minimum movement (lower threshold than edge - walking into chair should work)
-    if hSpeedSq < 4 then return false end -- speed > 2
+    if hSpeedSq < 4 then return false end
     
-    -- Must be on ground
     if Humanoid.FloorMaterial == Enum.Material.Air then
         local state = Humanoid:GetState()
         if state ~= Enum.HumanoidStateType.Running and 
@@ -2633,12 +2639,9 @@ local function CheckObstacleAhead()
     local moveDirZ = vel.Z / hSpeed
     local moveDir = Vector3.new(moveDirX, 0, moveDirZ)
     
-    -- Get feet position
     local hipHeight = Humanoid.HipHeight or 2
     local feetY = pos.Y - hipHeight - 0.5
     
-    -- Cast horizontal rays at different heights to detect obstacles
-    -- Low ray (shin height) - detects chairs, small obstacles
     local lowRayOrigin = Vector3.new(pos.X, feetY + 0.5, pos.Z)
     local lowRay = Workspace:Raycast(
         lowRayOrigin,
@@ -2648,12 +2651,9 @@ local function CheckObstacleAhead()
     
     if not lowRay then return false end
     
-    -- We hit something ahead at low height
     local hitPart = lowRay.Instance
     if not hitPart or not hitPart.CanCollide then return false end
     
-    -- Check if it's a jumpable obstacle by measuring its height
-    -- Cast a ray from above the obstacle downward to find its top
     local hitPos = lowRay.Position
     local abovePos = Vector3.new(hitPos.X, pos.Y + AutoTrimpConfig.ObstacleMaxHeight, hitPos.Z)
     
@@ -2668,11 +2668,9 @@ local function CheckObstacleAhead()
     local obstacleTopY = topRay.Position.Y
     local obstacleHeight = obstacleTopY - feetY
     
-    -- Only jump for obstacles within our jumpable range
     if obstacleHeight >= AutoTrimpConfig.ObstacleMinHeight and 
        obstacleHeight <= AutoTrimpConfig.ObstacleMaxHeight then
         
-        -- Also verify there's space above the obstacle (not a wall)
         local clearanceCheck = Vector3.new(
             hitPos.X + moveDirX * 1.5,
             obstacleTopY + 3,
@@ -2684,14 +2682,12 @@ local function CheckObstacleAhead()
             TrimpRayParams
         )
         
-        -- There should be a surface to land on (top of obstacle or beyond)
         if clearanceRay or obstacleHeight <= 2.0 then
             AutoTrimpState.LastObstacleJump = now
             return true
         end
     end
     
-    -- Mid-height ray for slightly taller obstacles
     local midRayOrigin = Vector3.new(pos.X, feetY + 1.5, pos.Z)
     local midRay = Workspace:Raycast(
         midRayOrigin,
@@ -2721,7 +2717,6 @@ local function CheckObstacleAhead()
     return false
 end
 
--- Main auto-trimp function - runs every frame
 local function AutoTrimpUpdate()
     if not AutoTrimpConfig.Enabled then return end
     if not Humanoid or not RootPart then return end
@@ -2733,43 +2728,37 @@ local function AutoTrimpUpdate()
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
     
-    -- Update ray filter periodically
     UpdateTrimpRayFilter()
     
-    -- Check for edges and obstacles
     local shouldJump = false
-    local jumpReason = nil
     
     if CheckEdgeAhead() then
         shouldJump = true
-        jumpReason = "edge"
     elseif CheckObstacleAhead() then
         shouldJump = true
-        jumpReason = "obstacle"
     end
     
     if shouldJump then
         ExecuteTrimpJump()
     end
 end
+
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP (OPT: split into RenderStepped + Heartbeat)
+-- MAIN LOOP
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
-    -- RenderStepped = frame-critical movement
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         SuperBhop()
         PreJumpQueue()
         Bounce()
         AirStrafe()
-        AutoTrimpUpdate()  -- ADD THIS LINE
+        AutoTrimpUpdate()
     end)
     
-    -- Heartbeat = everything else (unchanged)
     local slowAccum = 0
     local edgeAccum = 0
     
@@ -2795,6 +2784,10 @@ local function StartMainLoop()
         end
     end)
 end
+
+-- ═══════════════════════════════════════════════════════════════
+-- INITIALIZATION
+-- ═══════════════════════════════════════════════════════════════
 
 if LocalPlayer.Character then SetupCharacter(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(SetupCharacter)
