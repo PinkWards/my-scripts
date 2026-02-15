@@ -382,22 +382,10 @@ local function IsOnGroundInstant()
     end
     LastGroundCheckTick = now
     
-    -- Fast check: FloorMaterial (cheapest)
-    if Humanoid.FloorMaterial ~= Enum.Material.Air then
-        LastGroundCheckResult = true
-        return true
-    end
+    -- REMOVED: FloorMaterial check (triggers on players)
+    -- REMOVED: Humanoid state check (triggers on players)
     
-    -- Fast check: Humanoid state
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Running or
-       state == Enum.HumanoidStateType.RunningNoPhysics or
-       state == Enum.HumanoidStateType.Landed then
-        LastGroundCheckResult = true
-        return true
-    end
-    
-    -- Primary center ray
+    -- Only use raycasts which properly filter out players
     local pos = RootPart.Position
     local rayResult = Workspace:Raycast(pos, GROUND_RAY_VEC, BhopRayParams)
     if ValidateRayHit(rayResult) then
@@ -405,7 +393,6 @@ local function IsOnGroundInstant()
         return true
     end
     
-    -- OPT: multi-ray reduced from 8 to 4 cardinal directions
     if BhopConfig.GroundCheckMultiRay then
         for i = 1, #MULTI_RAY_OFFSETS do
             local sideRay = Workspace:Raycast(pos + MULTI_RAY_OFFSETS[i], GROUND_RAY_VEC, BhopRayParams)
@@ -2427,7 +2414,344 @@ for _, player in ipairs(Players:GetPlayers()) do
         player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
     end
 end
+-- ═══════════════════════════════════════════════════════════════
+-- AUTO TRIMP & EDGE JUMP SYSTEM
+-- Automatically jumps when approaching edges or small obstacles
+-- Uses game's native jump events for proper trimp physics
+-- ═══════════════════════════════════════════════════════════════
 
+local AutoTrimpConfig = {
+    Enabled = true,
+    
+    -- Edge detection
+    EdgeRayForward = 3.5,        -- How far ahead to check for edges
+    EdgeDropThreshold = 1.5,     -- Minimum drop to count as an edge
+    EdgeSpeedMin = 6,            -- Minimum speed to trigger edge trimp
+    EdgeCooldown = 0.18,         -- Cooldown between edge jumps
+    
+    -- Obstacle/chair detection  
+    ObstacleRayForward = 2.5,    -- How far ahead to check for obstacles
+    ObstacleMinHeight = 0.3,     -- Min obstacle height to jump over
+    ObstacleMaxHeight = 4.5,     -- Max obstacle height (won't try to jump over walls)
+    ObstacleCooldown = 0.15,     -- Cooldown between obstacle jumps
+    
+    -- General
+    GroundCheckDepth = 4,        -- How deep to raycast for ground
+    PlayerFilterEnabled = true,  -- Filter out player characters from rays
+}
+
+local AutoTrimpState = {
+    LastEdgeJump = 0,
+    LastObstacleJump = 0,
+    LastFilterUpdate = 0,
+}
+
+-- Separate ray params for auto-trimp (filters players)
+local TrimpRayParams = RaycastParams.new()
+TrimpRayParams.FilterType = Enum.RaycastFilterType.Exclude
+TrimpRayParams.RespectCanCollide = true
+TrimpRayParams.IgnoreWater = true
+
+local function UpdateTrimpRayFilter()
+    local now = tick()
+    if now - AutoTrimpState.LastFilterUpdate < 1.0 then return end
+    AutoTrimpState.LastFilterUpdate = now
+    
+    local filterList = {}
+    
+    -- Filter ALL player characters so we never detect players as ground/obstacles
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character then
+            filterList[#filterList + 1] = player.Character
+        end
+    end
+    
+    -- Also filter game's NPC/player folder
+    local gameFolder = Workspace:FindFirstChild("Game")
+    if gameFolder then
+        local gamePlayers = gameFolder:FindFirstChild("Players")
+        if gamePlayers then
+            filterList[#filterList + 1] = gamePlayers
+        end
+    end
+    
+    TrimpRayParams.FilterDescendantsInstances = filterList
+end
+
+-- Fire the game's native jump events for proper trimp physics
+local function FireNativeJump()
+    pcall(function()
+        local events = LocalPlayer.PlayerScripts.Events.temporary_events
+        events.JumpReact:Fire()
+    end)
+end
+
+local function FireNativeEndJump()
+    pcall(function()
+        local events = LocalPlayer.PlayerScripts.Events.temporary_events
+        events.EndJump:Fire()
+    end)
+end
+
+-- Combined native + humanoid jump for maximum trimp effect
+local function ExecuteTrimpJump()
+    if not Humanoid or Humanoid.Health <= 0 then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then return end
+    
+    -- Fire native events FIRST - this is what gives proper trimp physics
+    FireNativeJump()
+    
+    -- Small delay then end jump to complete the cycle
+    task.delay(0.08, function()
+        FireNativeEndJump()
+    end)
+end
+
+-- Detect if we're approaching an edge (ground drops away ahead of us)
+local function CheckEdgeAhead()
+    if not RootPart or not Humanoid then return false end
+    
+    local now = tick()
+    if now - AutoTrimpState.LastEdgeJump < AutoTrimpConfig.EdgeCooldown then return false end
+    
+    local vel = RootPart.AssemblyLinearVelocity
+    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
+    local minSpeedSq = AutoTrimpConfig.EdgeSpeedMin * AutoTrimpConfig.EdgeSpeedMin
+    
+    if hSpeedSq < minSpeedSq then return false end
+    
+    -- Must be on or very near ground
+    if Humanoid.FloorMaterial == Enum.Material.Air then
+        local state = Humanoid:GetState()
+        if state ~= Enum.HumanoidStateType.Running and 
+           state ~= Enum.HumanoidStateType.RunningNoPhysics then
+            return false
+        end
+    end
+    
+    local pos = RootPart.Position
+    local hSpeed = math.sqrt(hSpeedSq)
+    local moveDirX = vel.X / hSpeed
+    local moveDirZ = vel.Z / hSpeed
+    
+    -- Cast down at our current position to find ground height
+    local groundRay = Workspace:Raycast(
+        pos, 
+        Vector3.new(0, -AutoTrimpConfig.GroundCheckDepth, 0), 
+        TrimpRayParams
+    )
+    
+    if not groundRay then return false end
+    
+    local currentGroundY = groundRay.Position.Y
+    
+    -- Cast down AHEAD of us in movement direction
+    local aheadPos = Vector3.new(
+        pos.X + moveDirX * AutoTrimpConfig.EdgeRayForward,
+        pos.Y,
+        pos.Z + moveDirZ * AutoTrimpConfig.EdgeRayForward
+    )
+    
+    local aheadRay = Workspace:Raycast(
+        aheadPos,
+        Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0),
+        TrimpRayParams
+    )
+    
+    -- If no ground ahead OR ground is significantly lower = edge
+    if not aheadRay then
+        -- Complete void ahead - definitely an edge
+        AutoTrimpState.LastEdgeJump = now
+        return true
+    end
+    
+    local aheadGroundY = aheadRay.Position.Y
+    local drop = currentGroundY - aheadGroundY
+    
+    if drop >= AutoTrimpConfig.EdgeDropThreshold then
+        AutoTrimpState.LastEdgeJump = now
+        return true
+    end
+    
+    -- Also check at half distance for closer edges
+    local halfPos = Vector3.new(
+        pos.X + moveDirX * (AutoTrimpConfig.EdgeRayForward * 0.5),
+        pos.Y,
+        pos.Z + moveDirZ * (AutoTrimpConfig.EdgeRayForward * 0.5)
+    )
+    
+    local halfRay = Workspace:Raycast(
+        halfPos,
+        Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0),
+        TrimpRayParams
+    )
+    
+    if not halfRay then
+        AutoTrimpState.LastEdgeJump = now
+        return true
+    end
+    
+    local halfDrop = currentGroundY - halfRay.Position.Y
+    if halfDrop >= AutoTrimpConfig.EdgeDropThreshold then
+        AutoTrimpState.LastEdgeJump = now
+        return true
+    end
+    
+    return false
+end
+
+-- Detect obstacles (chairs, small walls) ahead that we should jump onto/over
+local function CheckObstacleAhead()
+    if not RootPart or not Humanoid then return false end
+    
+    local now = tick()
+    if now - AutoTrimpState.LastObstacleJump < AutoTrimpConfig.ObstacleCooldown then return false end
+    
+    local vel = RootPart.AssemblyLinearVelocity
+    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
+    
+    -- Need some minimum movement (lower threshold than edge - walking into chair should work)
+    if hSpeedSq < 4 then return false end -- speed > 2
+    
+    -- Must be on ground
+    if Humanoid.FloorMaterial == Enum.Material.Air then
+        local state = Humanoid:GetState()
+        if state ~= Enum.HumanoidStateType.Running and 
+           state ~= Enum.HumanoidStateType.RunningNoPhysics then
+            return false
+        end
+    end
+    
+    local pos = RootPart.Position
+    local hSpeed = math.sqrt(hSpeedSq)
+    local moveDirX = vel.X / hSpeed
+    local moveDirZ = vel.Z / hSpeed
+    local moveDir = Vector3.new(moveDirX, 0, moveDirZ)
+    
+    -- Get feet position
+    local hipHeight = Humanoid.HipHeight or 2
+    local feetY = pos.Y - hipHeight - 0.5
+    
+    -- Cast horizontal rays at different heights to detect obstacles
+    -- Low ray (shin height) - detects chairs, small obstacles
+    local lowRayOrigin = Vector3.new(pos.X, feetY + 0.5, pos.Z)
+    local lowRay = Workspace:Raycast(
+        lowRayOrigin,
+        moveDir * AutoTrimpConfig.ObstacleRayForward,
+        TrimpRayParams
+    )
+    
+    if not lowRay then return false end
+    
+    -- We hit something ahead at low height
+    local hitPart = lowRay.Instance
+    if not hitPart or not hitPart.CanCollide then return false end
+    
+    -- Check if it's a jumpable obstacle by measuring its height
+    -- Cast a ray from above the obstacle downward to find its top
+    local hitPos = lowRay.Position
+    local abovePos = Vector3.new(hitPos.X, pos.Y + AutoTrimpConfig.ObstacleMaxHeight, hitPos.Z)
+    
+    local topRay = Workspace:Raycast(
+        abovePos,
+        Vector3.new(0, -(AutoTrimpConfig.ObstacleMaxHeight + hipHeight + 2), 0),
+        TrimpRayParams
+    )
+    
+    if not topRay then return false end
+    
+    local obstacleTopY = topRay.Position.Y
+    local obstacleHeight = obstacleTopY - feetY
+    
+    -- Only jump for obstacles within our jumpable range
+    if obstacleHeight >= AutoTrimpConfig.ObstacleMinHeight and 
+       obstacleHeight <= AutoTrimpConfig.ObstacleMaxHeight then
+        
+        -- Also verify there's space above the obstacle (not a wall)
+        local clearanceCheck = Vector3.new(
+            hitPos.X + moveDirX * 1.5,
+            obstacleTopY + 3,
+            hitPos.Z + moveDirZ * 1.5
+        )
+        local clearanceRay = Workspace:Raycast(
+            clearanceCheck,
+            Vector3.new(0, -2, 0),
+            TrimpRayParams
+        )
+        
+        -- There should be a surface to land on (top of obstacle or beyond)
+        if clearanceRay or obstacleHeight <= 2.0 then
+            AutoTrimpState.LastObstacleJump = now
+            return true
+        end
+    end
+    
+    -- Mid-height ray for slightly taller obstacles
+    local midRayOrigin = Vector3.new(pos.X, feetY + 1.5, pos.Z)
+    local midRay = Workspace:Raycast(
+        midRayOrigin,
+        moveDir * (AutoTrimpConfig.ObstacleRayForward * 0.8),
+        TrimpRayParams
+    )
+    
+    if midRay and midRay.Instance and midRay.Instance.CanCollide then
+        local midHitPos = midRay.Position
+        local midAbove = Vector3.new(midHitPos.X, pos.Y + 4, midHitPos.Z)
+        local midTopRay = Workspace:Raycast(
+            midAbove,
+            Vector3.new(0, -6, 0),
+            TrimpRayParams
+        )
+        
+        if midTopRay then
+            local midObstHeight = midTopRay.Position.Y - feetY
+            if midObstHeight >= AutoTrimpConfig.ObstacleMinHeight and 
+               midObstHeight <= AutoTrimpConfig.ObstacleMaxHeight then
+                AutoTrimpState.LastObstacleJump = now
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+-- Main auto-trimp function - runs every frame
+local function AutoTrimpUpdate()
+    if not AutoTrimpConfig.Enabled then return end
+    if not Humanoid or not RootPart then return end
+    if Humanoid.Health <= 0 then return end
+    
+    local character = LocalPlayer.Character
+    if not character then return end
+    
+    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    if isDowned then return end
+    
+    -- Update ray filter periodically
+    UpdateTrimpRayFilter()
+    
+    -- Check for edges and obstacles
+    local shouldJump = false
+    local jumpReason = nil
+    
+    if CheckEdgeAhead() then
+        shouldJump = true
+        jumpReason = "edge"
+    elseif CheckObstacleAhead() then
+        shouldJump = true
+        jumpReason = "obstacle"
+    end
+    
+    if shouldJump then
+        ExecuteTrimpJump()
+    end
+end
 -- ═══════════════════════════════════════════════════════════════
 -- MAIN LOOP (OPT: split into RenderStepped + Heartbeat)
 -- ═══════════════════════════════════════════════════════════════
@@ -2436,20 +2760,20 @@ local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
-    -- OPT: RenderStepped = only frame-critical movement (bhop, bounce, strafe)
+    -- RenderStepped = frame-critical movement
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         SuperBhop()
         PreJumpQueue()
         Bounce()
         AirStrafe()
+        AutoTrimpUpdate()  -- ADD THIS LINE
     end)
     
-    -- OPT: Heartbeat = everything else (non-visual, lower priority)
+    -- Heartbeat = everything else (unchanged)
     local slowAccum = 0
     local edgeAccum = 0
     
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
-        -- Edge boost ~30fps instead of 60fps
         if State.EdgeBoost then
             edgeAccum = edgeAccum + dt
             if edgeAccum >= 0.033 then
@@ -2458,12 +2782,10 @@ local function StartMainLoop()
             end
         end
         
-        -- Carry check (has internal cooldown but skip the call entirely)
         if holdQ then
             DoCarry()
         end
         
-        -- Slow updates ~10fps
         slowAccum = slowAccum + dt
         if slowAccum >= 0.1 then
             slowAccum = 0
