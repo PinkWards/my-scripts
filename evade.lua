@@ -1314,7 +1314,6 @@ local function InstallColaHook()
     ColaSettings.OldNamecall = mt.__namecall
 
     local lastBlock = 0
-    local boostLoop = nil
 
     setreadonly(mt, false)
 
@@ -1326,7 +1325,7 @@ local function InstallColaHook()
             if args[1] == 0 and args[2] == 20 then
                 if ColaSettings.Active then
                     local now = tick()
-                    if now - lastBlock < 0.3 then
+                    if now - lastBlock < 0.5 then
                         return nil
                     end
                     lastBlock = now
@@ -1341,25 +1340,6 @@ local function InstallColaHook()
                                 ColaSettings.Duration,
                                 Color3.fromRGB(199, 141, 93)
                             )
-                        end
-                    end)
-
-                    if boostLoop then
-                        pcall(function() task.cancel(boostLoop) end)
-                    end
-
-                    boostLoop = task.spawn(function()
-                        while ColaSettings.Active do
-                            task.wait(ColaSettings.Duration - 0.3)
-                            if ColaSettings.Active then
-                                firesignal(
-                                    SpeedBoost.OnClientEvent,
-                                    "Cola",
-                                    ColaSettings.Speed,
-                                    ColaSettings.Duration,
-                                    Color3.fromRGB(199, 141, 93)
-                                )
-                            end
                         end
                     end)
 
