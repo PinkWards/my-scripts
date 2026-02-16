@@ -82,9 +82,10 @@ local cachedEmoteModelFunction = nil
 local cachedCosmeticNames = nil
 local levD = {}
 
--- Track whether we are currently in the middle of replacing an emote
--- so we know not to double-fire
 local isReplacingEmote = false
+local replacementEmoteModel = nil -- tracks the replacement's EmoteModel so we don't destroy it
+local emoteModelWatcher = nil
+local emoteModelWatcher2 = nil
 
 local function safeRequire(moduleScript)
     local cached = requiredModuleCache[moduleScript]
@@ -124,25 +125,9 @@ local function stopEmoteAnimations(humanoid)
     end
 end
 
-local function getHumanoidForChar(char)
-    if not char then return nil end
-    local isR15 = char:GetAttribute("R15") == true
-    if isR15 then
-        local r15Visual = char:FindFirstChild("R15Visual")
-        if r15Visual then
-            local visualHumanoid = r15Visual:FindFirstChild("Visual_Humanoid")
-            if visualHumanoid then
-                return visualHumanoid
-            end
-        end
-    end
-    return char:FindFirstChildOfClass("Humanoid")
-end
-
 local function cleanupCurrentEmote(char)
     if not char then return end
     
-    -- Stop emote animations on the correct humanoid
     local isR15 = char:GetAttribute("R15") == true
     if isR15 then
         local r15Visual = char:FindFirstChild("R15Visual")
@@ -152,13 +137,11 @@ local function cleanupCurrentEmote(char)
     end
     stopEmoteAnimations(char:FindFirstChildOfClass("Humanoid"))
     
-    -- Remove old emote model (the item prop)
     local emoteModel = char:FindFirstChild("EmoteModel")
     if emoteModel then
         emoteModel:Destroy()
     end
     
-    -- Remove emote sound
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp then
         local emoteSound = hrp:FindFirstChild("EmoteSound")
@@ -166,6 +149,72 @@ local function cleanupCurrentEmote(char)
             emoteSound:Destroy()
         end
     end
+end
+
+-- This watcher kills any EmoteModel that is NOT the one spawned by our replacement
+local function setupEmoteModelWatcher(char)
+    if emoteModelWatcher then
+        emoteModelWatcher:Disconnect()
+        emoteModelWatcher = nil
+    end
+    if emoteModelWatcher2 then
+        emoteModelWatcher2:Disconnect()
+        emoteModelWatcher2 = nil
+    end
+    
+    if not char then return end
+    
+    emoteModelWatcher = char.ChildAdded:Connect(function(child)
+        if child.Name ~= "EmoteModel" then return end
+        
+        -- If we are in the middle of replacing, we need to figure out
+        -- if this is the ORIGINAL emote's model or the REPLACEMENT's model
+        if isReplacingEmote then
+            -- If we haven't received the replacement model yet,
+            -- this is the original one that needs to die
+            if replacementEmoteModel == nil then
+                -- This is the original emote's item spawning late, kill it
+                task.wait()
+                if child.Parent then
+                    child:Destroy()
+                end
+            end
+            -- If replacementEmoteModel is set and matches this child, leave it alone
+            -- If it's a different one, it's the original, kill it
+            if replacementEmoteModel ~= nil and child ~= replacementEmoteModel then
+                task.wait()
+                if child.Parent then
+                    child:Destroy()
+                end
+            end
+        end
+    end)
+    
+    -- Also watch for duplicate EmoteModels after replacement is done
+    -- If somehow both exist, keep only the newest one (the replacement)
+    emoteModelWatcher2 = char.ChildAdded:Connect(function(child)
+        if child.Name ~= "EmoteModel" then return end
+        if not isReplacingEmote and replacementEmoteModel and replacementEmoteModel.Parent then
+            -- A new EmoteModel appeared while we already have our replacement
+            -- This shouldn't happen normally, but if it does, the replacement
+            -- is the one we want to keep
+            task.wait()
+            -- Count EmoteModels
+            local emoteModels = {}
+            for _, c in ipairs(char:GetChildren()) do
+                if c.Name == "EmoteModel" then
+                    table.insert(emoteModels, c)
+                end
+            end
+            if #emoteModels > 1 then
+                for _, em in ipairs(emoteModels) do
+                    if em ~= replacementEmoteModel then
+                        em:Destroy()
+                    end
+                end
+            end
+        end
+    end)
 end
 
 local function fireSelect(emoteName)
@@ -176,6 +225,7 @@ local function fireSelect(emoteName)
     if isReplacingEmote then return end
 
     isReplacingEmote = true
+    replacementEmoteModel = nil
 
     if randomOptionEnabled and player.Character then
         player.Character:SetAttribute("EmoteNum", math.random(1, 3))
@@ -183,7 +233,7 @@ local function fireSelect(emoteName)
         player.Character:SetAttribute("EmoteNum", emoteOption)
     end
 
-    -- Clean up old emote BEFORE firing the replacement
+    -- Clean up the original emote completely before firing replacement
     cleanupCurrentEmote(player.Character)
 
     local bufferData = buffer.create(2)
@@ -194,10 +244,47 @@ local function fireSelect(emoteName)
         firesignal(remoteSignal, bufferData, {emoteName})
     end
 
-    -- Give time for the replacement emote + item to fully load
-    task.delay(2, function()
-        isReplacingEmote = false
-    end)
+    -- Wait for the replacement EmoteModel to appear and tag it
+    local char = player.Character
+    if char then
+        task.spawn(function()
+            local startTime = tick()
+            while tick() - startTime < 3 do
+                local em = char:FindFirstChild("EmoteModel")
+                if em then
+                    replacementEmoteModel = em
+                    break
+                end
+                task.wait(0.05)
+            end
+            
+            -- After we've tagged the replacement model, wait a bit then
+            -- do a final cleanup of any duplicate EmoteModels
+            task.wait(0.5)
+            if char and char.Parent then
+                local emoteModels = {}
+                for _, c in ipairs(char:GetChildren()) do
+                    if c.Name == "EmoteModel" then
+                        table.insert(emoteModels, c)
+                    end
+                end
+                if #emoteModels > 1 and replacementEmoteModel and replacementEmoteModel.Parent then
+                    for _, em in ipairs(emoteModels) do
+                        if em ~= replacementEmoteModel then
+                            em:Destroy()
+                        end
+                    end
+                end
+            end
+            
+            task.wait(1.5)
+            isReplacingEmote = false
+        end)
+    else
+        task.delay(2, function()
+            isReplacingEmote = false
+        end)
+    end
 end
 
 local function setupHumanoidListeners(char)
@@ -217,8 +304,9 @@ local function setupHumanoidListeners(char)
 
     if not humanoid then return end
 
+    setupEmoteModelWatcher(char)
+
     humanoid.AnimationPlayed:Connect(function(track)
-        -- If we are currently replacing, ignore this animation
         if isReplacingEmote then return end
         
         local animation = track.Animation
@@ -480,6 +568,7 @@ local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
     isReplacingEmote = false
+    replacementEmoteModel = nil
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -1677,6 +1766,7 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
         if child.Name == player.Name then
             currentTag = nil
             isReplacingEmote = false
+            replacementEmoteModel = nil
             cleanUpLastEmoteFrame()
         end
     end)
