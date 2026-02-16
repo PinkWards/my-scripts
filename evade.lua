@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local scriptSource = nil
+local SCRIPT_VERSION = 10
 
 pcall(function()
     if queue_on_teleport then
@@ -90,7 +90,7 @@ local EdgeConfig = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- FIXED INFINITE COLA (arg 20 confirmed)
+-- COLA SETTINGS
 -- ═══════════════════════════════════════════════════════════════
 
 local ColaSettings = {
@@ -99,6 +99,7 @@ local ColaSettings = {
     Active = false,
     HookInstalled = false,
     OldNamecall = nil,
+    AutoRefreshRunning = false,
 }
 
 local ColaSpeedPresets = {
@@ -368,7 +369,7 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP SYSTEM (FIXED - raycast only, no player triggers)
+-- BHOP SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local COS_SLOPE_MAX = math.cos(math.rad(BhopConfig.SlopeMaxAngle))
@@ -1296,14 +1297,14 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- COLA HOOK FUNCTIONS (FIXED - arg 20)
+-- COLA HOOK FUNCTIONS (FIXED - arg 20, game metatable)
 -- ═══════════════════════════════════════════════════════════════
 
 local function InstallColaHook()
     if ColaSettings.HookInstalled then return end
 
-    local ToolAction = ReplicatedStorage.Events.Character.ToolAction
-    local SpeedBoost = ReplicatedStorage.Events.Character.SpeedBoost
+    local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
+    local SpeedBoost = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
 
     if not ToolAction or not SpeedBoost then
         warn("[Cola] Events not found")
@@ -1311,10 +1312,14 @@ local function InstallColaHook()
     end
 
     local mt = getrawmetatable(game)
+    if not mt then
+        warn("[Cola] Cannot get metatable")
+        return
+    end
+    
     ColaSettings.OldNamecall = mt.__namecall
 
     local lastBlock = 0
-    local autoRefreshRunning = false
 
     setreadonly(mt, false)
 
@@ -1344,8 +1349,8 @@ local function InstallColaHook()
                         end
                     end)
 
-                    if not autoRefreshRunning then
-                        autoRefreshRunning = true
+                    if not ColaSettings.AutoRefreshRunning then
+                        ColaSettings.AutoRefreshRunning = true
                         task.spawn(function()
                             while ColaSettings.Active do
                                 task.wait(ColaSettings.Duration - 0.2)
@@ -1361,7 +1366,7 @@ local function InstallColaHook()
                                     break
                                 end
                             end
-                            autoRefreshRunning = false
+                            ColaSettings.AutoRefreshRunning = false
                         end)
                     end
 
@@ -1375,18 +1380,19 @@ local function InstallColaHook()
 
     setreadonly(mt, true)
     ColaSettings.HookInstalled = true
+    print("[Cola] Hook installed")
 end
 
 local function UninstallColaHook()
     if not ColaSettings.HookInstalled then return end
 
     ColaSettings.Active = false
-
+    
     task.wait(0.5)
 
     local mt = getrawmetatable(game)
 
-    if ColaSettings.OldNamecall then
+    if ColaSettings.OldNamecall and mt then
         setreadonly(mt, false)
         mt.__namecall = ColaSettings.OldNamecall
         setreadonly(mt, true)
@@ -1394,6 +1400,19 @@ local function UninstallColaHook()
 
     ColaSettings.HookInstalled = false
     ColaSettings.OldNamecall = nil
+    ColaSettings.AutoRefreshRunning = false
+    print("[Cola] Hook removed")
+end
+
+local function ToggleInfiniteColaFixed(state)
+    if state then
+        ColaSettings.Active = true
+        State.InfiniteCola = true
+        InstallColaHook()
+    else
+        State.InfiniteCola = false
+        UninstallColaHook()
+    end
 end
 
 local function FixCola()
@@ -1928,7 +1947,7 @@ local function CreateMainGUI()
     if GUI then SafeCall(function() GUI:Destroy() end) end
     
     GUI = Instance.new("ScreenGui")
-    GUI.Name = "Evad3"
+    GUI.Name = "EvadeHelper"
     GUI.ResetOnSpawn = false
     GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     SafeCall(function() GUI.Parent = game:GetService("CoreGui") end)
@@ -1995,7 +2014,7 @@ local function CreateMainGUI()
     versionLabel.Size = UDim2.new(0, 30, 0, 16)
     versionLabel.Position = UDim2.new(0, 14 + #titleText * 7 + 10, 0, 14)
     versionLabel.BackgroundColor3 = Theme.Accent
-    versionLabel.Text = "V10"
+    versionLabel.Text = "V" .. SCRIPT_VERSION
     versionLabel.TextColor3 = Theme.TextPrimary
     versionLabel.TextSize = 9
     versionLabel.Font = FONT_HEADING
@@ -2022,7 +2041,7 @@ local function CreateMainGUI()
     content.ScrollBarThickness = 3
     content.ScrollBarImageColor3 = Theme.Accent
     content.BorderSizePixel = 0
-    content.CanvasSize = UDim2.new(0, 0, 0, 620)
+    content.CanvasSize = UDim2.new(0, 0, 0, 650)
     content.Parent = main
     
     local y = 8
@@ -2110,32 +2129,33 @@ local function CreateMainGUI()
     end)
     y = y + 40
     
+    -- Cola speed presets - 2 rows
     local presetLabel = Instance.new("TextLabel")
-    presetLabel.Size = UDim2.new(0, 50, 0, 20)
-    presetLabel.Position = UDim2.new(0, 8, 0, y + 4)
+    presetLabel.Size = UDim2.new(1, -16, 0, 16)
+    presetLabel.Position = UDim2.new(0, 8, 0, y)
     presetLabel.BackgroundTransparency = 1
-    presetLabel.Text = "Speed"
+    presetLabel.Text = "Speed Presets"
     presetLabel.TextColor3 = Theme.TextMuted
     presetLabel.TextSize = 10
     presetLabel.Font = FONT_SMALL
     presetLabel.TextXAlignment = Enum.TextXAlignment.Left
     presetLabel.Parent = content
+    y = y + 18
     
-    local presetX = 60
+    local presetX = 8
     local presetRow = 0
-    local maxRowWidth = 250
     
-    for _, preset in ipairs(ColaSpeedPresets) do
+    for idx, preset in ipairs(ColaSpeedPresets) do
         local btnName = "Cola" .. preset.name
         local btnText = string.format("%.1fx", preset.speed)
-        local btnWidth = 38
+        local btnWidth = 40
         
-        if presetX + btnWidth > maxRowWidth then
+        if idx == 4 then
             presetX = 8
-            presetRow = presetRow + 1
+            presetRow = 1
         end
         
-        local btn = CreateSmallButton(content, btnName, btnText, UDim2.new(0, presetX, 0, y + 2 + (presetRow * 30)), UDim2.new(0, btnWidth, 0, 26), function()
+        local btn = CreateSmallButton(content, btnName, btnText, UDim2.new(0, presetX, 0, y + (presetRow * 30)), UDim2.new(0, btnWidth, 0, 26), function()
             ColaSettings.Speed = preset.speed
             UpdateSliderUI(preset.speed)
             UpdateGUI()
@@ -2145,8 +2165,9 @@ local function CreateMainGUI()
         presetX = presetX + btnWidth + 4
     end
     
-    y = y + 34 + (presetRow * 30)
+    y = y + 30 + (presetRow * 30) + 8
     
+    -- Cola speed slider
     local sliderHolder = Instance.new("Frame")
     sliderHolder.Name = "SliderHolder"
     sliderHolder.Size = UDim2.new(1, -16, 0, 42)
@@ -2237,6 +2258,7 @@ local function CreateMainGUI()
     
     y = y + 36
     
+    -- Cola duration input
     local durLabel = Instance.new("TextLabel")
     durLabel.Size = UDim2.new(0, 80, 0, 20)
     durLabel.Position = UDim2.new(0, 8, 0, y + 6)
@@ -2546,60 +2568,33 @@ local function CheckEdgeAhead()
     local moveDirX = vel.X / hSpeed
     local moveDirZ = vel.Z / hSpeed
     
-    local groundRay = Workspace:Raycast(
-        pos, 
-        Vector3.new(0, -AutoTrimpConfig.GroundCheckDepth, 0), 
-        TrimpRayParams
-    )
-    
+    local groundRay = Workspace:Raycast(pos, Vector3.new(0, -AutoTrimpConfig.GroundCheckDepth, 0), TrimpRayParams)
     if not groundRay then return false end
     
     local currentGroundY = groundRay.Position.Y
     
-    local aheadPos = Vector3.new(
-        pos.X + moveDirX * AutoTrimpConfig.EdgeRayForward,
-        pos.Y,
-        pos.Z + moveDirZ * AutoTrimpConfig.EdgeRayForward
-    )
-    
-    local aheadRay = Workspace:Raycast(
-        aheadPos,
-        Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0),
-        TrimpRayParams
-    )
+    local aheadPos = Vector3.new(pos.X + moveDirX * AutoTrimpConfig.EdgeRayForward, pos.Y, pos.Z + moveDirZ * AutoTrimpConfig.EdgeRayForward)
+    local aheadRay = Workspace:Raycast(aheadPos, Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0), TrimpRayParams)
     
     if not aheadRay then
         AutoTrimpState.LastEdgeJump = now
         return true
     end
     
-    local aheadGroundY = aheadRay.Position.Y
-    local drop = currentGroundY - aheadGroundY
-    
-    if drop >= AutoTrimpConfig.EdgeDropThreshold then
+    if currentGroundY - aheadRay.Position.Y >= AutoTrimpConfig.EdgeDropThreshold then
         AutoTrimpState.LastEdgeJump = now
         return true
     end
     
-    local halfPos = Vector3.new(
-        pos.X + moveDirX * (AutoTrimpConfig.EdgeRayForward * 0.5),
-        pos.Y,
-        pos.Z + moveDirZ * (AutoTrimpConfig.EdgeRayForward * 0.5)
-    )
-    
-    local halfRay = Workspace:Raycast(
-        halfPos,
-        Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0),
-        TrimpRayParams
-    )
+    local halfPos = Vector3.new(pos.X + moveDirX * (AutoTrimpConfig.EdgeRayForward * 0.5), pos.Y, pos.Z + moveDirZ * (AutoTrimpConfig.EdgeRayForward * 0.5))
+    local halfRay = Workspace:Raycast(halfPos, Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0), TrimpRayParams)
     
     if not halfRay then
         AutoTrimpState.LastEdgeJump = now
         return true
     end
     
-    local halfDrop = currentGroundY - halfRay.Position.Y
-    if halfDrop >= AutoTrimpConfig.EdgeDropThreshold then
+    if currentGroundY - halfRay.Position.Y >= AutoTrimpConfig.EdgeDropThreshold then
         AutoTrimpState.LastEdgeJump = now
         return true
     end
@@ -2615,13 +2610,11 @@ local function CheckObstacleAhead()
     
     local vel = RootPart.AssemblyLinearVelocity
     local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-    
     if hSpeedSq < 4 then return false end
     
     if Humanoid.FloorMaterial == Enum.Material.Air then
         local state = Humanoid:GetState()
-        if state ~= Enum.HumanoidStateType.Running and 
-           state ~= Enum.HumanoidStateType.RunningNoPhysics then
+        if state ~= Enum.HumanoidStateType.Running and state ~= Enum.HumanoidStateType.RunningNoPhysics then
             return false
         end
     end
@@ -2636,11 +2629,7 @@ local function CheckObstacleAhead()
     local feetY = pos.Y - hipHeight - 0.5
     
     local lowRayOrigin = Vector3.new(pos.X, feetY + 0.5, pos.Z)
-    local lowRay = Workspace:Raycast(
-        lowRayOrigin,
-        moveDir * AutoTrimpConfig.ObstacleRayForward,
-        TrimpRayParams
-    )
+    local lowRay = Workspace:Raycast(lowRayOrigin, moveDir * AutoTrimpConfig.ObstacleRayForward, TrimpRayParams)
     
     if not lowRay then return false end
     
@@ -2649,31 +2638,15 @@ local function CheckObstacleAhead()
     
     local hitPos = lowRay.Position
     local abovePos = Vector3.new(hitPos.X, pos.Y + AutoTrimpConfig.ObstacleMaxHeight, hitPos.Z)
-    
-    local topRay = Workspace:Raycast(
-        abovePos,
-        Vector3.new(0, -(AutoTrimpConfig.ObstacleMaxHeight + hipHeight + 2), 0),
-        TrimpRayParams
-    )
+    local topRay = Workspace:Raycast(abovePos, Vector3.new(0, -(AutoTrimpConfig.ObstacleMaxHeight + hipHeight + 2), 0), TrimpRayParams)
     
     if not topRay then return false end
     
-    local obstacleTopY = topRay.Position.Y
-    local obstacleHeight = obstacleTopY - feetY
+    local obstacleHeight = topRay.Position.Y - feetY
     
-    if obstacleHeight >= AutoTrimpConfig.ObstacleMinHeight and 
-       obstacleHeight <= AutoTrimpConfig.ObstacleMaxHeight then
-        
-        local clearanceCheck = Vector3.new(
-            hitPos.X + moveDirX * 1.5,
-            obstacleTopY + 3,
-            hitPos.Z + moveDirZ * 1.5
-        )
-        local clearanceRay = Workspace:Raycast(
-            clearanceCheck,
-            Vector3.new(0, -2, 0),
-            TrimpRayParams
-        )
+    if obstacleHeight >= AutoTrimpConfig.ObstacleMinHeight and obstacleHeight <= AutoTrimpConfig.ObstacleMaxHeight then
+        local clearanceCheck = Vector3.new(hitPos.X + moveDirX * 1.5, topRay.Position.Y + 3, hitPos.Z + moveDirZ * 1.5)
+        local clearanceRay = Workspace:Raycast(clearanceCheck, Vector3.new(0, -2, 0), TrimpRayParams)
         
         if clearanceRay or obstacleHeight <= 2.0 then
             AutoTrimpState.LastObstacleJump = now
@@ -2682,25 +2655,15 @@ local function CheckObstacleAhead()
     end
     
     local midRayOrigin = Vector3.new(pos.X, feetY + 1.5, pos.Z)
-    local midRay = Workspace:Raycast(
-        midRayOrigin,
-        moveDir * (AutoTrimpConfig.ObstacleRayForward * 0.8),
-        TrimpRayParams
-    )
+    local midRay = Workspace:Raycast(midRayOrigin, moveDir * (AutoTrimpConfig.ObstacleRayForward * 0.8), TrimpRayParams)
     
     if midRay and midRay.Instance and midRay.Instance.CanCollide then
-        local midHitPos = midRay.Position
-        local midAbove = Vector3.new(midHitPos.X, pos.Y + 4, midHitPos.Z)
-        local midTopRay = Workspace:Raycast(
-            midAbove,
-            Vector3.new(0, -6, 0),
-            TrimpRayParams
-        )
+        local midAbove = Vector3.new(midRay.Position.X, pos.Y + 4, midRay.Position.Z)
+        local midTopRay = Workspace:Raycast(midAbove, Vector3.new(0, -6, 0), TrimpRayParams)
         
         if midTopRay then
             local midObstHeight = midTopRay.Position.Y - feetY
-            if midObstHeight >= AutoTrimpConfig.ObstacleMinHeight and 
-               midObstHeight <= AutoTrimpConfig.ObstacleMaxHeight then
+            if midObstHeight >= AutoTrimpConfig.ObstacleMinHeight and midObstHeight <= AutoTrimpConfig.ObstacleMaxHeight then
                 AutoTrimpState.LastObstacleJump = now
                 return true
             end
@@ -2723,15 +2686,9 @@ local function AutoTrimpUpdate()
     
     UpdateTrimpRayFilter()
     
-    local shouldJump = false
-    
     if CheckEdgeAhead() then
-        shouldJump = true
+        ExecuteTrimpJump()
     elseif CheckObstacleAhead() then
-        shouldJump = true
-    end
-    
-    if shouldJump then
         ExecuteTrimpJump()
     end
 end
