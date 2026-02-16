@@ -71,16 +71,16 @@ local Config = {
 }
 
 local BounceConfig = {
-    Power = 90,
-    Boost = 170,
+    Power = 100,
+    Boost = 190,
     Cooldown = 0.9,
-    AirDuration = 9,
-    AirGain = 10,
-    AirMax = 280
+    AirDuration = 10,
+    AirGain = 11,
+    AirMax = 290
 }
 
 local EdgeConfig = {
-    Boost = 20,
+    Boost = 50,
     MinSpeed = 3,
     Cooldown = 0.12,
     MinEdge = 0.4,
