@@ -80,7 +80,7 @@ local BounceConfig = {
 }
 
 local EdgeConfig = {
-    Boost = 50,
+    Boost = 35,
     MinSpeed = 3,
     Cooldown = 0.12,
     MinEdge = 0.4,
