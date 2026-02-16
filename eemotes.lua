@@ -55,7 +55,6 @@ local currentTag = nil
 local MAX_SLOTS = 6
 local currentEmotes = {"", "", "", "", "", ""}
 local selectEmotes = {"", "", "", "", "", ""}
-local emoteEnabled = {false, false, false, false, false, false}
 
 local currentEmoteInputs = {}
 local selectEmoteInputs = {}
@@ -76,7 +75,6 @@ local allEmotes = {}
 local SAVE_FOLDER = "DaraHub"
 local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
 
-local emoteReplacementLookup = {}
 local requiredModuleCache = {}
 local emoteDisplayNameToModule = {}
 local displayNameCacheBuilt = false
@@ -105,20 +103,17 @@ local function normalizeText(text)
     return cached
 end
 
-local function RebuildEmoteLookup()
-    table.clear(emoteReplacementLookup)
-    for i = 1, MAX_SLOTS do
-        if emoteEnabled[i] and currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-            emoteReplacementLookup[normalizeText(currentEmotes[i])] = i
-        end
-    end
-end
-
 local function fireSelect(emoteName)
     if not currentTag then return end
     local tagNumber = tonumber(currentTag)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
     if not emoteName or emoteName == "" then return end
+
+    if randomOptionEnabled and player.Character then
+        player.Character:SetAttribute("EmoteNum", math.random(1, 3))
+    elseif player.Character then
+        player.Character:SetAttribute("EmoteNum", emoteOption)
+    end
 
     local bufferData = buffer.create(2)
     buffer.writeu8(bufferData, 0, tagNumber)
@@ -129,27 +124,39 @@ local function fireSelect(emoteName)
     end
 end
 
-local function setupAnimationListener()
-    local function setupHumanoidListeners(char)
-        local humanoid = char:WaitForChild("Humanoid", 5)
+local function setupHumanoidListeners(char)
+    local humanoid = char:WaitForChild("Humanoid", 5)
+    if not humanoid then return end
 
-        if humanoid then
-            humanoid.AnimationPlayed:Connect(function(track)
-                local animation = track.Animation
-                if animation and animation:IsDescendantOf(ReplicatedStorage.Items.Emotes) then
-                    local emoteModule = animation:FindFirstAncestorWhichIsA("ModuleScript")
-                    if emoteModule then
-                        local currentEmoteName = emoteModule.Name
-                        local slot = emoteReplacementLookup[normalizeText(currentEmoteName)]
-                        if slot then
-                            fireSelect(selectEmotes[slot])
-                        end
-                    end
+    humanoid.AnimationPlayed:Connect(function(track)
+        local animation = track.Animation
+        if not animation then return end
+        
+        local emoteItems = ReplicatedStorage:FindFirstChild("Items")
+        if not emoteItems then return end
+        local emotesFolder = emoteItems:FindFirstChild("Emotes")
+        if not emotesFolder then return end
+        
+        if not animation:IsDescendantOf(emotesFolder) then return end
+
+        local emoteModule = animation:FindFirstAncestorWhichIsA("ModuleScript")
+        if not emoteModule then return end
+
+        local currentEmoteName = emoteModule.Name
+        local normalizedPlaying = normalizeText(currentEmoteName)
+
+        for i = 1, MAX_SLOTS do
+            if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
+                if normalizeText(currentEmotes[i]) == normalizedPlaying then
+                    fireSelect(selectEmotes[i])
+                    break
                 end
-            end)
+            end
         end
-    end
+    end)
+end
 
+local function setupAnimationListener()
     if player.Character then
         setupHumanoidListeners(player.Character)
     end
@@ -317,44 +324,39 @@ local function replaceEmotesFrame()
     emotesFolder = emotesFolder and emotesFolder:FindFirstChild("Emotes")
     if not emotesFolder then return false end
     local anyReplaced = false
-    local normalizedCurrents = {}
-    for j = 1, MAX_SLOTS do
-        if currentEmotes[j] ~= "" and selectEmotes[j] ~= "" and emoteEnabled[j] then
-            normalizedCurrents[j] = normalizeText(currentEmotes[j])
-        end
-    end
     local function processEmoteSlot(emoteSlot, wheelName, slotIndex)
         if not emoteSlot then return end
         local textLabel = emoteSlot:FindFirstChild("TextLabel")
         if not textLabel then return end
         local normalizedCurrent = normalizeText(textLabel.Text)
         for j = 1, MAX_SLOTS do
-            local normSearch = normalizedCurrents[j]
-            if normSearch and normalizedCurrent == normSearch then
-                local replaceEmote = selectEmotes[j]
-                local viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
-                if viewportFrame then
-                    local replacementModule = emotesFolder:FindFirstChild(replaceEmote)
-                    if replacementModule then
-                        local key = wheelName.."_Emote"..slotIndex
-                        if not originalEmoteData[key] then
-                            originalEmoteData[key] = {
-                                displayText = textLabel.Text,
-                                emoteName = findEmoteModuleByDisplayName(textLabel.Text) or textLabel.Text
-                            }
-                        end
-                        local wm = viewportFrame:FindFirstChild("WorldModel")
-                        if wm then wm:Destroy() end
-                        local success, targetEmoteModule = safeRequire(replacementModule)
-                        if success and targetEmoteModule and targetEmoteModule.AppearanceInfo then
-                            local targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
-                            emoteModelFunction(viewportFrame, replaceEmote)
-                            textLabel.Text = targetDisplayName
-                            anyReplaced = true
+            if currentEmotes[j] ~= "" and selectEmotes[j] ~= "" then
+                if normalizedCurrent == normalizeText(currentEmotes[j]) then
+                    local replaceEmote = selectEmotes[j]
+                    local viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
+                    if viewportFrame then
+                        local replacementModule = emotesFolder:FindFirstChild(replaceEmote)
+                        if replacementModule then
+                            local key = wheelName.."_Emote"..slotIndex
+                            if not originalEmoteData[key] then
+                                originalEmoteData[key] = {
+                                    displayText = textLabel.Text,
+                                    emoteName = findEmoteModuleByDisplayName(textLabel.Text) or textLabel.Text
+                                }
+                            end
+                            local wm = viewportFrame:FindFirstChild("WorldModel")
+                            if wm then wm:Destroy() end
+                            local success, targetEmoteModule = safeRequire(replacementModule)
+                            if success and targetEmoteModule and targetEmoteModule.AppearanceInfo then
+                                local targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
+                                emoteModelFunction(viewportFrame, replaceEmote)
+                                textLabel.Text = targetDisplayName
+                                anyReplaced = true
+                            end
                         end
                     end
+                    break
                 end
-                break
             end
         end
     end
@@ -799,38 +801,29 @@ local function ValidateAndApplyEmotes()
                     slot = i, currentInvalid = true, currentName = currentEmotes[i],
                     selectInvalid = true, selectName = selectEmotes[i]
                 }
-                emoteEnabled[i] = false
             elseif not currentValid then
                 invalidEmoteSlots[#invalidEmoteSlots + 1] = {
                     slot = i, currentInvalid = true, currentName = currentEmotes[i],
                     selectInvalid = false, selectName = selectEmotes[i]
                 }
-                emoteEnabled[i] = false
             elseif not selectValid then
                 invalidEmoteSlots[#invalidEmoteSlots + 1] = {
                     slot = i, currentInvalid = false, currentName = currentEmotes[i],
                     selectInvalid = true, selectName = selectEmotes[i]
                 }
-                emoteEnabled[i] = false
             elseif currentActual:lower() == selectActual:lower() then
                 sameEmoteSlots[#sameEmoteSlots + 1] = i
-                emoteEnabled[i] = false
             else
                 currentEmotes[i] = currentActual
                 selectEmotes[i] = selectActual
                 successfulSlots[#successfulSlots + 1] = {
                     slot = i, current = currentActual, select = selectActual
                 }
-                emoteEnabled[i] = true
             end
         elseif currentEmotes[i] ~= "" or selectEmotes[i] ~= "" then
             missingEmoteSlots[#missingEmoteSlots + 1] = i
-            emoteEnabled[i] = false
-        else
-            emoteEnabled[i] = false
         end
     end
-    RebuildEmoteLookup()
     local parts = {}
     if #successfulSlots > 0 then
         parts[#parts + 1] = "<font color='#00FF00'>Applied:</font>"
@@ -863,8 +856,6 @@ local function ValidateAndApplyEmotes()
         end
     end
     local message = #parts > 0 and table.concat(parts, "\n") or "No emotes configured"
-    emoteNameCache = {}
-    normalizedCache = {}
     cleanUpLastEmoteFrame()
     emoteFrame = getEmoteFrame()
     if emoteFrame then
@@ -1004,13 +995,11 @@ Tabs.EmoteChanger:Button({
         for i = 1, MAX_SLOTS do
             currentEmotes[i] = ""
             selectEmotes[i] = ""
-            emoteEnabled[i] = false
             pcall(function()
                 if currentEmoteInputs[i] then currentEmoteInputs[i]:Set("") end
                 if selectEmoteInputs[i] then selectEmoteInputs[i]:Set("") end
             end)
         end
-        table.clear(emoteReplacementLookup)
         emoteNameCache = {}
         normalizedCache = {}
         cleanUpLastEmoteFrame()
