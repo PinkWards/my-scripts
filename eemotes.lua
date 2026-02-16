@@ -82,6 +82,9 @@ local cachedEmoteModelFunction = nil
 local cachedCosmeticNames = nil
 local levD = {}
 
+local activeReplacement = false
+local emoteModelWatcher = nil
+
 local function safeRequire(moduleScript)
     local cached = requiredModuleCache[moduleScript]
     if cached ~= nil then
@@ -103,6 +106,58 @@ local function normalizeText(text)
     return cached
 end
 
+local function cleanupEmoteVisuals(char)
+    if not char then return end
+    
+    local emoteModel = char:FindFirstChild("EmoteModel")
+    if emoteModel then
+        emoteModel:Destroy()
+    end
+    
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local emoteSound = hrp:FindFirstChild("EmoteSound")
+        if emoteSound then
+            emoteSound:Destroy()
+        end
+    end
+    
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                local anim = track.Animation
+                if anim then
+                    local emoteItems = ReplicatedStorage:FindFirstChild("Items")
+                    local emotesFolder = emoteItems and emoteItems:FindFirstChild("Emotes")
+                    if emotesFolder and anim:IsDescendantOf(emotesFolder) then
+                        track:Stop(0)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function setupEmoteModelWatcher(char)
+    if emoteModelWatcher then
+        emoteModelWatcher:Disconnect()
+        emoteModelWatcher = nil
+    end
+    
+    if not char then return end
+    
+    emoteModelWatcher = char.ChildAdded:Connect(function(child)
+        if child.Name == "EmoteModel" and activeReplacement then
+            task.wait()
+            if child.Parent and activeReplacement then
+                child:Destroy()
+            end
+        end
+    end)
+end
+
 local function fireSelect(emoteName)
     if not currentTag then return end
     local tagNumber = tonumber(currentTag)
@@ -115,6 +170,10 @@ local function fireSelect(emoteName)
         player.Character:SetAttribute("EmoteNum", emoteOption)
     end
 
+    cleanupEmoteVisuals(player.Character)
+
+    activeReplacement = true
+    
     local bufferData = buffer.create(2)
     buffer.writeu8(bufferData, 0, tagNumber)
     buffer.writeu8(bufferData, 1, 17)
@@ -122,11 +181,17 @@ local function fireSelect(emoteName)
     if remoteSignal then
         firesignal(remoteSignal, bufferData, {emoteName})
     end
+    
+    task.delay(0.5, function()
+        activeReplacement = false
+    end)
 end
 
 local function setupHumanoidListeners(char)
     local humanoid = char:WaitForChild("Humanoid", 5)
     if not humanoid then return end
+    
+    setupEmoteModelWatcher(char)
 
     humanoid.AnimationPlayed:Connect(function(track)
         local animation = track.Animation
@@ -387,6 +452,7 @@ local reapplyThread = nil
 local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
+    activeReplacement = false
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -1007,6 +1073,217 @@ Tabs.EmoteChanger:Button({
     end
 })
 
+-- Emote Swapping Mode
+
+Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Emote Swapping Mode", TextSize = 20 })
+Tabs.EmoteChanger:Paragraph({
+    Title = "How it works",
+    Desc = "Swaps emote module names in ReplicatedStorage\nThis makes the game load different animations for your owned emotes"
+})
+Tabs.EmoteChanger:Divider()
+
+local EmoteSwapper = {
+    CurrentEmotes = {},
+    SelectedEmotes = {},
+    SwappedPairs = {},
+    InputFields = {},
+    PendingApply = false,
+    PendingSwaps = {}
+}
+
+for i = 1, 12 do
+    EmoteSwapper.CurrentEmotes[i] = ""
+    EmoteSwapper.SelectedEmotes[i] = ""
+end
+
+Tabs.EmoteChanger:Section({ Title = "Swap Current Emotes", TextSize = 16 })
+
+for i = 1, 12 do
+    EmoteSwapper.InputFields["CurrentEmote" .. i] = Tabs.EmoteChanger:Input({
+        Title = "Current Emote " .. i,
+        Placeholder = "Enter current emote name",
+        Value = "",
+        Callback = function(value)
+            EmoteSwapper.CurrentEmotes[i] = value
+        end
+    })
+end
+
+Tabs.EmoteChanger:Section({ Title = "Swap Selected Emotes", TextSize = 16 })
+
+for i = 1, 12 do
+    EmoteSwapper.InputFields["SelectedEmote" .. i] = Tabs.EmoteChanger:Input({
+        Title = "Select Emote " .. i,
+        Placeholder = "Enter replacement emote name",
+        Value = "",
+        Callback = function(value)
+            EmoteSwapper.SelectedEmotes[i] = value
+        end
+    })
+end
+
+local function SwapEmoteNames(currentName, selectedName)
+    local Items = ReplicatedStorage:FindFirstChild("Items")
+    if not Items then return false end
+    local EmotesFolder = Items:FindFirstChild("Emotes")
+    if not EmotesFolder then return false end
+    local currentEmoteObj = EmotesFolder:FindFirstChild(currentName)
+    local selectedEmoteObj = EmotesFolder:FindFirstChild(selectedName)
+    if currentEmoteObj and selectedEmoteObj then
+        local tempName = selectedName .. "_EmoteSwapTemp"
+        while EmotesFolder:FindFirstChild(tempName) do
+            tempName = tempName .. "_"
+        end
+        currentEmoteObj.Name = tempName
+        selectedEmoteObj.Name = currentName
+        currentEmoteObj.Name = selectedName
+        return true
+    end
+    return false
+end
+
+local function ResetEmoteNames()
+    local Items = ReplicatedStorage:FindFirstChild("Items")
+    if not Items then return false end
+    local EmotesFolder = Items:FindFirstChild("Emotes")
+    if not EmotesFolder then return false end
+    for currentEmote, selectedEmote in pairs(EmoteSwapper.SwappedPairs) do
+        local currentEmoteObj = EmotesFolder:FindFirstChild(selectedEmote)
+        local selectedEmoteObj = EmotesFolder:FindFirstChild(currentEmote)
+        if currentEmoteObj and selectedEmoteObj then
+            local tempName = currentEmote .. "_EmoteSwapTemp"
+            while EmotesFolder:FindFirstChild(tempName) do
+                tempName = tempName .. "_"
+            end
+            currentEmoteObj.Name = tempName
+            selectedEmoteObj.Name = selectedEmote
+            currentEmoteObj.Name = currentEmote
+        end
+    end
+    return true
+end
+
+local function ProcessPendingSwaps()
+    if not EmoteSwapper.PendingSwaps or #EmoteSwapper.PendingSwaps == 0 then return end
+    local swappedCount = 0
+    local failedCount = 0
+    for _, swapData in ipairs(EmoteSwapper.PendingSwaps) do
+        if SwapEmoteNames(swapData[1], swapData[2]) then
+            EmoteSwapper.SwappedPairs[swapData[1]] = swapData[2]
+            swappedCount = swappedCount + 1
+        else
+            failedCount = failedCount + 1
+        end
+    end
+    EmoteSwapper.PendingSwaps = {}
+    EmoteSwapper.PendingApply = false
+    return swappedCount, failedCount
+end
+
+local function CheckIfPlayerDead()
+    return not player.Character or not player.Character:FindFirstChild("Humanoid") or player.Character.Humanoid.Health <= 0
+end
+
+local function CheckIfPlayerDowned()
+    return player.Character and player.Character:GetAttribute("Downed")
+end
+
+Tabs.EmoteChanger:Divider()
+
+Tabs.EmoteChanger:Button({
+    Title = "Apply Emote Swap",
+    Icon = "refresh-cw",
+    Callback = function()
+        if CheckIfPlayerDead() and not CheckIfPlayerDowned() then
+            EmoteSwapper.PendingSwaps = {}
+            for i = 1, 12 do
+                local ce = EmoteSwapper.CurrentEmotes[i]
+                local se = EmoteSwapper.SelectedEmotes[i]
+                if ce ~= "" and se ~= "" then
+                    table.insert(EmoteSwapper.PendingSwaps, {ce, se})
+                end
+            end
+            if #EmoteSwapper.PendingSwaps > 0 then
+                EmoteSwapper.PendingApply = true
+                WindUI:Notify({
+                    Title = "Emote Swapper",
+                    Content = "Player is dead. Swap will apply on respawn.",
+                    Duration = 3
+                })
+            else
+                WindUI:Notify({
+                    Title = "Emote Swapper",
+                    Content = "No emotes specified to swap",
+                    Duration = 3
+                })
+            end
+            return
+        end
+        local swappedCount = 0
+        local failedCount = 0
+        for i = 1, 12 do
+            local ce = EmoteSwapper.CurrentEmotes[i]
+            local se = EmoteSwapper.SelectedEmotes[i]
+            if ce ~= "" and se ~= "" then
+                if SwapEmoteNames(ce, se) then
+                    EmoteSwapper.SwappedPairs[ce] = se
+                    swappedCount = swappedCount + 1
+                else
+                    failedCount = failedCount + 1
+                end
+            end
+        end
+        local message = ""
+        if swappedCount > 0 then
+            message = "Swapped " .. tostring(swappedCount) .. " emote(s)"
+        end
+        if failedCount > 0 then
+            if message ~= "" then message = message .. " | " end
+            message = message .. "Failed " .. tostring(failedCount) .. " emote(s)"
+        end
+        if message == "" then message = "No emotes specified to swap" end
+        WindUI:Notify({
+            Title = "Emote Swapper",
+            Content = message,
+            Duration = 3
+        })
+    end
+})
+
+Tabs.EmoteChanger:Button({
+    Title = "Reset Emote Swap",
+    Icon = "rotate-ccw",
+    Callback = function()
+        if ResetEmoteNames() then
+            EmoteSwapper.SwappedPairs = {}
+            EmoteSwapper.PendingSwaps = {}
+            EmoteSwapper.PendingApply = false
+            for i = 1, 12 do
+                EmoteSwapper.CurrentEmotes[i] = ""
+                EmoteSwapper.SelectedEmotes[i] = ""
+                if EmoteSwapper.InputFields["CurrentEmote" .. i] then
+                    EmoteSwapper.InputFields["CurrentEmote" .. i]:Set("")
+                end
+                if EmoteSwapper.InputFields["SelectedEmote" .. i] then
+                    EmoteSwapper.InputFields["SelectedEmote" .. i]:Set("")
+                end
+            end
+            WindUI:Notify({
+                Title = "Emote Swapper",
+                Content = "All emotes restored!",
+                Duration = 3
+            })
+        else
+            WindUI:Notify({
+                Title = "Emote Swapper",
+                Content = "Failed to reset emotes!",
+                Duration = 3
+            })
+        end
+    end
+})
+
 -- Emote List Tab
 
 Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
@@ -1328,6 +1605,40 @@ player.CharacterAdded:Connect(function()
     handleSingleRespawn()
 end)
 
+player.CharacterRemoving:Connect(function()
+    if next(EmoteSwapper.SwappedPairs) then
+        ResetEmoteNames()
+    end
+end)
+
+player.CharacterAdded:Connect(function(character)
+    task.wait(1)
+    if CheckIfPlayerDowned() then return end
+    if next(EmoteSwapper.SwappedPairs) then
+        for currentEmote, selectedEmote in pairs(EmoteSwapper.SwappedPairs) do
+            SwapEmoteNames(currentEmote, selectedEmote)
+        end
+    end
+    if EmoteSwapper.PendingApply and #EmoteSwapper.PendingSwaps > 0 then
+        local swappedCount, failedCount = ProcessPendingSwaps()
+        local message = ""
+        if swappedCount > 0 then
+            message = "Swapped " .. tostring(swappedCount) .. " emote(s)"
+        end
+        if failedCount > 0 then
+            if message ~= "" then message = message .. " | " end
+            message = message .. "Failed " .. tostring(failedCount) .. " emote(s)"
+        end
+        if message ~= "" then
+            WindUI:Notify({
+                Title = "Emote Swapper",
+                Content = message,
+                Duration = 3
+            })
+        end
+    end
+end)
+
 if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players") then
     workspace.Game.Players.ChildAdded:Connect(function(child)
         if child.Name == player.Name then
@@ -1338,6 +1649,7 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
     workspace.Game.Players.ChildRemoved:Connect(function(child)
         if child.Name == player.Name then
             currentTag = nil
+            activeReplacement = false
             cleanUpLastEmoteFrame()
         end
     end)
