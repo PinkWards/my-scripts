@@ -1314,6 +1314,7 @@ local function InstallColaHook()
     ColaSettings.OldNamecall = mt.__namecall
 
     local lastBlock = 0
+    local autoRefreshRunning = false
 
     setreadonly(mt, false)
 
@@ -1343,6 +1344,27 @@ local function InstallColaHook()
                         end
                     end)
 
+                    if not autoRefreshRunning then
+                        autoRefreshRunning = true
+                        task.spawn(function()
+                            while ColaSettings.Active do
+                                task.wait(ColaSettings.Duration - 0.2)
+                                if ColaSettings.Active then
+                                    firesignal(
+                                        SpeedBoost.OnClientEvent,
+                                        "Cola",
+                                        ColaSettings.Speed,
+                                        ColaSettings.Duration,
+                                        Color3.fromRGB(199, 141, 93)
+                                    )
+                                else
+                                    break
+                                end
+                            end
+                            autoRefreshRunning = false
+                        end)
+                    end
+
                     return nil
                 end
             end
@@ -1358,6 +1380,10 @@ end
 local function UninstallColaHook()
     if not ColaSettings.HookInstalled then return end
 
+    ColaSettings.Active = false
+
+    task.wait(0.5)
+
     local mt = getrawmetatable(game)
 
     if ColaSettings.OldNamecall then
@@ -1368,17 +1394,6 @@ local function UninstallColaHook()
 
     ColaSettings.HookInstalled = false
     ColaSettings.OldNamecall = nil
-end
-
-local function ToggleInfiniteColaFixed(state)
-    ColaSettings.Active = state
-    State.InfiniteCola = state
-
-    if state then
-        InstallColaHook()
-    else
-        UninstallColaHook()
-    end
 end
 
 local function FixCola()
