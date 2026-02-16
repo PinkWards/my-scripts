@@ -82,11 +82,6 @@ local cachedEmoteModelFunction = nil
 local cachedCosmeticNames = nil
 local levD = {}
 
-local isReplacingEmote = false
-local replacementEmoteModel = nil -- tracks the replacement's EmoteModel so we don't destroy it
-local emoteModelWatcher = nil
-local emoteModelWatcher2 = nil
-
 local function safeRequire(moduleScript)
     local cached = requiredModuleCache[moduleScript]
     if cached ~= nil then
@@ -108,133 +103,11 @@ local function normalizeText(text)
     return cached
 end
 
-local function stopEmoteAnimations(humanoid)
-    if not humanoid then return end
-    local animator = humanoid:FindFirstChildOfClass("Animator")
-    if animator then
-        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-            local anim = track.Animation
-            if anim then
-                local emoteItems = ReplicatedStorage:FindFirstChild("Items")
-                local emotesFolder = emoteItems and emoteItems:FindFirstChild("Emotes")
-                if emotesFolder and anim:IsDescendantOf(emotesFolder) then
-                    track:Stop(0)
-                end
-            end
-        end
-    end
-end
-
-local function cleanupCurrentEmote(char)
-    if not char then return end
-    
-    local isR15 = char:GetAttribute("R15") == true
-    if isR15 then
-        local r15Visual = char:FindFirstChild("R15Visual")
-        if r15Visual then
-            stopEmoteAnimations(r15Visual:FindFirstChild("Visual_Humanoid"))
-        end
-    end
-    stopEmoteAnimations(char:FindFirstChildOfClass("Humanoid"))
-    
-    local emoteModel = char:FindFirstChild("EmoteModel")
-    if emoteModel then
-        emoteModel:Destroy()
-    end
-    
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        local emoteSound = hrp:FindFirstChild("EmoteSound")
-        if emoteSound then
-            emoteSound:Destroy()
-        end
-    end
-end
-
--- This watcher kills any EmoteModel that is NOT the one spawned by our replacement
-local function setupEmoteModelWatcher(char)
-    if emoteModelWatcher then
-        emoteModelWatcher:Disconnect()
-        emoteModelWatcher = nil
-    end
-    if emoteModelWatcher2 then
-        emoteModelWatcher2:Disconnect()
-        emoteModelWatcher2 = nil
-    end
-    
-    if not char then return end
-    
-    emoteModelWatcher = char.ChildAdded:Connect(function(child)
-        if child.Name ~= "EmoteModel" then return end
-        
-        -- If we are in the middle of replacing, we need to figure out
-        -- if this is the ORIGINAL emote's model or the REPLACEMENT's model
-        if isReplacingEmote then
-            -- If we haven't received the replacement model yet,
-            -- this is the original one that needs to die
-            if replacementEmoteModel == nil then
-                -- This is the original emote's item spawning late, kill it
-                task.wait()
-                if child.Parent then
-                    child:Destroy()
-                end
-            end
-            -- If replacementEmoteModel is set and matches this child, leave it alone
-            -- If it's a different one, it's the original, kill it
-            if replacementEmoteModel ~= nil and child ~= replacementEmoteModel then
-                task.wait()
-                if child.Parent then
-                    child:Destroy()
-                end
-            end
-        end
-    end)
-    
-    -- Also watch for duplicate EmoteModels after replacement is done
-    -- If somehow both exist, keep only the newest one (the replacement)
-    emoteModelWatcher2 = char.ChildAdded:Connect(function(child)
-        if child.Name ~= "EmoteModel" then return end
-        if not isReplacingEmote and replacementEmoteModel and replacementEmoteModel.Parent then
-            -- A new EmoteModel appeared while we already have our replacement
-            -- This shouldn't happen normally, but if it does, the replacement
-            -- is the one we want to keep
-            task.wait()
-            -- Count EmoteModels
-            local emoteModels = {}
-            for _, c in ipairs(char:GetChildren()) do
-                if c.Name == "EmoteModel" then
-                    table.insert(emoteModels, c)
-                end
-            end
-            if #emoteModels > 1 then
-                for _, em in ipairs(emoteModels) do
-                    if em ~= replacementEmoteModel then
-                        em:Destroy()
-                    end
-                end
-            end
-        end
-    end)
-end
-
 local function fireSelect(emoteName)
     if not currentTag then return end
     local tagNumber = tonumber(currentTag)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
     if not emoteName or emoteName == "" then return end
-    if isReplacingEmote then return end
-
-    isReplacingEmote = true
-    replacementEmoteModel = nil
-
-    if randomOptionEnabled and player.Character then
-        player.Character:SetAttribute("EmoteNum", math.random(1, 3))
-    elseif player.Character then
-        player.Character:SetAttribute("EmoteNum", emoteOption)
-    end
-
-    -- Clean up the original emote completely before firing replacement
-    cleanupCurrentEmote(player.Character)
 
     local bufferData = buffer.create(2)
     buffer.writeu8(bufferData, 0, tagNumber)
@@ -242,48 +115,6 @@ local function fireSelect(emoteName)
 
     if remoteSignal then
         firesignal(remoteSignal, bufferData, {emoteName})
-    end
-
-    -- Wait for the replacement EmoteModel to appear and tag it
-    local char = player.Character
-    if char then
-        task.spawn(function()
-            local startTime = tick()
-            while tick() - startTime < 3 do
-                local em = char:FindFirstChild("EmoteModel")
-                if em then
-                    replacementEmoteModel = em
-                    break
-                end
-                task.wait(0.05)
-            end
-            
-            -- After we've tagged the replacement model, wait a bit then
-            -- do a final cleanup of any duplicate EmoteModels
-            task.wait(0.5)
-            if char and char.Parent then
-                local emoteModels = {}
-                for _, c in ipairs(char:GetChildren()) do
-                    if c.Name == "EmoteModel" then
-                        table.insert(emoteModels, c)
-                    end
-                end
-                if #emoteModels > 1 and replacementEmoteModel and replacementEmoteModel.Parent then
-                    for _, em in ipairs(emoteModels) do
-                        if em ~= replacementEmoteModel then
-                            em:Destroy()
-                        end
-                    end
-                end
-            end
-            
-            task.wait(1.5)
-            isReplacingEmote = false
-        end)
-    else
-        task.delay(2, function()
-            isReplacingEmote = false
-        end)
     end
 end
 
@@ -304,20 +135,11 @@ local function setupHumanoidListeners(char)
 
     if not humanoid then return end
 
-    setupEmoteModelWatcher(char)
-
     humanoid.AnimationPlayed:Connect(function(track)
-        if isReplacingEmote then return end
-        
         local animation = track.Animation
         if not animation then return end
 
-        local emoteItems = ReplicatedStorage:FindFirstChild("Items")
-        if not emoteItems then return end
-        local emotesFolder = emoteItems:FindFirstChild("Emotes")
-        if not emotesFolder then return end
-
-        if not animation:IsDescendantOf(emotesFolder) then return end
+        if not animation:IsDescendantOf(ReplicatedStorage.Items.Emotes) then return end
 
         local emoteModule = animation:FindFirstAncestorWhichIsA("ModuleScript")
         if not emoteModule then return end
@@ -327,7 +149,13 @@ local function setupHumanoidListeners(char)
 
         for i = 1, MAX_SLOTS do
             if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-                if normalizeText(currentEmotes[i]) == normalizedPlaying then
+                local normalizedCurrent = normalizeText(currentEmotes[i])
+                if normalizedCurrent == normalizedPlaying then
+                    if randomOptionEnabled and player.Character then
+                        player.Character:SetAttribute("EmoteNum", math.random(1, 3))
+                    elseif player.Character then
+                        player.Character:SetAttribute("EmoteNum", emoteOption)
+                    end
                     fireSelect(selectEmotes[i])
                     break
                 end
@@ -567,8 +395,6 @@ local reapplyThread = nil
 local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
-    isReplacingEmote = false
-    replacementEmoteModel = nil
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -629,23 +455,23 @@ local cosmetic1, cosmetic2 = "", ""
 local isSwapped = false
 local cosmetic1Input, cosmetic2Input = nil, nil
 
-local function normalize(str) 
-    return str:gsub("%s+", ""):lower() 
-end 
+local function normalize(str)
+    return str:gsub("%s+", ""):lower()
+end
 
-local function levenshtein(s, t) 
-    local m, n = #s, #t 
-    for i = 0, m do 
+local function levenshtein(s, t)
+    local m, n = #s, #t
+    for i = 0, m do
         if not levD[i] then levD[i] = {} end
-        levD[i][0] = i 
-    end 
-    for j = 0, n do levD[0][j] = j end 
-    for i = 1, m do 
+        levD[i][0] = i
+    end
+    for j = 0, n do levD[0][j] = j end
+    for i = 1, m do
         local si = s:sub(i,i)
         local row = levD[i]
         local prevRow = levD[i-1]
-        for j = 1, n do 
-            local cost = (si == t:sub(j,j)) and 0 or 1 
+        for j = 1, n do
+            local cost = (si == t:sub(j,j)) and 0 or 1
             local del = prevRow[j] + 1
             local ins = row[j-1] + 1
             local sub = prevRow[j-1] + cost
@@ -654,18 +480,18 @@ local function levenshtein(s, t)
             else
                 row[j] = ins < sub and ins or sub
             end
-        end 
-    end 
-    return levD[m][n] 
-end 
+        end
+    end
+    return levD[m][n]
+end
 
-local function similarity(s, t) 
-    local nS, nT = normalize(s), normalize(t) 
+local function similarity(s, t)
+    local nS, nT = normalize(s), normalize(t)
     local maxLen = math.max(#nS, #nT)
     if maxLen == 0 then return 1 end
-    local dist = levenshtein(nS, nT) 
+    local dist = levenshtein(nS, nT)
     return 1 - dist / maxLen
-end 
+end
 
 local function GetCosmeticNames()
     if cachedCosmeticNames then return cachedCosmeticNames end
@@ -680,19 +506,19 @@ local function GetCosmeticNames()
     return cachedCosmeticNames
 end
 
-local function findSimilarCosmetic(name) 
+local function findSimilarCosmetic(name)
     local names = GetCosmeticNames()
-    local bestMatch = name 
-    local bestScore = 0.5 
-    for _, cName in ipairs(names) do 
-        local score = similarity(name, cName) 
-        if score > bestScore then 
-            bestScore = score 
+    local bestMatch = name
+    local bestScore = 0.5
+    for _, cName in ipairs(names) do
+        local score = similarity(name, cName)
+        if score > bestScore then
+            bestScore = score
             bestMatch = cName
-        end 
-    end 
-    return bestMatch 
-end 
+        end
+    end
+    return bestMatch
+end
 
 local function GetCosmeticsFolder()
     local items = ReplicatedStorage:FindFirstChild("Items")
@@ -700,31 +526,31 @@ local function GetCosmeticsFolder()
 end
 
 local function SwapCosmetics(silent)
-    if cosmetic1 == "" or cosmetic2 == "" then 
+    if cosmetic1 == "" or cosmetic2 == "" then
         return false, "Please enter both cosmetics"
     end
     if cosmetic1 == cosmetic2 then
         return false, "Cosmetics must be different"
     end
     local Cosmetics = GetCosmeticsFolder()
-    if not Cosmetics then 
+    if not Cosmetics then
         return false, "Cosmetics folder not found"
     end
-    local matchedCosmetic1 = findSimilarCosmetic(cosmetic1) 
-    local matchedCosmetic2 = findSimilarCosmetic(cosmetic2) 
-    local a = Cosmetics:FindFirstChild(matchedCosmetic1) 
-    local b = Cosmetics:FindFirstChild(matchedCosmetic2) 
-    if not a or not b then 
+    local matchedCosmetic1 = findSimilarCosmetic(cosmetic1)
+    local matchedCosmetic2 = findSimilarCosmetic(cosmetic2)
+    local a = Cosmetics:FindFirstChild(matchedCosmetic1)
+    local b = Cosmetics:FindFirstChild(matchedCosmetic2)
+    if not a or not b then
         return false, "Could not find cosmetics"
-    end 
-    local tempRoot = Instance.new("Folder", Cosmetics) 
-    tempRoot.Name = "__temp_swap" 
-    local tempA = Instance.new("Folder", tempRoot) 
-    local tempB = Instance.new("Folder", tempRoot) 
-    for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end 
-    for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end 
-    for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end 
-    for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end 
+    end
+    local tempRoot = Instance.new("Folder", Cosmetics)
+    tempRoot.Name = "__temp_swap"
+    local tempA = Instance.new("Folder", tempRoot)
+    local tempB = Instance.new("Folder", tempRoot)
+    for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end
+    for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end
+    for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end
+    for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end
     tempRoot:Destroy()
     cosmetic1 = matchedCosmetic1
     cosmetic2 = matchedCosmetic2
@@ -737,20 +563,20 @@ local function ResetCosmetics(silent)
         return false, "No cosmetics swapped"
     end
     local Cosmetics = GetCosmeticsFolder()
-    if not Cosmetics then 
+    if not Cosmetics then
         return false, "Cosmetics folder not found"
     end
-    local a = Cosmetics:FindFirstChild(cosmetic1) 
-    local b = Cosmetics:FindFirstChild(cosmetic2) 
+    local a = Cosmetics:FindFirstChild(cosmetic1)
+    local b = Cosmetics:FindFirstChild(cosmetic2)
     if a and b then
-        local tempRoot = Instance.new("Folder", Cosmetics) 
-        tempRoot.Name = "__temp_reset" 
-        local tempA = Instance.new("Folder", tempRoot) 
-        local tempB = Instance.new("Folder", tempRoot) 
-        for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end 
-        for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end 
-        for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end 
-        for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end 
+        local tempRoot = Instance.new("Folder", Cosmetics)
+        tempRoot.Name = "__temp_reset"
+        local tempA = Instance.new("Folder", tempRoot)
+        local tempB = Instance.new("Folder", tempRoot)
+        for _, c in ipairs(a:GetChildren()) do c.Parent = tempA end
+        for _, c in ipairs(b:GetChildren()) do c.Parent = tempB end
+        for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end
+        for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end
         tempRoot:Destroy()
         isSwapped = false
         return true, "Reset cosmetics"
@@ -1189,217 +1015,6 @@ Tabs.EmoteChanger:Button({
     end
 })
 
--- Emote Swapping Mode
-
-Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Emote Swapping Mode", TextSize = 20 })
-Tabs.EmoteChanger:Paragraph({
-    Title = "How it works",
-    Desc = "Swaps emote module names in ReplicatedStorage\nThis makes the game load different animations for your owned emotes"
-})
-Tabs.EmoteChanger:Divider()
-
-local EmoteSwapper = {
-    CurrentEmotes = {},
-    SelectedEmotes = {},
-    SwappedPairs = {},
-    InputFields = {},
-    PendingApply = false,
-    PendingSwaps = {}
-}
-
-for i = 1, 12 do
-    EmoteSwapper.CurrentEmotes[i] = ""
-    EmoteSwapper.SelectedEmotes[i] = ""
-end
-
-Tabs.EmoteChanger:Section({ Title = "Swap Current Emotes", TextSize = 16 })
-
-for i = 1, 12 do
-    EmoteSwapper.InputFields["CurrentEmote" .. i] = Tabs.EmoteChanger:Input({
-        Title = "Current Emote " .. i,
-        Placeholder = "Enter current emote name",
-        Value = "",
-        Callback = function(value)
-            EmoteSwapper.CurrentEmotes[i] = value
-        end
-    })
-end
-
-Tabs.EmoteChanger:Section({ Title = "Swap Selected Emotes", TextSize = 16 })
-
-for i = 1, 12 do
-    EmoteSwapper.InputFields["SelectedEmote" .. i] = Tabs.EmoteChanger:Input({
-        Title = "Select Emote " .. i,
-        Placeholder = "Enter replacement emote name",
-        Value = "",
-        Callback = function(value)
-            EmoteSwapper.SelectedEmotes[i] = value
-        end
-    })
-end
-
-local function SwapEmoteNames(currentName, selectedName)
-    local Items = ReplicatedStorage:FindFirstChild("Items")
-    if not Items then return false end
-    local EmotesFolder = Items:FindFirstChild("Emotes")
-    if not EmotesFolder then return false end
-    local currentEmoteObj = EmotesFolder:FindFirstChild(currentName)
-    local selectedEmoteObj = EmotesFolder:FindFirstChild(selectedName)
-    if currentEmoteObj and selectedEmoteObj then
-        local tempName = selectedName .. "_EmoteSwapTemp"
-        while EmotesFolder:FindFirstChild(tempName) do
-            tempName = tempName .. "_"
-        end
-        currentEmoteObj.Name = tempName
-        selectedEmoteObj.Name = currentName
-        currentEmoteObj.Name = selectedName
-        return true
-    end
-    return false
-end
-
-local function ResetEmoteNames()
-    local Items = ReplicatedStorage:FindFirstChild("Items")
-    if not Items then return false end
-    local EmotesFolder = Items:FindFirstChild("Emotes")
-    if not EmotesFolder then return false end
-    for currentEmote, selectedEmote in pairs(EmoteSwapper.SwappedPairs) do
-        local currentEmoteObj = EmotesFolder:FindFirstChild(selectedEmote)
-        local selectedEmoteObj = EmotesFolder:FindFirstChild(currentEmote)
-        if currentEmoteObj and selectedEmoteObj then
-            local tempName = currentEmote .. "_EmoteSwapTemp"
-            while EmotesFolder:FindFirstChild(tempName) do
-                tempName = tempName .. "_"
-            end
-            currentEmoteObj.Name = tempName
-            selectedEmoteObj.Name = selectedEmote
-            currentEmoteObj.Name = currentEmote
-        end
-    end
-    return true
-end
-
-local function ProcessPendingSwaps()
-    if not EmoteSwapper.PendingSwaps or #EmoteSwapper.PendingSwaps == 0 then return end
-    local swappedCount = 0
-    local failedCount = 0
-    for _, swapData in ipairs(EmoteSwapper.PendingSwaps) do
-        if SwapEmoteNames(swapData[1], swapData[2]) then
-            EmoteSwapper.SwappedPairs[swapData[1]] = swapData[2]
-            swappedCount = swappedCount + 1
-        else
-            failedCount = failedCount + 1
-        end
-    end
-    EmoteSwapper.PendingSwaps = {}
-    EmoteSwapper.PendingApply = false
-    return swappedCount, failedCount
-end
-
-local function CheckIfPlayerDead()
-    return not player.Character or not player.Character:FindFirstChild("Humanoid") or player.Character.Humanoid.Health <= 0
-end
-
-local function CheckIfPlayerDowned()
-    return player.Character and player.Character:GetAttribute("Downed")
-end
-
-Tabs.EmoteChanger:Divider()
-
-Tabs.EmoteChanger:Button({
-    Title = "Apply Emote Swap",
-    Icon = "refresh-cw",
-    Callback = function()
-        if CheckIfPlayerDead() and not CheckIfPlayerDowned() then
-            EmoteSwapper.PendingSwaps = {}
-            for i = 1, 12 do
-                local ce = EmoteSwapper.CurrentEmotes[i]
-                local se = EmoteSwapper.SelectedEmotes[i]
-                if ce ~= "" and se ~= "" then
-                    table.insert(EmoteSwapper.PendingSwaps, {ce, se})
-                end
-            end
-            if #EmoteSwapper.PendingSwaps > 0 then
-                EmoteSwapper.PendingApply = true
-                WindUI:Notify({
-                    Title = "Emote Swapper",
-                    Content = "Player is dead. Swap will apply on respawn.",
-                    Duration = 3
-                })
-            else
-                WindUI:Notify({
-                    Title = "Emote Swapper",
-                    Content = "No emotes specified to swap",
-                    Duration = 3
-                })
-            end
-            return
-        end
-        local swappedCount = 0
-        local failedCount = 0
-        for i = 1, 12 do
-            local ce = EmoteSwapper.CurrentEmotes[i]
-            local se = EmoteSwapper.SelectedEmotes[i]
-            if ce ~= "" and se ~= "" then
-                if SwapEmoteNames(ce, se) then
-                    EmoteSwapper.SwappedPairs[ce] = se
-                    swappedCount = swappedCount + 1
-                else
-                    failedCount = failedCount + 1
-                end
-            end
-        end
-        local message = ""
-        if swappedCount > 0 then
-            message = "Swapped " .. tostring(swappedCount) .. " emote(s)"
-        end
-        if failedCount > 0 then
-            if message ~= "" then message = message .. " | " end
-            message = message .. "Failed " .. tostring(failedCount) .. " emote(s)"
-        end
-        if message == "" then message = "No emotes specified to swap" end
-        WindUI:Notify({
-            Title = "Emote Swapper",
-            Content = message,
-            Duration = 3
-        })
-    end
-})
-
-Tabs.EmoteChanger:Button({
-    Title = "Reset Emote Swap",
-    Icon = "rotate-ccw",
-    Callback = function()
-        if ResetEmoteNames() then
-            EmoteSwapper.SwappedPairs = {}
-            EmoteSwapper.PendingSwaps = {}
-            EmoteSwapper.PendingApply = false
-            for i = 1, 12 do
-                EmoteSwapper.CurrentEmotes[i] = ""
-                EmoteSwapper.SelectedEmotes[i] = ""
-                if EmoteSwapper.InputFields["CurrentEmote" .. i] then
-                    EmoteSwapper.InputFields["CurrentEmote" .. i]:Set("")
-                end
-                if EmoteSwapper.InputFields["SelectedEmote" .. i] then
-                    EmoteSwapper.InputFields["SelectedEmote" .. i]:Set("")
-                end
-            end
-            WindUI:Notify({
-                Title = "Emote Swapper",
-                Content = "All emotes restored!",
-                Duration = 3
-            })
-        else
-            WindUI:Notify({
-                Title = "Emote Swapper",
-                Content = "Failed to reset emotes!",
-                Duration = 3
-            })
-        end
-    end
-})
-
 -- Emote List Tab
 
 Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
@@ -1721,40 +1336,6 @@ player.CharacterAdded:Connect(function()
     handleSingleRespawn()
 end)
 
-player.CharacterRemoving:Connect(function()
-    if next(EmoteSwapper.SwappedPairs) then
-        ResetEmoteNames()
-    end
-end)
-
-player.CharacterAdded:Connect(function(character)
-    task.wait(1)
-    if CheckIfPlayerDowned() then return end
-    if next(EmoteSwapper.SwappedPairs) then
-        for currentEmote, selectedEmote in pairs(EmoteSwapper.SwappedPairs) do
-            SwapEmoteNames(currentEmote, selectedEmote)
-        end
-    end
-    if EmoteSwapper.PendingApply and #EmoteSwapper.PendingSwaps > 0 then
-        local swappedCount, failedCount = ProcessPendingSwaps()
-        local message = ""
-        if swappedCount > 0 then
-            message = "Swapped " .. tostring(swappedCount) .. " emote(s)"
-        end
-        if failedCount > 0 then
-            if message ~= "" then message = message .. " | " end
-            message = message .. "Failed " .. tostring(failedCount) .. " emote(s)"
-        end
-        if message ~= "" then
-            WindUI:Notify({
-                Title = "Emote Swapper",
-                Content = message,
-                Duration = 3
-            })
-        end
-    end
-end)
-
 if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players") then
     workspace.Game.Players.ChildAdded:Connect(function(child)
         if child.Name == player.Name then
@@ -1765,8 +1346,6 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
     workspace.Game.Players.ChildRemoved:Connect(function(child)
         if child.Name == player.Name then
             currentTag = nil
-            isReplacingEmote = false
-            replacementEmoteModel = nil
             cleanUpLastEmoteFrame()
         end
     end)
