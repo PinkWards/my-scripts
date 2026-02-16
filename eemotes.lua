@@ -118,6 +118,8 @@ local function fireSelect(emoteName)
     end
 end
 
+local fireSelectCooldown = false
+
 local function setupHumanoidListeners(char)
     local isR15 = char:GetAttribute("R15") == true
     local humanoid
@@ -136,6 +138,8 @@ local function setupHumanoidListeners(char)
     if not humanoid then return end
 
     humanoid.AnimationPlayed:Connect(function(track)
+        if fireSelectCooldown then return end
+        
         local animation = track.Animation
         if not animation then return end
 
@@ -149,14 +153,18 @@ local function setupHumanoidListeners(char)
 
         for i = 1, MAX_SLOTS do
             if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-                local normalizedCurrent = normalizeText(currentEmotes[i])
-                if normalizedCurrent == normalizedPlaying then
+                if normalizeText(currentEmotes[i]) == normalizedPlaying then
                     if randomOptionEnabled and player.Character then
                         player.Character:SetAttribute("EmoteNum", math.random(1, 3))
                     elseif player.Character then
                         player.Character:SetAttribute("EmoteNum", emoteOption)
                     end
+                    
+                    fireSelectCooldown = true
                     fireSelect(selectEmotes[i])
+                    task.delay(2, function()
+                        fireSelectCooldown = false
+                    end)
                     break
                 end
             end
