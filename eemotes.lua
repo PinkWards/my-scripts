@@ -82,8 +82,9 @@ local cachedEmoteModelFunction = nil
 local cachedCosmeticNames = nil
 local levD = {}
 
-local activeReplacement = false
-local emoteModelWatcher = nil
+-- Track whether we are currently in the middle of replacing an emote
+-- so we know not to double-fire
+local isReplacingEmote = false
 
 local function safeRequire(moduleScript)
     local cached = requiredModuleCache[moduleScript]
@@ -123,9 +124,41 @@ local function stopEmoteAnimations(humanoid)
     end
 end
 
-local function cleanupEmoteVisuals(char)
-    if not char then return end
+local function getHumanoidForChar(char)
+    if not char then return nil end
+    local isR15 = char:GetAttribute("R15") == true
+    if isR15 then
+        local r15Visual = char:FindFirstChild("R15Visual")
+        if r15Visual then
+            local visualHumanoid = r15Visual:FindFirstChild("Visual_Humanoid")
+            if visualHumanoid then
+                return visualHumanoid
+            end
+        end
+    end
+    return char:FindFirstChildOfClass("Humanoid")
+end
 
+local function cleanupCurrentEmote(char)
+    if not char then return end
+    
+    -- Stop emote animations on the correct humanoid
+    local isR15 = char:GetAttribute("R15") == true
+    if isR15 then
+        local r15Visual = char:FindFirstChild("R15Visual")
+        if r15Visual then
+            stopEmoteAnimations(r15Visual:FindFirstChild("Visual_Humanoid"))
+        end
+    end
+    stopEmoteAnimations(char:FindFirstChildOfClass("Humanoid"))
+    
+    -- Remove old emote model (the item prop)
+    local emoteModel = char:FindFirstChild("EmoteModel")
+    if emoteModel then
+        emoteModel:Destroy()
+    end
+    
+    -- Remove emote sound
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp then
         local emoteSound = hrp:FindFirstChild("EmoteSound")
@@ -133,41 +166,6 @@ local function cleanupEmoteVisuals(char)
             emoteSound:Destroy()
         end
     end
-
-    local isR15 = char:GetAttribute("R15") == true
-    if isR15 then
-        local r15Visual = char:FindFirstChild("R15Visual")
-        if r15Visual then
-            local visualHumanoid = r15Visual:FindFirstChild("Visual_Humanoid")
-            stopEmoteAnimations(visualHumanoid)
-        end
-    end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    stopEmoteAnimations(humanoid)
-end
-
-local function setupEmoteModelWatcher(char)
-    if emoteModelWatcher then
-        emoteModelWatcher:Disconnect()
-        emoteModelWatcher = nil
-    end
-
-    if not char then return end
-
-    local expectingReplacement = false
-
-    emoteModelWatcher = char.ChildAdded:Connect(function(child)
-        if child.Name == "EmoteModel" and activeReplacement then
-            task.wait()
-            if child.Parent and activeReplacement and not expectingReplacement then
-                child:Destroy()
-                expectingReplacement = true
-                task.delay(1.5, function()
-                    expectingReplacement = false
-                end)
-            end
-        end
-    end)
 end
 
 local function fireSelect(emoteName)
@@ -175,6 +173,9 @@ local function fireSelect(emoteName)
     local tagNumber = tonumber(currentTag)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
     if not emoteName or emoteName == "" then return end
+    if isReplacingEmote then return end
+
+    isReplacingEmote = true
 
     if randomOptionEnabled and player.Character then
         player.Character:SetAttribute("EmoteNum", math.random(1, 3))
@@ -182,32 +183,8 @@ local function fireSelect(emoteName)
         player.Character:SetAttribute("EmoteNum", emoteOption)
     end
 
-    local char = player.Character
-    if char then
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            local emoteSound = hrp:FindFirstChild("EmoteSound")
-            if emoteSound then
-                emoteSound:Destroy()
-            end
-        end
-
-        local isR15 = char:GetAttribute("R15") == true
-        if isR15 then
-            local r15Visual = char:FindFirstChild("R15Visual")
-            if r15Visual then
-                stopEmoteAnimations(r15Visual:FindFirstChild("Visual_Humanoid"))
-            end
-        end
-        stopEmoteAnimations(char:FindFirstChildOfClass("Humanoid"))
-
-        local oldEmoteModel = char:FindFirstChild("EmoteModel")
-        if oldEmoteModel then
-            oldEmoteModel:Destroy()
-        end
-    end
-
-    activeReplacement = true
+    -- Clean up old emote BEFORE firing the replacement
+    cleanupCurrentEmote(player.Character)
 
     local bufferData = buffer.create(2)
     buffer.writeu8(bufferData, 0, tagNumber)
@@ -217,8 +194,9 @@ local function fireSelect(emoteName)
         firesignal(remoteSignal, bufferData, {emoteName})
     end
 
-    task.delay(1.5, function()
-        activeReplacement = false
+    -- Give time for the replacement emote + item to fully load
+    task.delay(2, function()
+        isReplacingEmote = false
     end)
 end
 
@@ -239,9 +217,10 @@ local function setupHumanoidListeners(char)
 
     if not humanoid then return end
 
-    setupEmoteModelWatcher(char)
-
     humanoid.AnimationPlayed:Connect(function(track)
+        -- If we are currently replacing, ignore this animation
+        if isReplacingEmote then return end
+        
         local animation = track.Animation
         if not animation then return end
 
@@ -500,7 +479,7 @@ local reapplyThread = nil
 local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
-    activeReplacement = false
+    isReplacingEmote = false
     if reapplyThread then
         pcall(function() task.cancel(reapplyThread) end)
         reapplyThread = nil
@@ -1697,7 +1676,7 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
     workspace.Game.Players.ChildRemoved:Connect(function(child)
         if child.Name == player.Name then
             currentTag = nil
-            activeReplacement = false
+            isReplacingEmote = false
             cleanUpLastEmoteFrame()
         end
     end)
