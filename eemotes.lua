@@ -42,11 +42,15 @@ local Tabs = {
     Settings = FeatureSection:Tab({ Title = "Settings", Icon = "settings" })
 }
 
--- === CORE VARIABLES (copied from working script's approach) ===
+local HttpService = game:GetService("HttpService")
+
+-- ============================================================
+-- CORE EMOTE CHANGER (EXACT COPY FROM WORKING SCRIPT)
+-- DO NOT MODIFY ANYTHING IN THIS SECTION
+-- ============================================================
 
 player = game:GetService("Players").LocalPlayer
 ReplicatedStorage = game:GetService("ReplicatedStorage")
-local HttpService = game:GetService("HttpService")
 
 emoteModelScript = nil
 originalEmoteData = {}
@@ -73,14 +77,6 @@ remoteSignal = PassCharacterInfo and PassCharacterInfo.OnClientEvent
 
 emoteNameCache = {}
 normalizedCache = {}
-
-local allEmotes = {}
-local SAVE_FOLDER = "DaraHub"
-local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
-local cachedCosmeticNames = nil
-local levD = {}
-
--- === CORE FUNCTIONS (exact copy from working script) ===
 
 function fireSelect(emoteName)
     if not currentTag then return end
@@ -453,13 +449,27 @@ function handleSingleRespawn()
     end
 end
 
--- === COSMETICS ===
+-- ============================================================
+-- END OF CORE EMOTE CHANGER (DO NOT MODIFY ABOVE)
+-- ============================================================
 
+-- === EXTRA VARIABLES ===
+
+local allEmotes = {}
+local SAVE_FOLDER = "DaraHub"
+local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
+local cachedCosmeticNames = nil
+local levD = {}
 local cosmetic1, cosmetic2 = "", ""
 local isSwapped = false
 local cosmetic1Input, cosmetic2Input = nil, nil
+local allConfigs = {}
+local currentConfigName = ""
+local configDropdown = nil
 
-local function normalize(str)
+-- === COSMETICS ===
+
+local function cosmeticNormalize(str)
     return str:gsub("%s+", ""):lower()
 end
 
@@ -490,7 +500,7 @@ local function levenshtein(s, t)
 end
 
 local function similarity(s, t)
-    local nS, nT = normalize(s), normalize(t)
+    local nS, nT = cosmeticNormalize(s), cosmeticNormalize(t)
     local maxLen = math.max(#nS, #nT)
     if maxLen == 0 then return 1 end
     return 1 - levenshtein(nS, nT) / maxLen
@@ -533,10 +543,10 @@ local function SwapCosmetics(silent)
     if cosmetic1 == cosmetic2 then return false, "Cosmetics must be different" end
     local Cosmetics = GetCosmeticsFolder()
     if not Cosmetics then return false, "Cosmetics folder not found" end
-    local matchedCosmetic1 = findSimilarCosmetic(cosmetic1)
-    local matchedCosmetic2 = findSimilarCosmetic(cosmetic2)
-    local a = Cosmetics:FindFirstChild(matchedCosmetic1)
-    local b = Cosmetics:FindFirstChild(matchedCosmetic2)
+    local m1 = findSimilarCosmetic(cosmetic1)
+    local m2 = findSimilarCosmetic(cosmetic2)
+    local a = Cosmetics:FindFirstChild(m1)
+    local b = Cosmetics:FindFirstChild(m2)
     if not a or not b then return false, "Could not find cosmetics" end
     local tempRoot = Instance.new("Folder", Cosmetics)
     tempRoot.Name = "__temp_swap"
@@ -547,10 +557,10 @@ local function SwapCosmetics(silent)
     for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end
     for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end
     tempRoot:Destroy()
-    cosmetic1 = matchedCosmetic1
-    cosmetic2 = matchedCosmetic2
+    cosmetic1 = m1
+    cosmetic2 = m2
     isSwapped = true
-    return true, "Swapped " .. matchedCosmetic1 .. " and " .. matchedCosmetic2
+    return true, "Swapped " .. m1 .. " and " .. m2
 end
 
 local function ResetCosmetics(silent)
@@ -576,12 +586,6 @@ local function ResetCosmetics(silent)
 end
 
 -- === CONFIG SYSTEM ===
-
-local allConfigs = {}
-local currentConfigName = ""
-local configDropdown = nil
-local emoteOption = 1
-local randomOptionEnabled = true
 
 local function EnsureFolder()
     if not isfolder then return end
@@ -631,12 +635,9 @@ end
 local function CreateConfig(name)
     if name == "" then return false, "Name cannot be empty" end
     if allConfigs[name] then return false, "Config already exists" end
-    allConfigs[name] = {
-        currentEmotes = {"", "", "", "", "", "", "", "", "", "", "", ""},
-        selectEmotes = {"", "", "", "", "", "", "", "", "", "", "", ""},
-        emoteOption = 1, randomOptionEnabled = true,
-        cosmetic1 = "", cosmetic2 = ""
-    }
+    local ce, se = {}, {}
+    for i = 1, 12 do ce[i] = ""; se[i] = "" end
+    allConfigs[name] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = "", cosmetic2 = "" }
     currentConfigName = name
     SaveAllConfigs()
     return true, "Config created: " .. name
@@ -646,11 +647,7 @@ local function SaveToConfig(name)
     if name == "" then return false, "No config selected" end
     local ce, se = {}, {}
     for i = 1, 12 do ce[i] = currentEmotes[i]; se[i] = selectEmotes[i] end
-    allConfigs[name] = {
-        currentEmotes = ce, selectEmotes = se,
-        emoteOption = emoteOption, randomOptionEnabled = randomOptionEnabled,
-        cosmetic1 = cosmetic1, cosmetic2 = cosmetic2
-    }
+    allConfigs[name] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = cosmetic1, cosmetic2 = cosmetic2 }
     currentConfigName = name
     SaveAllConfigs()
     return true, "Saved to " .. name
@@ -663,8 +660,6 @@ local function LoadFromConfig(name)
         currentEmotes[i] = (config.currentEmotes and config.currentEmotes[i]) or ""
         selectEmotes[i] = (config.selectEmotes and config.selectEmotes[i]) or ""
     end
-    emoteOption = config.emoteOption or 1
-    randomOptionEnabled = config.randomOptionEnabled ~= false
     cosmetic1 = config.cosmetic1 or ""
     cosmetic2 = config.cosmetic2 or ""
     currentConfigName = name
@@ -701,12 +696,7 @@ local function DuplicateConfig(name, newName)
         ce[i] = (o.currentEmotes and o.currentEmotes[i]) or ""
         se[i] = (o.selectEmotes and o.selectEmotes[i]) or ""
     end
-    allConfigs[newName] = {
-        currentEmotes = ce, selectEmotes = se,
-        emoteOption = o.emoteOption or 1,
-        randomOptionEnabled = o.randomOptionEnabled ~= false,
-        cosmetic1 = o.cosmetic1 or "", cosmetic2 = o.cosmetic2 or ""
-    }
+    allConfigs[newName] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = o.cosmetic1 or "", cosmetic2 = o.cosmetic2 or "" }
     SaveAllConfigs()
     return true, "Duplicated as " .. newName
 end
@@ -715,13 +705,13 @@ end
 
 local function ScanEmotes()
     allEmotes = {}
-    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
-    if emotesFolder then
-        emotesFolder = emotesFolder:FindFirstChild("Emotes")
-        if emotesFolder then
-            for _, emoteModule in ipairs(emotesFolder:GetChildren()) do
-                if emoteModule:IsA("ModuleScript") then
-                    allEmotes[#allEmotes + 1] = emoteModule.Name
+    local ef = ReplicatedStorage:FindFirstChild("Items")
+    if ef then
+        ef = ef:FindFirstChild("Emotes")
+        if ef then
+            for _, em in ipairs(ef:GetChildren()) do
+                if em:IsA("ModuleScript") then
+                    allEmotes[#allEmotes + 1] = em.Name
                 end
             end
         end
@@ -730,15 +720,13 @@ local function ScanEmotes()
     return allEmotes
 end
 
--- === UI HELPERS ===
-
-local shuffleToggle, manualDropdown
+-- === UI HELPER ===
 
 local function UpdateAllUI()
     for i = 1, 12 do
         pcall(function()
-            if currentEmoteInputs[i] then currentEmoteInputs[i]:Set(currentEmotes[i]) end
-            if selectEmoteInputs[i] then selectEmoteInputs[i]:Set(selectEmotes[i]) end
+            if currentEmoteInputs[i] and currentEmoteInputs[i].Set then currentEmoteInputs[i]:Set(currentEmotes[i]) end
+            if selectEmoteInputs[i] and selectEmoteInputs[i].Set then selectEmoteInputs[i]:Set(selectEmotes[i]) end
         end)
     end
     pcall(function()
@@ -747,7 +735,9 @@ local function UpdateAllUI()
     end)
 end
 
--- === EMOTE CHANGER TAB ===
+-- ============================================================
+-- EMOTE CHANGER TAB
+-- ============================================================
 
 Tabs.EmoteChanger:Section({ Title = "Emote Changer", TextSize = 20 })
 Tabs.EmoteChanger:Paragraph({
@@ -760,7 +750,6 @@ Tabs.EmoteChanger:Section({ Title = "Animation Options", TextSize = 16 })
 
 EmoteChangerEmoteOption = Tabs.EmoteChanger:Input({
     Title = "Emote Possible option",
-    Flag = "EmoteChangerEmoteOption",
     Desc = "Higher Value may Broke emote animation recommend Use 1-3 (0 or 'Random' for random)",
     Placeholder = "0",
     Value = "0",
@@ -790,7 +779,7 @@ EmoteChangerEmoteOption = Tabs.EmoteChanger:Input({
 })
 
 Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Emote Slots", TextSize = 16 })
+Tabs.EmoteChanger:Section({ Title = "Current Emotes", TextSize = 16 })
 
 for i = 1, 12 do
     currentEmoteInputs[i] = Tabs.EmoteChanger:Input({
@@ -802,6 +791,7 @@ for i = 1, 12 do
 end
 
 Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Select Emotes", TextSize = 16 })
 
 for i = 1, 12 do
     selectEmoteInputs[i] = Tabs.EmoteChanger:Input({
@@ -980,7 +970,9 @@ EmoteChangerEmoteReset = Tabs.EmoteChanger:Button({
     end
 })
 
--- === EMOTE LIST TAB ===
+-- ============================================================
+-- EMOTE LIST TAB
+-- ============================================================
 
 Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
 Tabs.EmoteList:Paragraph({ Title = "All Available Emotes", Desc = "Click any emote to copy its name" })
@@ -1017,7 +1009,9 @@ task.spawn(function()
     end
 end)
 
--- === VISUALS TAB ===
+-- ============================================================
+-- VISUALS TAB
+-- ============================================================
 
 Tabs.Visuals:Section({ Title = "Cosmetics Changer", TextSize = 20 })
 Tabs.Visuals:Paragraph({ Title = "How to use", Desc = "Your Cosmetic = what you own | Target = what you want" })
@@ -1040,8 +1034,7 @@ cosmetic2Input = Tabs.Visuals:Input({
 Tabs.Visuals:Divider()
 
 Tabs.Visuals:Button({
-    Title = "Apply Cosmetic Swap",
-    Icon = "check",
+    Title = "Apply Cosmetic Swap", Icon = "check",
     Callback = function()
         if isSwapped then ResetCosmetics(true) end
         local success, msg = SwapCosmetics()
@@ -1051,8 +1044,7 @@ Tabs.Visuals:Button({
 })
 
 Tabs.Visuals:Button({
-    Title = "Reset Cosmetics",
-    Icon = "rotate-ccw",
+    Title = "Reset Cosmetics", Icon = "rotate-ccw",
     Callback = function()
         local success, msg = ResetCosmetics()
         WindUI:Notify({ Title = "Cosmetics", Content = msg, Duration = 2 })
@@ -1074,7 +1066,9 @@ function UpdateSwapStatus()
     end)
 end
 
--- === SETTINGS TAB ===
+-- ============================================================
+-- SETTINGS TAB
+-- ============================================================
 
 Tabs.Settings:Section({ Title = "Config Profiles", TextSize = 20 })
 Tabs.Settings:Paragraph({ Title = "Manage Configs", Desc = "Saves emotes + cosmetics" })
@@ -1116,12 +1110,10 @@ configDropdown = Tabs.Settings:Dropdown({
                 UpdateAllUI()
                 UpdateConfigDisplay()
                 UpdateSwapStatus()
-                -- Auto apply cosmetics
                 if cosmetic1 ~= "" and cosmetic2 ~= "" and not isSwapped then
                     SwapCosmetics(true)
                     UpdateSwapStatus()
                 end
-                -- Auto apply emote wheel
                 cleanUpLastEmoteFrame()
                 emoteFrame = getEmoteFrame()
                 if emoteFrame then
@@ -1245,7 +1237,9 @@ Tabs.Settings:Button({ Title = "Refresh List", Icon = "refresh-cw", Callback = f
 Tabs.Settings:Divider()
 Tabs.Settings:Paragraph({ Title = "Info", Desc = "Press L to toggle UI\nVisual only - you see replacement, others see your real emote" })
 
--- === INITIALIZE ===
+-- ============================================================
+-- INITIALIZE
+-- ============================================================
 
 findEmoteModelScript()
 
