@@ -109,10 +109,8 @@ end
 local function cleanupEmoteVisuals(char)
     if not char then return end
     
-    local emoteModel = char:FindFirstChild("EmoteModel")
-    if emoteModel then
-        emoteModel:Destroy()
-    end
+    -- DON'T destroy EmoteModel here - the replacement needs it
+    -- Only clean up the sound and stop animations
     
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if hrp then
@@ -122,8 +120,8 @@ local function cleanupEmoteVisuals(char)
         end
     end
     
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    if humanoid then
+    local function stopEmoteAnimations(humanoid)
+        if not humanoid then return end
         local animator = humanoid:FindFirstChildOfClass("Animator")
         if animator then
             for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
@@ -138,6 +136,169 @@ local function cleanupEmoteVisuals(char)
             end
         end
     end
+    
+    -- Handle both R15 and R6
+    local isR15 = char:GetAttribute("R15") == true
+    if isR15 then
+        local r15Visual = char:FindFirstChild("R15Visual")
+        if r15Visual then
+            local visualHumanoid = r15Visual:FindFirstChild("Visual_Humanoid")
+            stopEmoteAnimations(visualHumanoid)
+        end
+    end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    stopEmoteAnimations(humanoid)
+end
+
+local function setupEmoteModelWatcher(char)
+    if emoteModelWatcher then
+        emoteModelWatcher:Disconnect()
+        emoteModelWatcher = nil
+    end
+    
+    if not char then return end
+    
+    -- Track whether we're expecting a replacement model
+    local expectingReplacement = false
+    
+    emoteModelWatcher = char.ChildAdded:Connect(function(child)
+        if child.Name == "EmoteModel" and activeReplacement then
+            -- First EmoteModel during replacement is the OLD one we want to remove
+            -- But we need to let the NEW one (from fireSelect) through
+            -- The activeReplacement flag handles this - we destroy the first one
+            -- and the replacement system will add the correct one
+            task.wait()
+            if child.Parent and activeReplacement and not expectingReplacement then
+                -- This is the original emote model, destroy it
+                child:Destroy()
+                expectingReplacement = true
+                task.delay(1, function()
+                    expectingReplacement = false
+                end)
+            end
+        end
+    end)
+end
+
+local function fireSelect(emoteName)
+    if not currentTag then return end
+    local tagNumber = tonumber(currentTag)
+    if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
+    if not emoteName or emoteName == "" then return end
+
+    if randomOptionEnabled and player.Character then
+        player.Character:SetAttribute("EmoteNum", math.random(1, 3))
+    elseif player.Character then
+        player.Character:SetAttribute("EmoteNum", emoteOption)
+    end
+
+    -- Clean up old emote visuals but NOT the EmoteModel yet
+    local char = player.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local emoteSound = hrp:FindFirstChild("EmoteSound")
+            if emoteSound then
+                emoteSound:Destroy()
+            end
+        end
+        
+        -- Stop old emote animations
+        local function stopEmoteAnims(humanoid)
+            if not humanoid then return end
+            local animator = humanoid:FindFirstChildOfClass("Animator")
+            if animator then
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                    local anim = track.Animation
+                    if anim then
+                        local emoteItems = ReplicatedStorage:FindFirstChild("Items")
+                        local emotesFolder = emoteItems and emoteItems:FindFirstChild("Emotes")
+                        if emotesFolder and anim:IsDescendantOf(emotesFolder) then
+                            track:Stop(0)
+                        end
+                    end
+                end
+            end
+        end
+        
+        local isR15 = char:GetAttribute("R15") == true
+        if isR15 then
+            local r15Visual = char:FindFirstChild("R15Visual")
+            if r15Visual then
+                stopEmoteAnims(r15Visual:FindFirstChild("Visual_Humanoid"))
+            end
+        end
+        stopEmoteAnims(char:FindFirstChildOfClass("Humanoid"))
+        
+        -- Destroy old EmoteModel right before firing the replacement
+        local oldEmoteModel = char:FindFirstChild("EmoteModel")
+        if oldEmoteModel then
+            oldEmoteModel:Destroy()
+        end
+    end
+
+    activeReplacement = true
+    
+    local bufferData = buffer.create(2)
+    buffer.writeu8(bufferData, 0, tagNumber)
+    buffer.writeu8(bufferData, 1, 17)
+
+    if remoteSignal then
+        firesignal(remoteSignal, bufferData, {emoteName})
+    end
+    
+    task.delay(1.5, function()
+        activeReplacement = false
+    end)
+end
+
+local function setupHumanoidListeners(char)
+    -- Handle R15 characters
+    local isR15 = char:GetAttribute("R15") == true
+    local humanoid
+    
+    if isR15 then
+        local r15Visual = char:WaitForChild("R15Visual", 5)
+        if r15Visual then
+            humanoid = r15Visual:WaitForChild("Visual_Humanoid", 5)
+        end
+    end
+    
+    -- Fallback to regular Humanoid
+    if not humanoid then
+        humanoid = char:WaitForChild("Humanoid", 5)
+    end
+    
+    if not humanoid then return end
+    
+    setupEmoteModelWatcher(char)
+
+    humanoid.AnimationPlayed:Connect(function(track)
+        local animation = track.Animation
+        if not animation then return end
+        
+        local emoteItems = ReplicatedStorage:FindFirstChild("Items")
+        if not emoteItems then return end
+        local emotesFolder = emoteItems:FindFirstChild("Emotes")
+        if not emotesFolder then return end
+        
+        if not animation:IsDescendantOf(emotesFolder) then return end
+
+        local emoteModule = animation:FindFirstAncestorWhichIsA("ModuleScript")
+        if not emoteModule then return end
+
+        local currentEmoteName = emoteModule.Name
+        local normalizedPlaying = normalizeText(currentEmoteName)
+
+        for i = 1, MAX_SLOTS do
+            if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
+                if normalizeText(currentEmotes[i]) == normalizedPlaying then
+                    fireSelect(selectEmotes[i])
+                    break
+                end
+            end
+        end
+    end)
 end
 
 local function setupEmoteModelWatcher(char)
