@@ -1928,7 +1928,7 @@ local function CreateMainGUI()
     if GUI then SafeCall(function() GUI:Destroy() end) end
     
     GUI = Instance.new("ScreenGui")
-    GUI.Name = "EvadeHelper"
+    GUI.Name = "Evad3"
     GUI.ResetOnSpawn = false
     GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     SafeCall(function() GUI.Parent = game:GetService("CoreGui") end)
@@ -2122,12 +2122,20 @@ local function CreateMainGUI()
     presetLabel.Parent = content
     
     local presetX = 60
+    local presetRow = 0
+    local maxRowWidth = 250
+    
     for _, preset in ipairs(ColaSpeedPresets) do
         local btnName = "Cola" .. preset.name
         local btnText = string.format("%.1fx", preset.speed)
-        local btnWidth = #btnText * 7 + 16
+        local btnWidth = 38
         
-        local btn = CreateSmallButton(content, btnName, btnText, UDim2.new(0, presetX, 0, y + 2), UDim2.new(0, btnWidth, 0, 26), function()
+        if presetX + btnWidth > maxRowWidth then
+            presetX = 8
+            presetRow = presetRow + 1
+        end
+        
+        local btn = CreateSmallButton(content, btnName, btnText, UDim2.new(0, presetX, 0, y + 2 + (presetRow * 30)), UDim2.new(0, btnWidth, 0, 26), function()
             ColaSettings.Speed = preset.speed
             UpdateSliderUI(preset.speed)
             UpdateGUI()
@@ -2137,7 +2145,7 @@ local function CreateMainGUI()
         presetX = presetX + btnWidth + 4
     end
     
-    y = y + 34
+    y = y + 34 + (presetRow * 30)
     
     local sliderHolder = Instance.new("Frame")
     sliderHolder.Name = "SliderHolder"
