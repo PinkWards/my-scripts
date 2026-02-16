@@ -66,24 +66,24 @@ local State = {
 
 local Config = {
     FOV = 120,
-    DangerThreshold = 50,
-    SafeDistance = 80
+    DangerThreshold = 60,
+    SafeDistance = 90
 }
 
 local BounceConfig = {
     Power = 100,
-    Boost = 150,
-    Cooldown = 0.15,
-    AirDuration = 10,
-    AirGain = 8.0,
-    AirMax = 280
+    Boost = 190,
+    Cooldown = 0.9,
+    AirDuration = 13,
+    AirGain = 10,
+    AirMax = 300
 }
 
 local EdgeConfig = {
     Boost = 20,
     MinSpeed = 3,
     Cooldown = 0.12,
-    MinEdge = 0.3,
+    MinEdge = 0.4,
     LastTime = 0,
     DetectionRange = 2.5,
     RayDepth = 5
@@ -117,11 +117,11 @@ local ColaSpeedPresets = {
 local BhopConfig = {
     PreJumpDistance = 4.5,
     PreJumpVelThreshold = -2,
-    GroundRayLength = 3.0,
-    SlopeMaxAngle = 45,
+    GroundRayLength = 2.8,
+    SlopeMaxAngle = 40,
     SpeedPreserveEnabled = true,
-    MinPreserveSpeed = 5,
-    LandingBoostFactor = 1.02,
+    MinPreserveSpeed = 10,
+    LandingBoostFactor = 2.02,
     JumpQueueWindow = 0.08,
     ConsecutiveJumpBonus = 0.005,
     MaxConsecutiveBonus = 0.05,
