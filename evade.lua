@@ -90,7 +90,7 @@ local EdgeConfig = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- COLA SETTINGS (custom speed/duration, no infinite loop)
+-- COLA SETTINGS
 -- ═══════════════════════════════════════════════════════════════
 
 local ColaSettings = {
@@ -171,6 +171,12 @@ local JumpQueued = false
 local LastGroundCheckResult = false
 local LastGroundCheckTick = 0
 local GroundCheckCacheTime = 0.016
+
+-- Memory cleanup tracking
+local LastGCTime = 0
+local GC_INTERVAL = 60 -- Run garbage collection hint every 60 seconds
+local LastCacheCleanup = 0
+local CACHE_CLEANUP_INTERVAL = 30
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -256,7 +262,7 @@ end
 
 local function UpdateRayFilter()
     local now = tick()
-    if now - LastRayFilterUpdate < 1.0 then return end
+    if now - LastRayFilterUpdate < 2.0 then return end -- Increased from 1.0 to 2.0
     LastRayFilterUpdate = now
     local filterList = {}
     local character = LocalPlayer.Character
@@ -314,11 +320,55 @@ task.spawn(function()
     Modes = GetNamesFromPath("Info.Gamemodes")
 end)
 
+-- Periodic memory/cache cleanup to prevent long-session lag
+local function PeriodicCleanup()
+    local now = tick()
+    
+    -- Clean stale cached data
+    if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
+        LastCacheCleanup = now
+        
+        -- Clear bot cache to force refresh (prevents stale references)
+        for i = 1, #CachedBots do CachedBots[i] = nil end
+        LastBotCheck = 0
+        
+        -- Clear item cache entries with dead references
+        local validCount = 0
+        for i = 1, #CachedItems do
+            local item = CachedItems[i]
+            if item and item.object and item.object.Parent then
+                validCount = validCount + 1
+                if validCount ~= i then
+                    CachedItems[validCount] = item
+                end
+            end
+        end
+        for i = validCount + 1, #CachedItems do
+            CachedItems[i] = nil
+        end
+        
+        -- Re-check CachedGame reference
+        if CachedGame and not CachedGame.Parent then
+            CachedGame = Workspace:FindFirstChild("Game")
+        end
+    end
+    
+    -- Hint garbage collector periodically
+    if now - LastGCTime >= GC_INTERVAL then
+        LastGCTime = now
+        -- Collect garbage in small steps to avoid frame drops
+        pcall(function()
+            collectgarbage("step", 100)
+        end)
+    end
+end
+
 local function CleanupAll()
     for _, conn in pairs(Connections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(Connections)
     for _, conn in pairs(EdgeTouchConnections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(EdgeTouchConnections)
+    if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
     table.clear(CachedBots)
@@ -514,7 +564,7 @@ end
 local LastBotCheck = 0
 local function GetBots()
     local now = tick()
-    if now - LastBotCheck < 0.15 then return CachedBots end
+    if now - LastBotCheck < 0.2 then return CachedBots end -- Increased from 0.15
     LastBotCheck = now
     if not NPCLoaded then LoadNPCs() end
     local count = 0
@@ -537,7 +587,7 @@ end
 local LastItemCheck = 0
 local function GetItems()
     local now = tick()
-    if now - LastItemCheck < 0.15 then return CachedItems end
+    if now - LastItemCheck < 0.2 then return CachedItems end -- Increased from 0.15
     LastItemCheck = now
     local count = 0
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
@@ -620,7 +670,7 @@ end
 local function AntiNextbot()
     if not State.AntiNextbot then return end
     local now = tick()
-    if now - LastAntiCheck < 0.2 then return end
+    if now - LastAntiCheck < 0.25 then return end -- Increased from 0.2
     LastAntiCheck = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -641,7 +691,7 @@ local LastFarmTick = 0
 local function AutoFarm()
     if not State.AutoFarm then return end
     local now = tick()
-    if now - LastFarmTick < 0.08 then return end
+    if now - LastFarmTick < 0.1 then return end -- Increased from 0.08
     LastFarmTick = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -969,8 +1019,7 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- COLA SYSTEM (blocks server, custom speed/duration, works like normal cola)
--- Drink cola -> server blocked -> custom boost applied -> wears off normally
+-- COLA SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local function InstallColaHook()
@@ -1005,7 +1054,6 @@ local function InstallColaHook()
                     end
                     lastBlock = now
 
-                    -- Block server call, apply custom boost locally
                     task.spawn(function()
                         task.wait(0.3)
                         if ColaSettings.Active then
@@ -1129,8 +1177,19 @@ local function StopModeVoting() State.VoteMode = false end
 -- GUI
 -- ═══════════════════════════════════════════════════════════════
 
+-- Reusable TweenInfo objects to avoid creating new ones each call
+local TweenInfoCache = {}
+local function GetTweenInfo(duration, style, direction)
+    local key = tostring(duration) .. "_" .. tostring(style) .. "_" .. tostring(direction)
+    if not TweenInfoCache[key] then
+        TweenInfoCache[key] = TweenInfo.new(duration or 0.2, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
+    end
+    return TweenInfoCache[key]
+end
+
 local function Tween(obj, props, duration, style, direction)
-    local tween = TweenService:Create(obj, TweenInfo.new(duration or 0.2, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out), props)
+    local info = GetTweenInfo(duration or 0.2, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
+    local tween = TweenService:Create(obj, info, props)
     tween:Play()
     return tween
 end
@@ -1225,14 +1284,17 @@ local function MakeDraggable(frame)
     local dragging, dragStart, startPos = false, nil, nil
     local dragArea = Instance.new("Frame") dragArea.Name = "DragArea" dragArea.Size = UDim2.new(1, 0, 0, 40)
     dragArea.BackgroundTransparency = 1 dragArea.ZIndex = 10 dragArea.Parent = frame
+    local dragInputConn
     dragArea.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true dragStart = input.Position startPos = frame.Position end end)
     dragArea.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
-    UserInputService.InputChanged:Connect(function(input)
+    dragInputConn = UserInputService.InputChanged:Connect(function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
             local delta = input.Position - dragStart
             frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
     end)
+    -- Store connection for cleanup
+    Connections["Drag_" .. frame.Name] = dragInputConn
 end
 
 local function UpdateGUI()
@@ -1415,8 +1477,8 @@ local function CreateMainGUI()
         UpdateGUI()
     end
     SliderThumb.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = true Tween(SliderThumb, {Size = UDim2.new(0, 18, 0, 18), Position = UDim2.new(SliderThumb.Position.X.Scale, -9, 0.5, -9)}, 0.1) end end)
-    UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = false local cp = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin) Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(cp, -7, 0.5, -7)}, 0.1) end end)
-    UserInputService.InputChanged:Connect(function(input) if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then UpdateSliderFromMouse(input.Position) end end)
+    Connections.SliderEnd = UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 and sliderDragging then sliderDragging = false local cp = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin) Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(cp, -7, 0.5, -7)}, 0.1) end end)
+    Connections.SliderMove = UserInputService.InputChanged:Connect(function(input) if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then UpdateSliderFromMouse(input.Position) end end)
     SliderTrack.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then UpdateSliderFromMouse(input.Position) end end)
     y = y + 36
 
@@ -1524,132 +1586,61 @@ local function SetupCharacter(character)
 end
 
 Players.PlayerAdded:Connect(function(player)
-    player.CharacterAdded:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
-    player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
+    player.CharacterAdded:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
+    player.CharacterRemoving:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
 end)
-Players.PlayerRemoving:Connect(function(player) if player == LocalPlayer then CleanupAll() else task.delay(0.2, ForceUpdateRayFilter) end end)
+Players.PlayerRemoving:Connect(function(player) if player == LocalPlayer then CleanupAll() else task.delay(0.5, ForceUpdateRayFilter) end end)
 for _, player in ipairs(Players:GetPlayers()) do
     if player ~= LocalPlayer then
-        player.CharacterAdded:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
-        player.CharacterRemoving:Connect(function() task.delay(0.2, ForceUpdateRayFilter) end)
+        player.CharacterAdded:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
+        player.CharacterRemoving:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
     end
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- AUTO TRIMP
--- ═══════════════════════════════════════════════════════════════
-
-local AutoTrimpConfig = {
-    Enabled = true, EdgeRayForward = 3.5, EdgeDropThreshold = 1.5, EdgeSpeedMin = 6, EdgeCooldown = 0.18,
-    ObstacleRayForward = 2.5, ObstacleMinHeight = 0.3, ObstacleMaxHeight = 4.5, ObstacleCooldown = 0.15, GroundCheckDepth = 4,
-}
-local AutoTrimpState = {LastEdgeJump = 0, LastObstacleJump = 0, LastFilterUpdate = 0}
-local TrimpRayParams = RaycastParams.new()
-TrimpRayParams.FilterType = Enum.RaycastFilterType.Exclude TrimpRayParams.RespectCanCollide = true TrimpRayParams.IgnoreWater = true
-
-local function UpdateTrimpRayFilter()
-    local now = tick() if now - AutoTrimpState.LastFilterUpdate < 1.0 then return end AutoTrimpState.LastFilterUpdate = now
-    local filterList = {}
-    for _, player in ipairs(Players:GetPlayers()) do if player.Character then filterList[#filterList + 1] = player.Character end end
-    local gameFolder = Workspace:FindFirstChild("Game")
-    if gameFolder then local gp = gameFolder:FindFirstChild("Players") if gp then filterList[#filterList + 1] = gp end end
-    TrimpRayParams.FilterDescendantsInstances = filterList
-end
-
-local function FireNativeJump() pcall(function() LocalPlayer.PlayerScripts.Events.temporary_events.JumpReact:Fire() end) end
-local function FireNativeEndJump() pcall(function() LocalPlayer.PlayerScripts.Events.temporary_events.EndJump:Fire() end) end
-
-local function ExecuteTrimpJump()
-    if not Humanoid or Humanoid.Health <= 0 then return end
-    local character = LocalPlayer.Character if not character then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end) if isDowned then return end
-    FireNativeJump() task.delay(0.08, FireNativeEndJump)
-end
-
-local function CheckEdgeAhead()
-    if not RootPart or not Humanoid then return false end
-    local now = tick() if now - AutoTrimpState.LastEdgeJump < AutoTrimpConfig.EdgeCooldown then return false end
-    local vel = RootPart.AssemblyLinearVelocity
-    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-    if hSpeedSq < AutoTrimpConfig.EdgeSpeedMin^2 then return false end
-    if Humanoid.FloorMaterial == Enum.Material.Air then
-        local state = Humanoid:GetState()
-        if state ~= Enum.HumanoidStateType.Running and state ~= Enum.HumanoidStateType.RunningNoPhysics then return false end
-    end
-    local pos = RootPart.Position local hSpeed = math.sqrt(hSpeedSq)
-    local mdx, mdz = vel.X / hSpeed, vel.Z / hSpeed
-    local groundRay = Workspace:Raycast(pos, Vector3.new(0, -AutoTrimpConfig.GroundCheckDepth, 0), TrimpRayParams)
-    if not groundRay then return false end
-    local currentGroundY = groundRay.Position.Y
-    local aheadRay = Workspace:Raycast(Vector3.new(pos.X + mdx * AutoTrimpConfig.EdgeRayForward, pos.Y, pos.Z + mdz * AutoTrimpConfig.EdgeRayForward), Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0), TrimpRayParams)
-    if not aheadRay then AutoTrimpState.LastEdgeJump = now return true end
-    if currentGroundY - aheadRay.Position.Y >= AutoTrimpConfig.EdgeDropThreshold then AutoTrimpState.LastEdgeJump = now return true end
-    local halfRay = Workspace:Raycast(Vector3.new(pos.X + mdx * AutoTrimpConfig.EdgeRayForward * 0.5, pos.Y, pos.Z + mdz * AutoTrimpConfig.EdgeRayForward * 0.5), Vector3.new(0, -(AutoTrimpConfig.GroundCheckDepth + 6), 0), TrimpRayParams)
-    if not halfRay then AutoTrimpState.LastEdgeJump = now return true end
-    if currentGroundY - halfRay.Position.Y >= AutoTrimpConfig.EdgeDropThreshold then AutoTrimpState.LastEdgeJump = now return true end
-    return false
-end
-
-local function CheckObstacleAhead()
-    if not RootPart or not Humanoid then return false end
-    local now = tick() if now - AutoTrimpState.LastObstacleJump < AutoTrimpConfig.ObstacleCooldown then return false end
-    local vel = RootPart.AssemblyLinearVelocity local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-    if hSpeedSq < 4 then return false end
-    if Humanoid.FloorMaterial == Enum.Material.Air then
-        local state = Humanoid:GetState()
-        if state ~= Enum.HumanoidStateType.Running and state ~= Enum.HumanoidStateType.RunningNoPhysics then return false end
-    end
-    local pos = RootPart.Position local hSpeed = math.sqrt(hSpeedSq)
-    local mdx, mdz = vel.X / hSpeed, vel.Z / hSpeed
-    local moveDir = Vector3.new(mdx, 0, mdz)
-    local hipHeight = Humanoid.HipHeight or 2 local feetY = pos.Y - hipHeight - 0.5
-    local lowRay = Workspace:Raycast(Vector3.new(pos.X, feetY + 0.5, pos.Z), moveDir * AutoTrimpConfig.ObstacleRayForward, TrimpRayParams)
-    if not lowRay then return false end
-    if not lowRay.Instance or not lowRay.Instance.CanCollide then return false end
-    local hitPos = lowRay.Position
-    local topRay = Workspace:Raycast(Vector3.new(hitPos.X, pos.Y + AutoTrimpConfig.ObstacleMaxHeight, hitPos.Z), Vector3.new(0, -(AutoTrimpConfig.ObstacleMaxHeight + hipHeight + 2), 0), TrimpRayParams)
-    if not topRay then return false end
-    local obstacleHeight = topRay.Position.Y - feetY
-    if obstacleHeight >= AutoTrimpConfig.ObstacleMinHeight and obstacleHeight <= AutoTrimpConfig.ObstacleMaxHeight then
-        local clearanceRay = Workspace:Raycast(Vector3.new(hitPos.X + mdx * 1.5, topRay.Position.Y + 3, hitPos.Z + mdz * 1.5), Vector3.new(0, -2, 0), TrimpRayParams)
-        if clearanceRay or obstacleHeight <= 2.0 then AutoTrimpState.LastObstacleJump = now return true end
-    end
-    local midRay = Workspace:Raycast(Vector3.new(pos.X, feetY + 1.5, pos.Z), moveDir * (AutoTrimpConfig.ObstacleRayForward * 0.8), TrimpRayParams)
-    if midRay and midRay.Instance and midRay.Instance.CanCollide then
-        local midTopRay = Workspace:Raycast(Vector3.new(midRay.Position.X, pos.Y + 4, midRay.Position.Z), Vector3.new(0, -6, 0), TrimpRayParams)
-        if midTopRay then
-            local midH = midTopRay.Position.Y - feetY
-            if midH >= AutoTrimpConfig.ObstacleMinHeight and midH <= AutoTrimpConfig.ObstacleMaxHeight then AutoTrimpState.LastObstacleJump = now return true end
-        end
-    end
-    return false
-end
-
-local function AutoTrimpUpdate()
-    if not AutoTrimpConfig.Enabled or not Humanoid or not RootPart then return end
-    if Humanoid.Health <= 0 then return end
-    local character = LocalPlayer.Character if not character then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end) if isDowned then return end
-    UpdateTrimpRayFilter()
-    if CheckEdgeAhead() then ExecuteTrimpJump() elseif CheckObstacleAhead() then ExecuteTrimpJump() end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP
+-- MAIN LOOP (optimized - no more Auto Trimp)
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
+    
+    -- RenderStepped: only bhop and bounce (removed AutoTrimpUpdate)
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
-        SuperBhop() PreJumpQueue() Bounce() AirStrafe() AutoTrimpUpdate()
+        SuperBhop()
+        PreJumpQueue()
+        Bounce()
+        AirStrafe()
     end)
-    local slowAccum, edgeAccum = 0, 0
+    
+    local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
-        if State.EdgeBoost then edgeAccum = edgeAccum + dt if edgeAccum >= 0.033 then edgeAccum = 0 ReactiveEdgeBoost() end end
+        -- Edge boost at reduced rate
+        if State.EdgeBoost then
+            edgeAccum = edgeAccum + dt
+            if edgeAccum >= 0.05 then -- Increased from 0.033
+                edgeAccum = 0
+                ReactiveEdgeBoost()
+            end
+        end
+        
         if holdQ then DoCarry() end
+        
+        -- Slow updates
         slowAccum = slowAccum + dt
-        if slowAccum >= 0.1 then slowAccum = 0 UpdateRayFilter() AntiNextbot() AutoFarm() end
+        if slowAccum >= 0.15 then -- Increased from 0.1
+            slowAccum = 0
+            UpdateRayFilter()
+            AntiNextbot()
+            AutoFarm()
+        end
+        
+        -- Periodic memory cleanup
+        cleanupAccum = cleanupAccum + dt
+        if cleanupAccum >= 5.0 then
+            cleanupAccum = 0
+            PeriodicCleanup()
+        end
     end)
 end
 
