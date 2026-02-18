@@ -170,13 +170,13 @@ local WasInAir = false
 local JumpQueued = false
 local LastGroundCheckResult = false
 local LastGroundCheckTick = 0
-local GroundCheckCacheTime = 0.016
+local GroundCheckCacheTime = 0.02 -- slightly longer cache
 
 -- Memory cleanup tracking
 local LastGCTime = 0
-local GC_INTERVAL = 60 -- Run garbage collection hint every 60 seconds
+local GC_INTERVAL = 120 -- Less frequent GC
 local LastCacheCleanup = 0
-local CACHE_CLEANUP_INTERVAL = 30
+local CACHE_CLEANUP_INTERVAL = 45
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -262,7 +262,7 @@ end
 
 local function UpdateRayFilter()
     local now = tick()
-    if now - LastRayFilterUpdate < 2.0 then return end -- Increased from 1.0 to 2.0
+    if now - LastRayFilterUpdate < 3.0 then return end -- Increased from 2.0
     LastRayFilterUpdate = now
     local filterList = {}
     local character = LocalPlayer.Character
@@ -320,19 +320,18 @@ task.spawn(function()
     Modes = GetNamesFromPath("Info.Gamemodes")
 end)
 
--- Periodic memory/cache cleanup to prevent long-session lag
+-- Periodic memory/cache cleanup
 local function PeriodicCleanup()
     local now = tick()
     
-    -- Clean stale cached data
     if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
         LastCacheCleanup = now
         
-        -- Clear bot cache to force refresh (prevents stale references)
+        -- Clear bot cache to force refresh
         for i = 1, #CachedBots do CachedBots[i] = nil end
         LastBotCheck = 0
         
-        -- Clear item cache entries with dead references
+        -- Clear dead item references
         local validCount = 0
         for i = 1, #CachedItems do
             local item = CachedItems[i]
@@ -347,18 +346,15 @@ local function PeriodicCleanup()
             CachedItems[i] = nil
         end
         
-        -- Re-check CachedGame reference
         if CachedGame and not CachedGame.Parent then
             CachedGame = Workspace:FindFirstChild("Game")
         end
     end
     
-    -- Hint garbage collector periodically
     if now - LastGCTime >= GC_INTERVAL then
         LastGCTime = now
-        -- Collect garbage in small steps to avoid frame drops
         pcall(function()
-            collectgarbage("step", 100)
+            collectgarbage("step", 50)
         end)
     end
 end
@@ -564,7 +560,7 @@ end
 local LastBotCheck = 0
 local function GetBots()
     local now = tick()
-    if now - LastBotCheck < 0.2 then return CachedBots end -- Increased from 0.15
+    if now - LastBotCheck < 0.3 then return CachedBots end -- Increased from 0.2
     LastBotCheck = now
     if not NPCLoaded then LoadNPCs() end
     local count = 0
@@ -587,7 +583,7 @@ end
 local LastItemCheck = 0
 local function GetItems()
     local now = tick()
-    if now - LastItemCheck < 0.2 then return CachedItems end -- Increased from 0.15
+    if now - LastItemCheck < 0.3 then return CachedItems end -- Increased from 0.2
     LastItemCheck = now
     local count = 0
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
@@ -670,7 +666,7 @@ end
 local function AntiNextbot()
     if not State.AntiNextbot then return end
     local now = tick()
-    if now - LastAntiCheck < 0.25 then return end -- Increased from 0.2
+    if now - LastAntiCheck < 0.35 then return end -- Increased from 0.25
     LastAntiCheck = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -691,7 +687,7 @@ local LastFarmTick = 0
 local function AutoFarm()
     if not State.AutoFarm then return end
     local now = tick()
-    if now - LastFarmTick < 0.1 then return end -- Increased from 0.08
+    if now - LastFarmTick < 0.15 then return end -- Increased from 0.1
     LastFarmTick = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -1174,22 +1170,20 @@ local function StartModeVoting() if State.VoteMode then return end State.VoteMod
 local function StopModeVoting() State.VoteMode = false end
 
 -- ═══════════════════════════════════════════════════════════════
--- GUI
+-- GUI (Optimized - pre-cached TweenInfo, reduced tween spam)
 -- ═══════════════════════════════════════════════════════════════
 
--- Reusable TweenInfo objects to avoid creating new ones each call
-local TweenInfoCache = {}
-local function GetTweenInfo(duration, style, direction)
-    local key = tostring(duration) .. "_" .. tostring(style) .. "_" .. tostring(direction)
-    if not TweenInfoCache[key] then
-        TweenInfoCache[key] = TweenInfo.new(duration or 0.2, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
-    end
-    return TweenInfoCache[key]
-end
+-- Pre-cached TweenInfo objects (created once, reused forever)
+local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local TI_NORMAL = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local TI_SLOW = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local TI_OPEN = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TI_SLIDER = TweenInfo.new(0.05, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local TI_THUMB_GROW = TweenInfo.new(0.1, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
-local function Tween(obj, props, duration, style, direction)
-    local info = GetTweenInfo(duration or 0.2, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
-    local tween = TweenService:Create(obj, info, props)
+local function Tween(obj, props, tweenInfo)
+    tweenInfo = tweenInfo or TI_NORMAL
+    local tween = TweenService:Create(obj, tweenInfo, props)
     tween:Play()
     return tween
 end
@@ -1218,8 +1212,17 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     local statusText = Instance.new("TextLabel") statusText.Name = "Status" statusText.Size = UDim2.new(0, 30, 1, 0)
     statusText.Position = UDim2.new(1, -38, 0, 0) statusText.BackgroundTransparency = 1 statusText.Text = "OFF"
     statusText.TextColor3 = Theme.TextMuted statusText.TextSize = 10 statusText.Font = FONT_SMALL statusText.Parent = btn
-    btn.MouseEnter:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.15) end end)
-    btn.MouseLeave:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, 0.15) end end)
+    
+    -- Debounced hover to reduce tween spam
+    local isHovered = false
+    btn.MouseEnter:Connect(function() 
+        isHovered = true
+        if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, TI_FAST) end 
+    end)
+    btn.MouseLeave:Connect(function() 
+        isHovered = false
+        if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, TI_FAST) end 
+    end)
     btn.MouseButton1Click:Connect(function() if callback then callback() end end)
     return btn
 end
@@ -1230,8 +1233,8 @@ local function CreateSmallButton(parent, name, text, pos, size, callback)
     btn.BackgroundColor3 = Theme.ButtonOff btn.Text = text btn.TextColor3 = Theme.TextSecondary
     btn.TextSize = 11 btn.Font = FONT_BODY btn.AutoButtonColor = false btn.BorderSizePixel = 0 btn.Parent = parent
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    btn.MouseEnter:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, 0.12) end end)
-    btn.MouseLeave:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, 0.12) end end)
+    btn.MouseEnter:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonHover}, TI_FAST) end end)
+    btn.MouseLeave:Connect(function() if not btn:GetAttribute("Active") then Tween(btn, {BackgroundColor3 = Theme.ButtonOff}, TI_FAST) end end)
     btn.MouseButton1Click:Connect(function() if callback then callback() end end)
     return btn
 end
@@ -1257,27 +1260,29 @@ local function CreateModernInput(parent, name, placeholder, pos, size, callback)
 end
 
 local function SetModernButtonActive(button, active)
+    if button:GetAttribute("Active") == active then return end -- Skip if no change
     button:SetAttribute("Active", active)
     local indicator = button:FindFirstChild("Indicator")
     local label = button:FindFirstChild("Label")
     local status = button:FindFirstChild("Status")
     if active then
-        Tween(button, {BackgroundColor3 = Theme.ButtonOn}, 0.2)
-        if indicator then Tween(indicator, {BackgroundColor3 = Theme.Success}, 0.2) end
-        if label then Tween(label, {TextColor3 = Theme.TextPrimary}, 0.2) end
-        if status then status.Text = "ON" Tween(status, {TextColor3 = Theme.Success}, 0.2) end
+        Tween(button, {BackgroundColor3 = Theme.ButtonOn}, TI_NORMAL)
+        if indicator then Tween(indicator, {BackgroundColor3 = Theme.Success}, TI_NORMAL) end
+        if label then Tween(label, {TextColor3 = Theme.TextPrimary}, TI_NORMAL) end
+        if status then status.Text = "ON" Tween(status, {TextColor3 = Theme.Success}, TI_NORMAL) end
     else
-        Tween(button, {BackgroundColor3 = Theme.ButtonOff}, 0.2)
-        if indicator then Tween(indicator, {BackgroundColor3 = Theme.TextMuted}, 0.2) end
-        if label then Tween(label, {TextColor3 = Theme.TextSecondary}, 0.2) end
-        if status then status.Text = "OFF" Tween(status, {TextColor3 = Theme.TextMuted}, 0.2) end
+        Tween(button, {BackgroundColor3 = Theme.ButtonOff}, TI_NORMAL)
+        if indicator then Tween(indicator, {BackgroundColor3 = Theme.TextMuted}, TI_NORMAL) end
+        if label then Tween(label, {TextColor3 = Theme.TextSecondary}, TI_NORMAL) end
+        if status then status.Text = "OFF" Tween(status, {TextColor3 = Theme.TextMuted}, TI_NORMAL) end
     end
 end
 
 local function SetSmallButtonActive(button, active)
+    if button:GetAttribute("Active") == active then return end -- Skip if no change
     button:SetAttribute("Active", active)
-    if active then Tween(button, {BackgroundColor3 = Theme.ButtonOn, TextColor3 = Theme.TextPrimary}, 0.15)
-    else Tween(button, {BackgroundColor3 = Theme.ButtonOff, TextColor3 = Theme.TextSecondary}, 0.15) end
+    if active then Tween(button, {BackgroundColor3 = Theme.ButtonOn, TextColor3 = Theme.TextPrimary}, TI_FAST)
+    else Tween(button, {BackgroundColor3 = Theme.ButtonOff, TextColor3 = Theme.TextSecondary}, TI_FAST) end
 end
 
 local function MakeDraggable(frame)
@@ -1293,7 +1298,6 @@ local function MakeDraggable(frame)
             frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
     end)
-    -- Store connection for cleanup
     Connections["Drag_" .. frame.Name] = dragInputConn
 end
 
@@ -1322,8 +1326,8 @@ end
 local function UpdateSliderUI(value)
     if not SliderTrack then return end
     local pos = math.clamp((value - SliderMin) / (SliderMax - SliderMin), 0, 1)
-    Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, 0.1)
-    Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, 0.1)
+    Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, TI_SLIDER)
+    Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, TI_SLIDER)
     SliderLabel.Text = string.format("Cola Speed: %.1fx", value)
 end
 
@@ -1403,7 +1407,7 @@ local function CreateMainGUI()
     local vipBtn = CreateSmallButton(titleBar, "VIP", "VIP", UDim2.new(1, -78, 0, 8), UDim2.new(0, 44, 0, 28), CreateVIPPanel)
     vipBtn.TextSize = 10 vipBtn.BackgroundColor3 = Color3.fromRGB(45, 40, 60)
     local closeBtn = CreateSmallButton(titleBar, "X", "X", UDim2.new(1, -32, 0, 8), UDim2.new(0, 28, 0, 28), function()
-        Tween(main, {Size = UDim2.new(0, 280, 0, 0)}, 0.3) task.delay(0.3, function() main.Visible = false end)
+        Tween(main, {Size = UDim2.new(0, 280, 0, 0)}, TI_SLOW) task.delay(0.3, function() main.Visible = false end)
     end)
     closeBtn.TextSize = 14 closeBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30) closeBtn.TextColor3 = Theme.Danger
     local content = Instance.new("ScrollingFrame") content.Name = "Content" content.Size = UDim2.new(1, 0, 1, -46) content.Position = UDim2.new(0, 0, 0, 46)
@@ -1465,19 +1469,25 @@ local function CreateMainGUI()
     local thumbStroke = Instance.new("UIStroke", SliderThumb) thumbStroke.Color = Theme.Accent thumbStroke.Thickness = 2
 
     local sliderDragging = false
+    local lastSliderUpdate = 0
     local function UpdateSliderFromMouse(mousePos)
         if not SliderTrack then return end
+        -- Throttle slider updates to prevent tween spam
+        local now = tick()
+        if now - lastSliderUpdate < 0.03 then return end
+        lastSliderUpdate = now
         local pos = math.clamp((mousePos.X - SliderTrack.AbsolutePosition.X) / SliderTrack.AbsoluteSize.X, 0, 1)
         local val = math.round((SliderMin + pos * (SliderMax - SliderMin)) * 10) / 10
         val = math.clamp(val, SliderMin, SliderMax)
+        if ColaSettings.Speed == val then return end -- Skip if value unchanged
         ColaSettings.Speed = val
-        Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, 0.05)
-        Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, 0.05)
+        Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, TI_SLIDER)
+        Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, TI_SLIDER)
         SliderLabel.Text = string.format("Cola Speed: %.1fx", val)
         UpdateGUI()
     end
-    SliderThumb.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = true Tween(SliderThumb, {Size = UDim2.new(0, 18, 0, 18), Position = UDim2.new(SliderThumb.Position.X.Scale, -9, 0.5, -9)}, 0.1) end end)
-    Connections.SliderEnd = UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 and sliderDragging then sliderDragging = false local cp = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin) Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(cp, -7, 0.5, -7)}, 0.1) end end)
+    SliderThumb.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then sliderDragging = true Tween(SliderThumb, {Size = UDim2.new(0, 18, 0, 18), Position = UDim2.new(SliderThumb.Position.X.Scale, -9, 0.5, -9)}, TI_THUMB_GROW) end end)
+    Connections.SliderEnd = UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 and sliderDragging then sliderDragging = false local cp = (ColaSettings.Speed - SliderMin) / (SliderMax - SliderMin) Tween(SliderThumb, {Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(cp, -7, 0.5, -7)}, TI_THUMB_GROW) end end)
     Connections.SliderMove = UserInputService.InputChanged:Connect(function(input) if sliderDragging and input.UserInputType == Enum.UserInputType.MouseMovement then UpdateSliderFromMouse(input.Position) end end)
     SliderTrack.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then UpdateSliderFromMouse(input.Position) end end)
     y = y + 36
@@ -1489,7 +1499,7 @@ local function CreateMainGUI()
     content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
     MakeDraggable(main)
     main.Size = UDim2.new(0, 280, 0, 0) main.Visible = true
-    Tween(main, {Size = UDim2.new(0, 280, 0, 480)}, 0.4, Enum.EasingStyle.Back)
+    Tween(main, {Size = UDim2.new(0, 280, 0, 480)}, TI_OPEN)
     UpdateGUI()
 end
 
@@ -1552,11 +1562,11 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if GUI and GUI:FindFirstChild("Main") then
             local mainFrame = GUI.Main
             if mainFrame.Visible then
-                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 0)}, 0.3)
+                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 0)}, TI_SLOW)
                 task.delay(0.3, function() mainFrame.Visible = false end)
             else
                 mainFrame.Visible = true mainFrame.Size = UDim2.new(0, 280, 0, 0)
-                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 480)}, 0.4, Enum.EasingStyle.Back)
+                Tween(mainFrame, {Size = UDim2.new(0, 280, 0, 480)}, TI_OPEN)
             end
             if VIPPanel then VIPPanel.Visible = false end
         end
@@ -1598,27 +1608,34 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP (optimized - no more Auto Trimp)
+-- MAIN LOOP (optimized - conditional execution)
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
-    -- RenderStepped: only bhop and bounce (removed AutoTrimpUpdate)
+    -- RenderStepped: only runs bhop/bounce when keys are held
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
-        SuperBhop()
-        PreJumpQueue()
-        Bounce()
-        AirStrafe()
+        if holdSpace then
+            SuperBhop()
+            PreJumpQueue()
+        end
+        if holdX then
+            Bounce()
+            AirStrafe()
+        elseif AirEnd > 0 and tick() <= AirEnd then
+            -- Still in air from a bounce, keep air strafing
+            AirStrafe()
+        end
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
-        -- Edge boost at reduced rate
+        -- Edge boost only when enabled and moving
         if State.EdgeBoost then
             edgeAccum = edgeAccum + dt
-            if edgeAccum >= 0.05 then -- Increased from 0.033
+            if edgeAccum >= 0.06 then
                 edgeAccum = 0
                 ReactiveEdgeBoost()
             end
@@ -1626,18 +1643,18 @@ local function StartMainLoop()
         
         if holdQ then DoCarry() end
         
-        -- Slow updates
+        -- Slow updates - only run features that are enabled
         slowAccum = slowAccum + dt
-        if slowAccum >= 0.15 then -- Increased from 0.1
+        if slowAccum >= 0.2 then
             slowAccum = 0
             UpdateRayFilter()
-            AntiNextbot()
-            AutoFarm()
+            if State.AntiNextbot then AntiNextbot() end
+            if State.AutoFarm then AutoFarm() end
         end
         
-        -- Periodic memory cleanup
+        -- Very infrequent cleanup
         cleanupAccum = cleanupAccum + dt
-        if cleanupAccum >= 5.0 then
+        if cleanupAccum >= 10.0 then
             cleanupAccum = 0
             PeriodicCleanup()
         end
