@@ -16,8 +16,8 @@ WindUI.TransparencyValue = 0.2
 WindUI:SetTheme("Dark")
 
 local Window = WindUI:CreateWindow({
-    Title = "Visual Emote Changer",
-    Author = "By Pnsdg (Evade Overhaul)",
+    Title = "Visual Emote Changer V5",
+    Author = "By Pnsdg Evade",
     Folder = "DaraHub",
     Size = UDim2.fromOffset(580, 490),
     Theme = "Dark",
@@ -27,7 +27,6 @@ local Window = WindUI:CreateWindow({
     SideBarWidth = 200
 })
 
-Window:SetToggleKey(Enum.KeyCode.L)
 Window:SetIconSize(48)
 
 Window:CreateTopbarButton("theme-switcher", "moon", function()
@@ -38,47 +37,129 @@ local FeatureSection = Window:Section({ Title = "Features", Opened = true })
 local Tabs = {
     EmoteChanger = FeatureSection:Tab({ Title = "EmoteChanger", Icon = "smile" }),
     EmoteList = FeatureSection:Tab({ Title = "Emote List", Icon = "list" }),
-    Visuals = FeatureSection:Tab({ Title = "Visuals", Icon = "eye" }),
-    Settings = FeatureSection:Tab({ Title = "Settings", Icon = "settings" })
+    Visuals = FeatureSection:Tab({ Title = "Visuals", Icon = "eye" })
 }
 
+-- ═══════════════════════════════════════════════════════════════
+-- CONFIG SYSTEM
+-- ═══════════════════════════════════════════════════════════════
+
 local HttpService = game:GetService("HttpService")
+local CONFIG_FOLDER = "DaraHub"
+local CONFIG_FILE = CONFIG_FOLDER .. "/EmoteConfig.json"
 
--- ============================================================
--- CORE EMOTE CHANGER (EXACT COPY FROM WORKING SCRIPT)
--- DO NOT MODIFY ANYTHING IN THIS SECTION
--- ============================================================
-
-player = game:GetService("Players").LocalPlayer
-ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-emoteModelScript = nil
-originalEmoteData = {}
-replacementEnabled = false
-emoteDataSaved = false
-emoteFrame = nil
-currentTag = nil
-
-currentEmotes = {}
-selectEmotes = {}
-currentEmoteInputs = {}
-selectEmoteInputs = {}
-
-for i = 1, 12 do
-    currentEmotes[i] = ""
-    selectEmotes[i] = ""
+local function EnsureConfigFolder()
+    if not isfolder then return end
+    pcall(function()
+        if not isfolder(CONFIG_FOLDER) then
+            makefolder(CONFIG_FOLDER)
+        end
+    end)
 end
 
-Events = ReplicatedStorage:WaitForChild("Events", 10)
-CharacterFolder = Events and Events:WaitForChild("Character", 10)
-EmoteRemote = CharacterFolder and CharacterFolder:WaitForChild("Emote", 10)
-PassCharacterInfo = CharacterFolder and CharacterFolder:WaitForChild("PassCharacterInfo", 10)
-remoteSignal = PassCharacterInfo and PassCharacterInfo.OnClientEvent
+local function SaveConfig(ownedEmotes, replaceEmotes, replacementEnabled, cosmeticOwned, cosmeticTarget)
+    local success, err = pcall(function()
+        EnsureConfigFolder()
+        local data = {
+            Version = 3,
+            Slots = {},
+            ReplacementEnabled = replacementEnabled or false,
+            CosmeticOwned = cosmeticOwned or "",
+            CosmeticTarget = cosmeticTarget or ""
+        }
+        for i = 1, 6 do
+            data.Slots[i] = {
+                Owned = ownedEmotes[i] or "",
+                Replace = replaceEmotes[i] or ""
+            }
+        end
+        writefile(CONFIG_FILE, HttpService:JSONEncode(data))
+    end)
+    return success, err
+end
 
-emoteNameCache = {}
-normalizedCache = {}
+local function LoadConfig()
+    local data = {
+        Slots = {},
+        ReplacementEnabled = false,
+        CosmeticOwned = "",
+        CosmeticTarget = ""
+    }
+    for i = 1, 6 do
+        data.Slots[i] = { Owned = "", Replace = "" }
+    end
+    
+    pcall(function()
+        if isfile and isfile(CONFIG_FILE) then
+            local raw = readfile(CONFIG_FILE)
+            local parsed = HttpService:JSONDecode(raw)
+            if parsed and parsed.Slots then
+                for i = 1, 6 do
+                    if parsed.Slots[i] then
+                        data.Slots[i].Owned = parsed.Slots[i].Owned or ""
+                        data.Slots[i].Replace = parsed.Slots[i].Replace or ""
+                    end
+                end
+                data.ReplacementEnabled = parsed.ReplacementEnabled or false
+                data.CosmeticOwned = parsed.CosmeticOwned or ""
+                data.CosmeticTarget = parsed.CosmeticTarget or ""
+            end
+        end
+    end)
+    
+    return data
+end
 
-function fireSelect(emoteName)
+local function DeleteConfig()
+    pcall(function()
+        if isfile and isfile(CONFIG_FILE) then
+            delfile(CONFIG_FILE)
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- LOAD SAVED CONFIG
+-- ═══════════════════════════════════════════════════════════════
+
+local savedConfig = LoadConfig()
+
+-- ═══════════════════════════════════════════════════════════════
+-- EMOTE CHANGER CORE
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.EmoteChanger:Section({ Title = "Emote ID Hook" })
+
+local player = game:GetService("Players").LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local emoteModelScript = nil
+local originalEmoteData = {}
+local replacementEnabled = savedConfig.ReplacementEnabled or false
+local emoteDataSaved = false
+local emoteFrame = nil
+local currentTag = nil
+
+local ownedEmotes = {}
+local replaceEmotes = {}
+local ownedEmoteInputs = {}
+local replaceEmoteInputs = {}
+
+for i = 1, 6 do
+    ownedEmotes[i] = savedConfig.Slots[i].Owned
+    replaceEmotes[i] = savedConfig.Slots[i].Replace
+end
+
+local Events = ReplicatedStorage:WaitForChild("Events", 10)
+local CharacterFolder = Events and Events:WaitForChild("Character", 10)
+local EmoteRemote = CharacterFolder and CharacterFolder:WaitForChild("Emote", 10)
+local PassCharacterInfo = CharacterFolder and CharacterFolder:WaitForChild("PassCharacterInfo", 10)
+local remoteSignal = PassCharacterInfo and PassCharacterInfo.OnClientEvent
+
+local emoteNameCache = {}
+local normalizedCache = {}
+
+local function fireSelect(emoteName)
     if not currentTag then return end
     local tagNumber = tonumber(currentTag)
     if not tagNumber or tagNumber < 0 or tagNumber > 255 then return end
@@ -93,8 +174,56 @@ function fireSelect(emoteName)
     end
 end
 
-function setupAnimationListener()
-    function setupHumanoidListeners(char)
+local function normalizeText(text)
+    if not text then return "" end
+    if not normalizedCache[text] then
+        normalizedCache[text] = string.lower(text:gsub("%s+", ""))
+    end
+    return normalizedCache[text]
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- AUTO RANDOM EMOTE OPTION (1-3 automatically)
+-- ═══════════════════════════════════════════════════════════════
+
+local emoteNumCharConnection = nil
+
+local function applyRandomEmoteNum(char)
+    if not char then return end
+    char:SetAttribute("EmoteNum", math.random(1, 3))
+end
+
+local function startAutoRandomEmoteNum()
+    if player.Character then
+        applyRandomEmoteNum(player.Character)
+    end
+    
+    if emoteNumCharConnection then
+        emoteNumCharConnection:Disconnect()
+    end
+    emoteNumCharConnection = player.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        applyRandomEmoteNum(char)
+    end)
+    
+    task.spawn(function()
+        while task.wait(2) do
+            local char = player.Character
+            if char then
+                char:SetAttribute("EmoteNum", math.random(1, 3))
+            end
+        end
+    end)
+end
+
+startAutoRandomEmoteNum()
+
+-- ═══════════════════════════════════════════════════════════════
+-- ANIMATION LISTENER
+-- ═══════════════════════════════════════════════════════════════
+
+local function setupAnimationListener()
+    local function setupHumanoidListeners(char)
         local isR15 = char:GetAttribute("R15") == true
         local humanoid
         if isR15 then
@@ -114,13 +243,13 @@ function setupAnimationListener()
                     if emoteModule then
                         local currentEmoteName = emoteModule.Name
                         
-                        for i = 1, 12 do
-                            if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-                                local normalizedCurrent = normalizeText(currentEmotes[i])
+                        for i = 1, 6 do
+                            if ownedEmotes[i] ~= "" and replaceEmotes[i] ~= "" then
+                                local normalizedOwned = normalizeText(ownedEmotes[i])
                                 local normalizedPlaying = normalizeText(currentEmoteName)
                                 
-                                if normalizedCurrent == normalizedPlaying then
-                                    fireSelect(selectEmotes[i])
+                                if normalizedOwned == normalizedPlaying then
+                                    fireSelect(replaceEmotes[i])
                                     break
                                 end
                             end
@@ -143,7 +272,11 @@ end
 
 setupAnimationListener()
 
-function findEmoteModelScript()
+-- ═══════════════════════════════════════════════════════════════
+-- EMOTE MODEL & WHEEL FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════
+
+local function findEmoteModelScript()
     if emoteModelScript then return emoteModelScript end
     
     for _, script in pairs(player.PlayerScripts:GetDescendants()) do
@@ -162,22 +295,14 @@ function findEmoteModelScript()
     return nil
 end
 
-function normalizeText(text)
-    if not text then return "" end
-    if not normalizedCache[text] then
-        normalizedCache[text] = string.lower(text:gsub("%s+", ""))
-    end
-    return normalizedCache[text]
-end
-
-function findEmoteModuleByDisplayName(displayName)
+local function findEmoteModuleByDisplayName(displayName)
     if displayName == "NONE" or not displayName then return nil end
     
     if emoteNameCache[displayName] ~= nil then
         return emoteNameCache[displayName]
     end
     
-    emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+    local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
     if not emotesFolder then 
         emoteNameCache[displayName] = nil
         return nil 
@@ -188,12 +313,12 @@ function findEmoteModuleByDisplayName(displayName)
         return nil 
     end
     
-    normalizedDisplayName = normalizeText(displayName)
+    local normalizedDisplayName = normalizeText(displayName)
     
     for _, emoteModule in pairs(emotesFolder:GetChildren()) do
-        success, emoteData = pcall(require, emoteModule)
+        local success, emoteData = pcall(require, emoteModule)
         if success and emoteData then
-            emoteDisplayName = emoteData.AppearanceInfo.NameShorted or emoteData.AppearanceInfo.Name
+            local emoteDisplayName = emoteData.AppearanceInfo.NameShorted or emoteData.AppearanceInfo.Name
             if normalizeText(emoteDisplayName) == normalizedDisplayName then
                 emoteNameCache[displayName] = emoteModule.Name
                 return emoteModule.Name
@@ -205,47 +330,45 @@ function findEmoteModuleByDisplayName(displayName)
     return nil
 end
 
-function getEmoteFrame()
-    playerGui = player.PlayerGui
-    shared = playerGui and playerGui:FindFirstChild("Shared")
-    hud = shared and shared:FindFirstChild("HUD")
-    interactors = hud and hud:FindFirstChild("Interactors")
-    popups = interactors and interactors:FindFirstChild("Popups")
+local function getEmoteFrame()
+    local playerGui = player.PlayerGui
+    local shared = playerGui and playerGui:FindFirstChild("Shared")
+    local hud = shared and shared:FindFirstChild("HUD")
+    local interactors = hud and hud:FindFirstChild("Interactors")
+    local popups = interactors and interactors:FindFirstChild("Popups")
     return popups and popups:FindFirstChild("Emote")
 end
 
-function cleanUpLastEmoteFrame()
-    if emoteFrame then
-        emoteFrame = nil
-    end
+local function cleanUpLastEmoteFrame()
+    emoteFrame = nil
 end
 
-function restoreOriginalEmotes()
+local function restoreOriginalEmotes()
     if not emoteModelScript then
         findEmoteModelScript()
     end
     if not emoteModelScript or not emoteFrame then return end
     
-    emoteModelFunction = require(emoteModelScript)
-    emoteWheel = emoteFrame:FindFirstChild("Wheel")
-    emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
+    local emoteModelFunction = require(emoteModelScript)
+    local emoteWheel = emoteFrame:FindFirstChild("Wheel")
+    local emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
     
     if not emoteWheel then return end
     
-    function processSlot(emoteSlot, key)
+    local function processSlot(emoteSlot, key)
         if not emoteSlot then return end
-        textLabel = emoteSlot:FindFirstChild("TextLabel")
-        viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
+        local textLabel = emoteSlot:FindFirstChild("TextLabel")
+        local viewportFrame = emoteSlot:FindFirstChild("ViewportFrame")
         
         if textLabel and viewportFrame then
-            original = originalEmoteData[key]
+            local original = originalEmoteData[key]
             if original then
                 if viewportFrame:FindFirstChild("WorldModel") then
                     viewportFrame.WorldModel:Destroy()
                 end
                 
                 if original.displayText ~= "NONE" and original.emoteName then
-                    emoteModule = ReplicatedStorage.Items.Emotes:FindFirstChild(original.emoteName)
+                    local emoteModule = ReplicatedStorage.Items.Emotes:FindFirstChild(original.emoteName)
                     if emoteModule then
                         emoteModelFunction(viewportFrame, original.emoteName)
                     end
@@ -268,39 +391,39 @@ function restoreOriginalEmotes()
     end
 end
 
-function replaceEmotesFrame()
+local function replaceEmotesFrame()
     if not replacementEnabled or not emoteDataSaved or not emoteFrame then return false end
     if not emoteModelScript then findEmoteModelScript() end
     if not emoteModelScript then return false end
     
-    emoteModelFunction = require(emoteModelScript)
-    emoteWheel = emoteFrame:FindFirstChild("Wheel")
-    emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
+    local emoteModelFunction = require(emoteModelScript)
+    local emoteWheel = emoteFrame:FindFirstChild("Wheel")
+    local emoteWheel2 = emoteFrame:FindFirstChild("Wheel2")
     
     if not emoteWheel then return false end
     
-    anyPairsConfigured = false
+    local anyPairsConfigured = false
     
-    function processEmoteSlot(emoteSlot, wheelName, i)
+    local function processEmoteSlot(emoteSlot, wheelName, i)
         if not emoteSlot then return end
-        textLabel = emoteSlot:FindFirstChild("TextLabel")
+        local textLabel = emoteSlot:FindFirstChild("TextLabel")
         if not textLabel then return end
         
-        currentText = textLabel.Text
-        normalizedCurrent = normalizeText(currentText)
+        local currentText = textLabel.Text
+        local normalizedCurrent = normalizeText(currentText)
         
-        for j = 1, 12 do
-            searchEmote = currentEmotes[j]
-            replaceEmote = selectEmotes[j]
+        for j = 1, 6 do
+            local searchEmote = ownedEmotes[j]
+            local replaceEmote = replaceEmotes[j]
             
             if searchEmote ~= "" and replaceEmote ~= "" then
                 anyPairsConfigured = true
                 if normalizedCurrent == normalizeText(searchEmote) then
-                    viewportFrame = emoteSlot.ViewportFrame
+                    local viewportFrame = emoteSlot.ViewportFrame
                     if viewportFrame then
-                        replacementModule = ReplicatedStorage.Items.Emotes:FindFirstChild(replaceEmote)
+                        local replacementModule = ReplicatedStorage.Items.Emotes:FindFirstChild(replaceEmote)
                         if replacementModule then
-                            key = wheelName.."_Emote"..i
+                            local key = wheelName.."_Emote"..i
                             if not originalEmoteData[key] then
                                 originalEmoteData[key] = {
                                     displayText = currentText,
@@ -312,8 +435,8 @@ function replaceEmotesFrame()
                                 viewportFrame.WorldModel:Destroy()
                             end
                             
-                            targetEmoteModule = require(replacementModule)
-                            targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
+                            local targetEmoteModule = require(replacementModule)
+                            local targetDisplayName = targetEmoteModule.AppearanceInfo.NameShorted or targetEmoteModule.AppearanceInfo.Name
                             
                             emoteModelFunction(viewportFrame, replaceEmote)
                             textLabel.Text = targetDisplayName
@@ -338,17 +461,17 @@ function replaceEmotesFrame()
     return anyPairsConfigured
 end
 
-function saveOriginalEmoteData(frame)
+local function saveOriginalEmoteData(frame)
     if not frame then return end
     originalEmoteData = {}
-    emoteWheel = frame:FindFirstChild("Wheel")
-    emoteWheel2 = frame:FindFirstChild("Wheel2")
+    local emoteWheel = frame:FindFirstChild("Wheel")
+    local emoteWheel2 = frame:FindFirstChild("Wheel2")
     
     if not emoteWheel then return end
     
-    function saveSlot(emoteSlot, key)
+    local function saveSlot(emoteSlot, key)
         if not emoteSlot then return end
-        textLabel = emoteSlot:FindFirstChild("TextLabel")
+        local textLabel = emoteSlot:FindFirstChild("TextLabel")
         if textLabel then
             originalEmoteData[key] = {
                 displayText = textLabel.Text,
@@ -370,11 +493,15 @@ function saveOriginalEmoteData(frame)
     emoteDataSaved = true
 end
 
-function readTagFromFolder(folder)
+-- ═══════════════════════════════════════════════════════════════
+-- RESPAWN HANDLING
+-- ═══════════════════════════════════════════════════════════════
+
+local function readTagFromFolder(folder)
     if not folder then return nil end
-    attributeValue = folder:GetAttribute("Tag")
+    local attributeValue = folder:GetAttribute("Tag")
     if attributeValue ~= nil then return attributeValue end
-    tagValue = folder:FindFirstChild("Tag")
+    local tagValue = folder:FindFirstChild("Tag")
     if tagValue and tagValue:IsA("ValueBase") then return tagValue.Value end
     return nil
 end
@@ -383,7 +510,7 @@ local respawnInProgress = false
 local lastRespawnTime = 0
 local reapplyThread = nil
 
-function cleanupOnRespawn()
+local function cleanupOnRespawn()
     currentTag = nil
     emoteFrame = nil
     
@@ -393,7 +520,7 @@ function cleanupOnRespawn()
     end
 end
 
-function handleSingleRespawn()
+local function handleSingleRespawn()
     local now = tick()
     
     if respawnInProgress and (now - lastRespawnTime) < 2 then
@@ -449,25 +576,17 @@ function handleSingleRespawn()
     end
 end
 
--- ============================================================
--- END OF CORE EMOTE CHANGER (DO NOT MODIFY ABOVE)
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- COSMETICS SYSTEM
+-- ═══════════════════════════════════════════════════════════════
 
--- === EXTRA VARIABLES ===
-
-local allEmotes = {}
-local SAVE_FOLDER = "DaraHub"
-local CONFIGS_FILE = SAVE_FOLDER .. "/EmoteConfigs.json"
 local cachedCosmeticNames = nil
 local levD = {}
-local cosmetic1, cosmetic2 = "", ""
-local isSwapped = false
-local cosmetic1Input, cosmetic2Input = nil, nil
-local allConfigs = {}
-local currentConfigName = ""
-local configDropdown = nil
-
--- === COSMETICS ===
+local cosmeticOwned = savedConfig.CosmeticOwned or ""
+local cosmeticTarget = savedConfig.CosmeticTarget or ""
+local isCosmeticSwapped = false
+local cosmeticOwnedInput = nil
+local cosmeticTargetInput = nil
 
 local function cosmeticNormalize(str)
     return str:gsub("%s+", ""):lower()
@@ -481,14 +600,14 @@ local function levenshtein(s, t)
     end
     for j = 0, n do levD[0][j] = j end
     for i = 1, m do
-        local si = s:sub(i,i)
+        local si = s:sub(i, i)
         local row = levD[i]
-        local prevRow = levD[i-1]
+        local prevRow = levD[i - 1]
         for j = 1, n do
-            local cost = (si == t:sub(j,j)) and 0 or 1
+            local cost = (si == t:sub(j, j)) and 0 or 1
             local del = prevRow[j] + 1
-            local ins = row[j-1] + 1
-            local sub = prevRow[j-1] + cost
+            local ins = row[j - 1] + 1
+            local sub = prevRow[j - 1] + cost
             if del < ins then
                 row[j] = del < sub and del or sub
             else
@@ -499,7 +618,7 @@ local function levenshtein(s, t)
     return levD[m][n]
 end
 
-local function similarity(s, t)
+local function cosmeticSimilarity(s, t)
     local nS, nT = cosmeticNormalize(s), cosmeticNormalize(t)
     local maxLen = math.max(#nS, #nT)
     if maxLen == 0 then return 1 end
@@ -524,7 +643,7 @@ local function findSimilarCosmetic(name)
     local bestMatch = name
     local bestScore = 0.5
     for _, cName in ipairs(names) do
-        local score = similarity(name, cName)
+        local score = cosmeticSimilarity(name, cName)
         if score > bestScore then
             bestScore = score
             bestMatch = cName
@@ -539,15 +658,16 @@ local function GetCosmeticsFolder()
 end
 
 local function SwapCosmetics(silent)
-    if cosmetic1 == "" or cosmetic2 == "" then return false, "Please enter both cosmetics" end
-    if cosmetic1 == cosmetic2 then return false, "Cosmetics must be different" end
+    if cosmeticOwned == "" or cosmeticTarget == "" then return false, "Please enter both cosmetics" end
+    if cosmeticOwned == cosmeticTarget then return false, "Cosmetics must be different" end
     local Cosmetics = GetCosmeticsFolder()
     if not Cosmetics then return false, "Cosmetics folder not found" end
-    local m1 = findSimilarCosmetic(cosmetic1)
-    local m2 = findSimilarCosmetic(cosmetic2)
+    local m1 = findSimilarCosmetic(cosmeticOwned)
+    local m2 = findSimilarCosmetic(cosmeticTarget)
     local a = Cosmetics:FindFirstChild(m1)
     local b = Cosmetics:FindFirstChild(m2)
-    if not a or not b then return false, "Could not find cosmetics" end
+    if not a or not b then return false, "Could not find cosmetics: " .. m1 .. " / " .. m2 end
+    
     local tempRoot = Instance.new("Folder", Cosmetics)
     tempRoot.Name = "__temp_swap"
     local tempA = Instance.new("Folder", tempRoot)
@@ -557,18 +677,19 @@ local function SwapCosmetics(silent)
     for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end
     for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end
     tempRoot:Destroy()
-    cosmetic1 = m1
-    cosmetic2 = m2
-    isSwapped = true
-    return true, "Swapped " .. m1 .. " and " .. m2
+    
+    cosmeticOwned = m1
+    cosmeticTarget = m2
+    isCosmeticSwapped = true
+    return true, "Swapped: " .. m1 .. " ↔ " .. m2
 end
 
 local function ResetCosmetics(silent)
-    if not isSwapped then return false, "No cosmetics swapped" end
+    if not isCosmeticSwapped then return false, "No cosmetics swapped" end
     local Cosmetics = GetCosmeticsFolder()
     if not Cosmetics then return false, "Cosmetics folder not found" end
-    local a = Cosmetics:FindFirstChild(cosmetic1)
-    local b = Cosmetics:FindFirstChild(cosmetic2)
+    local a = Cosmetics:FindFirstChild(cosmeticOwned)
+    local b = Cosmetics:FindFirstChild(cosmeticTarget)
     if a and b then
         local tempRoot = Instance.new("Folder", Cosmetics)
         tempRoot.Name = "__temp_reset"
@@ -579,129 +700,17 @@ local function ResetCosmetics(silent)
         for _, c in ipairs(tempA:GetChildren()) do c.Parent = b end
         for _, c in ipairs(tempB:GetChildren()) do c.Parent = a end
         tempRoot:Destroy()
-        isSwapped = false
-        return true, "Reset cosmetics"
+        isCosmeticSwapped = false
+        return true, "Cosmetics restored to original"
     end
-    return false, "Could not reset"
+    return false, "Could not find cosmetics to reset"
 end
 
--- === CONFIG SYSTEM ===
+-- ═══════════════════════════════════════════════════════════════
+-- EMOTE SCANNER
+-- ═══════════════════════════════════════════════════════════════
 
-local function EnsureFolder()
-    if not isfolder then return end
-    pcall(function()
-        if not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
-    end)
-end
-
-local function GetConfigNames()
-    local names = {}
-    for name, _ in pairs(allConfigs) do names[#names + 1] = name end
-    table.sort(names, function(a, b) return a:lower() < b:lower() end)
-    return names
-end
-
-local saveQueued = false
-local function SaveAllConfigs()
-    if saveQueued then return end
-    saveQueued = true
-    task.defer(function()
-        saveQueued = false
-        EnsureFolder()
-        pcall(function()
-            if writefile then
-                writefile(CONFIGS_FILE, HttpService:JSONEncode({ configs = allConfigs, lastUsed = currentConfigName }))
-            end
-        end)
-    end)
-end
-
-local function LoadAllConfigs()
-    if not isfile then return false end
-    local fileExists = false
-    pcall(function() fileExists = isfile(CONFIGS_FILE) end)
-    if not fileExists then return false end
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(readfile(CONFIGS_FILE))
-    end)
-    if success and result and result.configs then
-        allConfigs = result.configs
-        currentConfigName = result.lastUsed or ""
-        return true
-    end
-    return false
-end
-
-local function CreateConfig(name)
-    if name == "" then return false, "Name cannot be empty" end
-    if allConfigs[name] then return false, "Config already exists" end
-    local ce, se = {}, {}
-    for i = 1, 12 do ce[i] = ""; se[i] = "" end
-    allConfigs[name] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = "", cosmetic2 = "" }
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Config created: " .. name
-end
-
-local function SaveToConfig(name)
-    if name == "" then return false, "No config selected" end
-    local ce, se = {}, {}
-    for i = 1, 12 do ce[i] = currentEmotes[i]; se[i] = selectEmotes[i] end
-    allConfigs[name] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = cosmetic1, cosmetic2 = cosmetic2 }
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Saved to " .. name
-end
-
-local function LoadFromConfig(name)
-    if not allConfigs[name] then return false, "Config not found" end
-    local config = allConfigs[name]
-    for i = 1, 12 do
-        currentEmotes[i] = (config.currentEmotes and config.currentEmotes[i]) or ""
-        selectEmotes[i] = (config.selectEmotes and config.selectEmotes[i]) or ""
-    end
-    cosmetic1 = config.cosmetic1 or ""
-    cosmetic2 = config.cosmetic2 or ""
-    currentConfigName = name
-    SaveAllConfigs()
-    return true, "Loaded " .. name
-end
-
-local function RenameConfig(oldName, newName)
-    if oldName == "" or newName == "" then return false, "Name cannot be empty" end
-    if not allConfigs[oldName] then return false, "Config not found" end
-    if allConfigs[newName] then return false, "Name already exists" end
-    allConfigs[newName] = allConfigs[oldName]
-    allConfigs[oldName] = nil
-    if currentConfigName == oldName then currentConfigName = newName end
-    SaveAllConfigs()
-    return true, "Renamed to " .. newName
-end
-
-local function DeleteConfig(name)
-    if name == "" or not allConfigs[name] then return false, "Config not found" end
-    allConfigs[name] = nil
-    if currentConfigName == name then currentConfigName = "" end
-    SaveAllConfigs()
-    return true, "Deleted " .. name
-end
-
-local function DuplicateConfig(name, newName)
-    if name == "" or newName == "" then return false, "Name cannot be empty" end
-    if not allConfigs[name] then return false, "Config not found" end
-    if allConfigs[newName] then return false, "Name already exists" end
-    local o = allConfigs[name]
-    local ce, se = {}, {}
-    for i = 1, 12 do
-        ce[i] = (o.currentEmotes and o.currentEmotes[i]) or ""
-        se[i] = (o.selectEmotes and o.selectEmotes[i]) or ""
-    end
-    allConfigs[newName] = { currentEmotes = ce, selectEmotes = se, cosmetic1 = o.cosmetic1 or "", cosmetic2 = o.cosmetic2 or "" }
-    SaveAllConfigs()
-    return true, "Duplicated as " .. newName
-end
-
--- === EMOTE SCANNER ===
+local allEmotes = {}
 
 local function ScanEmotes()
     allEmotes = {}
@@ -720,92 +729,67 @@ local function ScanEmotes()
     return allEmotes
 end
 
--- === UI HELPER ===
+-- ═══════════════════════════════════════════════════════════════
+-- UI HELPER
+-- ═══════════════════════════════════════════════════════════════
 
 local function UpdateAllUI()
-    for i = 1, 12 do
+    for i = 1, 6 do
         pcall(function()
-            if currentEmoteInputs[i] and currentEmoteInputs[i].Set then currentEmoteInputs[i]:Set(currentEmotes[i]) end
-            if selectEmoteInputs[i] and selectEmoteInputs[i].Set then selectEmoteInputs[i]:Set(selectEmotes[i]) end
+            if ownedEmoteInputs[i] and ownedEmoteInputs[i].Set then ownedEmoteInputs[i]:Set(ownedEmotes[i]) end
+            if replaceEmoteInputs[i] and replaceEmoteInputs[i].Set then replaceEmoteInputs[i]:Set(replaceEmotes[i]) end
         end)
     end
     pcall(function()
-        if cosmetic1Input then cosmetic1Input:Set(cosmetic1) end
-        if cosmetic2Input then cosmetic2Input:Set(cosmetic2) end
+        if cosmeticOwnedInput and cosmeticOwnedInput.Set then cosmeticOwnedInput:Set(cosmeticOwned) end
+        if cosmeticTargetInput and cosmeticTargetInput.Set then cosmeticTargetInput:Set(cosmeticTarget) end
     end)
 end
 
--- ============================================================
--- EMOTE CHANGER TAB
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- EMOTE CHANGER TAB UI
+-- ═══════════════════════════════════════════════════════════════
 
-Tabs.EmoteChanger:Section({ Title = "Emote Changer", TextSize = 20 })
-Tabs.EmoteChanger:Paragraph({
-    Title = "How to use",
-    Desc = "Current = emote you own | Select = visual replacement\nOthers see your real emote, you see the replacement"
-})
-Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Your Owned Emotes", TextSize = 16 })
+Tabs.EmoteChanger:Section({ Title = "Enter the emote name you currently have equipped", TextSize = 10 })
 
-Tabs.EmoteChanger:Section({ Title = "Animation Options", TextSize = 16 })
-
-EmoteChangerEmoteOption = Tabs.EmoteChanger:Input({
-    Title = "Emote Possible option",
-    Desc = "Higher Value may Broke emote animation recommend Use 1-3 (0 or 'Random' for random)",
-    Placeholder = "0",
-    Value = "0",
-    Callback = function(v)
-        currentNum = v:lower() == "random" or tonumber(v) == 0 and "Random" or tonumber(v) or 0
-        
-        function setupCharacter(char)
-            if char == player.Character then
-                char:SetAttribute("EmoteNum", currentNum == "Random" and math.random(1, 3) or currentNum)
-            end
+for i = 1, 6 do
+    ownedEmoteInputs[i] = Tabs.EmoteChanger:Input({
+        Title = "Slot " .. i .. " - Owned Emote",
+        Placeholder = "Enter emote you own",
+        Value = ownedEmotes[i],
+        Callback = function(v)
+            ownedEmotes[i] = v:gsub("%s+", "")
         end
-        
-        function monitorCharacter()
-            while true do
-                task.wait(1)
-                char = player.Character
-                if char and char:GetAttribute("EmoteNum") ~= currentNum then
-                    char:SetAttribute("EmoteNum", currentNum == "Random" and math.random(1, 3) or currentNum)
-                end
-            end
-        end
-        
-        if player.Character then setupCharacter(player.Character) end
-        player.CharacterAdded:Connect(function(char) task.wait(1); setupCharacter(char) end)
-        spawn(monitorCharacter)
-    end
-})
-
-Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Current Emotes", TextSize = 16 })
-
-for i = 1, 12 do
-    currentEmoteInputs[i] = Tabs.EmoteChanger:Input({
-        Title = "Current Emote " .. i,
-        Placeholder = "Enter current emote name",
-        Value = currentEmotes[i],
-        Callback = function(v) currentEmotes[i] = v:gsub("%s+", "") end
-    })
-end
-
-Tabs.EmoteChanger:Divider()
-Tabs.EmoteChanger:Section({ Title = "Select Emotes", TextSize = 16 })
-
-for i = 1, 12 do
-    selectEmoteInputs[i] = Tabs.EmoteChanger:Input({
-        Title = "Select Emote " .. i,
-        Placeholder = "Enter select emote name",
-        Value = selectEmotes[i],
-        Callback = function(v) selectEmotes[i] = v:gsub("%s+", "") end
     })
 end
 
 Tabs.EmoteChanger:Divider()
 
-ApplyButton = Tabs.EmoteChanger:Toggle({
-    Title = "Enable replace emote wheel",
+Tabs.EmoteChanger:Section({ Title = "Replace With", TextSize = 16 })
+Tabs.EmoteChanger:Section({ Title = "Enter the emote name you want to visually replace it with", TextSize = 10 })
+
+for i = 1, 6 do
+    replaceEmoteInputs[i] = Tabs.EmoteChanger:Input({
+        Title = "Slot " .. i .. " - Replace With",
+        Placeholder = "Enter emote to show instead",
+        Value = replaceEmotes[i],
+        Callback = function(v)
+            replaceEmotes[i] = v:gsub("%s+", "")
+        end
+    })
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- CONTROLS
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Controls", TextSize = 16 })
+
+local ApplyButton = Tabs.EmoteChanger:Toggle({
+    Title = "Enable Visual Emote Replacement",
+    Desc = "Shows replacement emotes on your emote wheel",
     Type = "Checkbox",
     Value = replacementEnabled,
     Callback = function(state)
@@ -824,31 +808,36 @@ ApplyButton = Tabs.EmoteChanger:Toggle({
 
 ApplyButton.Color = replacementEnabled and Color3.fromHex("#305dff") or Color3.fromHex("#555555")
 
-EmoteChangerEmoteApply = Tabs.EmoteChanger:Button({
+Tabs.EmoteChanger:Button({
     Title = "Apply Emote Mappings",
     Icon = "refresh-cw",
+    Desc = "Validate and apply your emote pairs",
     Callback = function()
-        hasAnyEmote = false
-        for i = 1, 12 do
-            if currentEmotes[i] ~= "" or selectEmotes[i] ~= "" then
+        local hasAnyEmote = false
+        for i = 1, 6 do
+            if ownedEmotes[i] ~= "" or replaceEmotes[i] ~= "" then
                 hasAnyEmote = true
                 break
             end
         end
         
         if not hasAnyEmote then
-            WindUI:Notify({ Title = "Emote Changer", Content = "Please enter your emote", Duration = 3 })
+            WindUI:Notify({
+                Title = "Emote Changer",
+                Content = "Please enter at least one emote pair.",
+                Duration = 3
+            })
             return
         end
         
-        function normalizeEmoteName(name)
+        local function normalizeEmoteName(name)
             return name:gsub("%s+", ""):lower()
         end
         
-        function isValidEmote(emoteName)
+        local function isValidEmote(emoteName)
             if emoteName == "" then return false, "" end
-            normalizedInput = normalizeEmoteName(emoteName)
-            emotesFolder = ReplicatedStorage:FindFirstChild("Items")
+            local normalizedInput = normalizeEmoteName(emoteName)
+            local emotesFolder = ReplicatedStorage:FindFirstChild("Items")
             if emotesFolder then
                 emotesFolder = emotesFolder:FindFirstChild("Emotes")
                 if emotesFolder then
@@ -864,115 +853,229 @@ EmoteChangerEmoteApply = Tabs.EmoteChanger:Button({
             return false, ""
         end
         
-        sameEmoteSlots = {}
-        missingEmoteSlots = {}
-        invalidEmoteSlots = {}
-        successfulSlots = {}
+        local sameEmoteSlots = {}
+        local missingEmoteSlots = {}
+        local invalidEmoteSlots = {}
+        local successfulSlots = {}
         
-        for i = 1, 12 do
-            if currentEmotes[i] ~= "" and selectEmotes[i] ~= "" then
-                currentValid, currentActual = isValidEmote(currentEmotes[i])
-                selectValid, selectActual = isValidEmote(selectEmotes[i])
+        for i = 1, 6 do
+            if ownedEmotes[i] ~= "" and replaceEmotes[i] ~= "" then
+                local ownedValid, ownedActual = isValidEmote(ownedEmotes[i])
+                local replaceValid, replaceActual = isValidEmote(replaceEmotes[i])
                 
-                if not currentValid and not selectValid then
-                    table.insert(invalidEmoteSlots, { slot = i, currentInvalid = true, currentName = currentEmotes[i], selectInvalid = true, selectName = selectEmotes[i] })
-                elseif not currentValid then
-                    table.insert(invalidEmoteSlots, { slot = i, currentInvalid = true, currentName = currentEmotes[i], selectInvalid = false, selectName = selectEmotes[i] })
-                elseif not selectValid then
-                    table.insert(invalidEmoteSlots, { slot = i, currentInvalid = false, currentName = currentEmotes[i], selectInvalid = true, selectName = selectEmotes[i] })
-                elseif currentActual:lower() == selectActual:lower() then
+                if not ownedValid and not replaceValid then
+                    table.insert(invalidEmoteSlots, {
+                        slot = i, ownedInvalid = true, ownedName = ownedEmotes[i],
+                        replaceInvalid = true, replaceName = replaceEmotes[i]
+                    })
+                elseif not ownedValid then
+                    table.insert(invalidEmoteSlots, {
+                        slot = i, ownedInvalid = true, ownedName = ownedEmotes[i],
+                        replaceInvalid = false, replaceName = replaceEmotes[i]
+                    })
+                elseif not replaceValid then
+                    table.insert(invalidEmoteSlots, {
+                        slot = i, ownedInvalid = false, ownedName = ownedEmotes[i],
+                        replaceInvalid = true, replaceName = replaceEmotes[i]
+                    })
+                elseif ownedActual:lower() == replaceActual:lower() then
                     table.insert(sameEmoteSlots, i)
                 else
-                    table.insert(successfulSlots, { slot = i, current = currentActual, select = selectActual })
+                    table.insert(successfulSlots, {
+                        slot = i, owned = ownedActual, replace = replaceActual
+                    })
                 end
-            elseif currentEmotes[i] ~= "" or selectEmotes[i] ~= "" then
+            elseif ownedEmotes[i] ~= "" or replaceEmotes[i] ~= "" then
                 table.insert(missingEmoteSlots, i)
             end
         end
         
-        message = ""
+        local message = ""
+        
         if #successfulSlots > 0 then
-            message = message .. "<font color='#00FF00'><stroke color='#000000' width='0.0001'>✓ Successfully applied emote on:</stroke></font>\n"
+            message = message .. "<font color='#00FF00'><stroke color='#000000' width='0.0001'>✓ Applied:</stroke></font>\n"
             for _, data in ipairs(successfulSlots) do
-                message = message .. "<font color='#00FF00'><stroke color='#000000' width='0.0001'>Slot " .. data.slot .. " Emote: " .. data.current .. " → " .. data.select .. "</stroke></font>\n"
+                message = message .. "<font color='#00FF00'><stroke color='#000000' width='0.0001'>  Slot " .. data.slot .. ": " .. data.owned .. " → " .. data.replace .. "</stroke></font>\n"
             end
-            message = message .. "\n"
         end
+        
         if #sameEmoteSlots > 0 then
-            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>🆇 Failed to apply emote on:</stroke></font>\n"
+            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>✗ Same emote:</stroke></font>\n"
             for _, slot in ipairs(sameEmoteSlots) do
-                message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>Slot " .. slot .. " - Cannot change emote with the same name</stroke></font>\n"
+                message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>  Slot " .. slot .. " - Can't replace with same emote</stroke></font>\n"
             end
-            message = message .. "\n"
         end
+        
         if #invalidEmoteSlots > 0 then
-            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>🆇 Failed to apply emote on:</stroke></font>\n"
+            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>✗ Invalid:</stroke></font>\n"
             for _, data in ipairs(invalidEmoteSlots) do
-                message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>Slot " .. data.slot .. " - "
-                if data.currentInvalid and data.selectInvalid then
-                    message = message .. "Invalid current emote: \"" .. data.currentName .. "\", Invalid select emote: \"" .. data.selectName .. "\"</stroke></font>\n"
-                elseif data.currentInvalid then
-                    message = message .. "Invalid current emote: \"" .. data.currentName .. "\", Select emote: \"" .. data.selectName .. "\"</stroke></font>\n"
+                message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>  Slot " .. data.slot .. " - "
+                if data.ownedInvalid and data.replaceInvalid then
+                    message = message .. "Both invalid"
+                elseif data.ownedInvalid then
+                    message = message .. "Owned: \"" .. data.ownedName .. "\" not found"
                 else
-                    message = message .. "Current emote: \"" .. data.currentName .. "\", Invalid select emote: \"" .. data.selectName .. "\"</stroke></font>\n"
+                    message = message .. "Replace: \"" .. data.replaceName .. "\" not found"
                 end
+                message = message .. "</stroke></font>\n"
             end
-            message = message .. "\n"
         end
+        
         if #missingEmoteSlots > 0 then
-            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>🆇 Failed to apply emote on:</stroke></font>\n"
+            message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>✗ Incomplete pair:</stroke></font>\n"
             for _, slot in ipairs(missingEmoteSlots) do
-                if currentEmotes[slot] == "" then
-                    message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>Slot " .. slot .. " - Current emote slot is missing text</stroke></font>\n"
-                else
-                    message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>Slot " .. slot .. " - Select emote slot is missing text</stroke></font>\n"
-                end
+                local which = ownedEmotes[slot] == "" and "Owned emote" or "Replace emote"
+                message = message .. "<font color='#ff0000'><stroke color='#FFFFFF' width='0.0001'>  Slot " .. slot .. " - " .. which .. " is empty</stroke></font>\n"
             end
         end
         
         emoteNameCache = {}
         normalizedCache = {}
+        
         WindUI:Notify({ Title = "Emote Changer", Content = message, Duration = 8 })
         
         cleanUpLastEmoteFrame()
         emoteFrame = getEmoteFrame()
         if not emoteFrame then
-            WindUI:Notify({ Title = "Emote Changer", Content = "Emote wheel not found.", Duration = 5 })
+            WindUI:Notify({ Title = "Emote Changer", Content = "Emote wheel not found. Open it first!", Duration = 5 })
             return
         end
         
         saveOriginalEmoteData(emoteFrame)
         restoreOriginalEmotes()
+        
         if replacementEnabled then
             replaceEmotesFrame()
         end
     end
 })
 
-EmoteChangerEmoteReset = Tabs.EmoteChanger:Button({
+-- ═══════════════════════════════════════════════════════════════
+-- CONFIG BUTTONS
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.EmoteChanger:Divider()
+Tabs.EmoteChanger:Section({ Title = "Config", TextSize = 16 })
+
+Tabs.EmoteChanger:Button({
+    Title = "Save Config",
+    Icon = "save",
+    Desc = "Save emote slots + cosmetics to file",
+    Callback = function()
+        local success, err = SaveConfig(ownedEmotes, replaceEmotes, replacementEnabled, cosmeticOwned, cosmeticTarget)
+        if success then
+            WindUI:Notify({ Title = "Config", Content = "Config saved! (emotes + cosmetics)", Icon = "check-circle", Duration = 3 })
+        else
+            WindUI:Notify({ Title = "Config", Content = "Failed to save: " .. tostring(err), Icon = "x-circle", Duration = 3 })
+        end
+    end
+})
+
+Tabs.EmoteChanger:Button({
+    Title = "Load Config",
+    Icon = "download",
+    Desc = "Load emote slots + cosmetics from file",
+    Callback = function()
+        local data = LoadConfig()
+        
+        local hasData = false
+        for i = 1, 6 do
+            if data.Slots[i].Owned ~= "" or data.Slots[i].Replace ~= "" then
+                hasData = true
+                break
+            end
+        end
+        if data.CosmeticOwned ~= "" or data.CosmeticTarget ~= "" then
+            hasData = true
+        end
+        
+        if not hasData then
+            WindUI:Notify({ Title = "Config", Content = "No saved config found or config is empty.", Icon = "info", Duration = 3 })
+            return
+        end
+        
+        -- Restore emotes if active
+        if emoteFrame and emoteDataSaved then
+            restoreOriginalEmotes()
+        end
+        
+        -- Reset cosmetics if swapped
+        if isCosmeticSwapped then
+            ResetCosmetics(true)
+        end
+        
+        -- Load emote slots
+        for i = 1, 6 do
+            ownedEmotes[i] = data.Slots[i].Owned
+            replaceEmotes[i] = data.Slots[i].Replace
+        end
+        
+        -- Load cosmetics
+        cosmeticOwned = data.CosmeticOwned or ""
+        cosmeticTarget = data.CosmeticTarget or ""
+        
+        UpdateAllUI()
+        
+        -- Auto-apply cosmetics if both are set
+        if cosmeticOwned ~= "" and cosmeticTarget ~= "" then
+            local success, msg = SwapCosmetics(true)
+            if success then
+                UpdateSwapStatus()
+            end
+        end
+        
+        WindUI:Notify({ Title = "Config", Content = "Config loaded! Click 'Apply Emote Mappings' to activate emotes.", Icon = "check-circle", Duration = 4 })
+    end
+})
+
+Tabs.EmoteChanger:Button({
+    Title = "Delete Config",
+    Icon = "trash",
+    Desc = "Delete saved config file",
+    Callback = function()
+        DeleteConfig()
+        WindUI:Notify({ Title = "Config", Content = "Config file deleted.", Icon = "check-circle", Duration = 3 })
+    end
+})
+
+-- ═══════════════════════════════════════════════════════════════
+-- RESET ALL
+-- ═══════════════════════════════════════════════════════════════
+
+Tabs.EmoteChanger:Divider()
+
+Tabs.EmoteChanger:Button({
     Title = "Reset All Emotes",
     Icon = "trash-2",
+    Desc = "Clear all 6 slots and restore originals",
     Callback = function()
         if emoteFrame then
             restoreOriginalEmotes()
         end
-        for i = 1, 12 do
-            currentEmotes[i] = ""
-            selectEmotes[i] = ""
-            if currentEmoteInputs[i] and currentEmoteInputs[i].Set then currentEmoteInputs[i]:Set("") end
-            if selectEmoteInputs[i] and selectEmoteInputs[i].Set then selectEmoteInputs[i]:Set("") end
+        
+        for i = 1, 6 do
+            ownedEmotes[i] = ""
+            replaceEmotes[i] = ""
+            
+            if ownedEmoteInputs[i] and ownedEmoteInputs[i].Set then
+                ownedEmoteInputs[i]:Set("")
+            end
+            if replaceEmoteInputs[i] and replaceEmoteInputs[i].Set then
+                replaceEmoteInputs[i]:Set("")
+            end
         end
-        if EmoteChangerEmoteOption and EmoteChangerEmoteOption.Set then EmoteChangerEmoteOption:Set("") end
+        
         emoteNameCache = {}
         normalizedCache = {}
         cleanUpLastEmoteFrame()
-        WindUI:Notify({ Title = "Emote Changer", Content = "All emotes have been reset!" })
+        
+        WindUI:Notify({ Title = "Emote Changer", Content = "All 6 emote slots have been reset!", Duration = 3 })
     end
 })
 
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
 -- EMOTE LIST TAB
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
 
 Tabs.EmoteList:Section({ Title = "Emote List", TextSize = 20 })
 Tabs.EmoteList:Paragraph({ Title = "All Available Emotes", Desc = "Click any emote to copy its name" })
@@ -1009,239 +1112,119 @@ task.spawn(function()
     end
 end)
 
--- ============================================================
--- VISUALS TAB
--- ============================================================
+-- ═══════════════════════════════════════════════════════════════
+-- VISUALS TAB (COSMETICS)
+-- ═══════════════════════════════════════════════════════════════
 
 Tabs.Visuals:Section({ Title = "Cosmetics Changer", TextSize = 20 })
-Tabs.Visuals:Paragraph({ Title = "How to use", Desc = "Your Cosmetic = what you own | Target = what you want" })
+Tabs.Visuals:Paragraph({
+    Title = "How to use",
+    Desc = "Your Cosmetic = what you own and have equipped\nTarget Cosmetic = what you want it to visually look like\nThis swaps the cosmetic data so you see the target instead"
+})
 Tabs.Visuals:Divider()
 
-cosmetic1Input = Tabs.Visuals:Input({
+cosmeticOwnedInput = Tabs.Visuals:Input({
     Title = "Your Cosmetic (Owned)",
-    Placeholder = "Enter cosmetic name",
-    Value = cosmetic1,
-    Callback = function(v) cosmetic1 = v end
+    Placeholder = "Enter cosmetic name you own",
+    Value = cosmeticOwned,
+    Callback = function(v) cosmeticOwned = v end
 })
 
-cosmetic2Input = Tabs.Visuals:Input({
+cosmeticTargetInput = Tabs.Visuals:Input({
     Title = "Target Cosmetic (Want)",
-    Placeholder = "Enter cosmetic name",
-    Value = cosmetic2,
-    Callback = function(v) cosmetic2 = v end
+    Placeholder = "Enter cosmetic name you want",
+    Value = cosmeticTarget,
+    Callback = function(v) cosmeticTarget = v end
 })
 
 Tabs.Visuals:Divider()
 
 Tabs.Visuals:Button({
-    Title = "Apply Cosmetic Swap", Icon = "check",
+    Title = "Apply Cosmetic Swap",
+    Icon = "check",
+    Desc = "Swap your owned cosmetic with the target",
     Callback = function()
-        if isSwapped then ResetCosmetics(true) end
+        if isCosmeticSwapped then
+            ResetCosmetics(true)
+        end
         local success, msg = SwapCosmetics()
-        WindUI:Notify({ Title = "Cosmetics", Content = msg, Duration = 2 })
+        WindUI:Notify({ Title = "Cosmetics", Content = msg, Duration = 3 })
         UpdateSwapStatus()
     end
 })
 
 Tabs.Visuals:Button({
-    Title = "Reset Cosmetics", Icon = "rotate-ccw",
+    Title = "Reset Cosmetics",
+    Icon = "rotate-ccw",
+    Desc = "Restore cosmetics to original",
     Callback = function()
         local success, msg = ResetCosmetics()
-        WindUI:Notify({ Title = "Cosmetics", Content = msg, Duration = 2 })
+        WindUI:Notify({ Title = "Cosmetics", Content = msg, Duration = 3 })
         UpdateSwapStatus()
     end
 })
 
 Tabs.Visuals:Divider()
 
-local swapStatusParagraph = Tabs.Visuals:Paragraph({ Title = "Status", Desc = "No cosmetics swapped" })
+Tabs.Visuals:Section({ Title = "Cosmetic List", TextSize = 16 })
+
+Tabs.Visuals:Button({
+    Title = "Show All Cosmetics",
+    Icon = "list",
+    Desc = "List all available cosmetic names (copies on click)",
+    Callback = function()
+        local names = GetCosmeticNames()
+        if #names == 0 then
+            WindUI:Notify({ Title = "Cosmetics", Content = "No cosmetics found!", Duration = 2 })
+            return
+        end
+        
+        -- Clear cache to rescan
+        cachedCosmeticNames = nil
+        names = GetCosmeticNames()
+        table.sort(names, function(a, b) return a:lower() < b:lower() end)
+        
+        local listStr = table.concat(names, "\n")
+        if setclipboard then
+            setclipboard(listStr)
+            WindUI:Notify({
+                Title = "Cosmetics",
+                Content = "Copied " .. #names .. " cosmetic names to clipboard!",
+                Duration = 3
+            })
+        else
+            WindUI:Notify({
+                Title = "Cosmetics",
+                Content = "Found " .. #names .. " cosmetics (clipboard not available)",
+                Duration = 3
+            })
+        end
+    end
+})
+
+Tabs.Visuals:Divider()
+
+local swapStatusParagraph = Tabs.Visuals:Paragraph({ Title = "Swap Status", Desc = "No cosmetics swapped" })
 
 function UpdateSwapStatus()
     pcall(function()
-        if isSwapped then
-            swapStatusParagraph:SetDesc("Swapped: " .. cosmetic1 .. " and " .. cosmetic2)
+        if isCosmeticSwapped then
+            swapStatusParagraph:SetDesc("Active: " .. cosmeticOwned .. " ↔ " .. cosmeticTarget)
         else
             swapStatusParagraph:SetDesc("No cosmetics swapped")
         end
     end)
 end
 
--- ============================================================
--- SETTINGS TAB
--- ============================================================
-
-Tabs.Settings:Section({ Title = "Config Profiles", TextSize = 20 })
-Tabs.Settings:Paragraph({ Title = "Manage Configs", Desc = "Saves emotes + cosmetics" })
-Tabs.Settings:Divider()
-
-local currentConfigDisplay = Tabs.Settings:Paragraph({ Title = "Current Config", Desc = "None selected" })
-
-local function UpdateConfigDisplay()
-    pcall(function()
-        currentConfigDisplay:SetDesc(currentConfigName ~= "" and currentConfigName or "None selected")
-    end)
-end
-
-Tabs.Settings:Section({ Title = "Select Config", TextSize = 16 })
-
-local function RefreshConfigDropdown()
-    local names = GetConfigNames()
-    if #names == 0 then names = {"No configs yet"} end
-    if configDropdown then
-        pcall(function()
-            configDropdown:Refresh(names, true)
-            if currentConfigName ~= "" and allConfigs[currentConfigName] then
-                configDropdown:Set(currentConfigName)
-            end
-        end)
-    end
-end
-
-configDropdown = Tabs.Settings:Dropdown({
-    Title = "Choose Config",
-    Desc = "Select a config to load",
-    Multi = false, AllowNone = true, Value = "", Values = {"No configs yet"},
-    Callback = function(selected)
-        if selected and selected ~= "No configs yet" and allConfigs[selected] then
-            if isSwapped then ResetCosmetics(true) end
-            if emoteFrame then restoreOriginalEmotes() end
-            local success, msg = LoadFromConfig(selected)
-            if success then
-                UpdateAllUI()
-                UpdateConfigDisplay()
-                UpdateSwapStatus()
-                if cosmetic1 ~= "" and cosmetic2 ~= "" and not isSwapped then
-                    SwapCosmetics(true)
-                    UpdateSwapStatus()
-                end
-                cleanUpLastEmoteFrame()
-                emoteFrame = getEmoteFrame()
-                if emoteFrame then
-                    saveOriginalEmoteData(emoteFrame)
-                    restoreOriginalEmotes()
-                    if replacementEnabled then replaceEmotesFrame() end
-                end
-                WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
-            end
-        end
-    end
+Tabs.Visuals:Divider()
+Tabs.Visuals:Paragraph({
+    Title = "Note",
+    Desc = "Cosmetic swap is visual only (client-side).\nOther players see your real cosmetic.\nCosmetics are saved with your config."
 })
 
-Tabs.Settings:Divider()
-Tabs.Settings:Section({ Title = "Create New Config", TextSize = 16 })
-
-local newConfigName = ""
-Tabs.Settings:Input({ Title = "New Config Name", Placeholder = "Enter name", Value = "", Callback = function(v) newConfigName = v end })
-
-Tabs.Settings:Button({
-    Title = "Create Config", Icon = "plus",
-    Callback = function()
-        if newConfigName == "" then WindUI:Notify({ Title = "Error", Content = "Enter a name!", Duration = 2 }) return end
-        local success, msg = CreateConfig(newConfigName)
-        if success then RefreshConfigDropdown() UpdateConfigDisplay() UpdateConfigList() end
-        WindUI:Notify({ Title = success and "Config" or "Error", Content = msg, Duration = 2 })
-    end
-})
-
-Tabs.Settings:Divider()
-Tabs.Settings:Section({ Title = "Quick Actions", TextSize = 16 })
-
-Tabs.Settings:Button({
-    Title = "Save Current Config", Icon = "save",
-    Callback = function()
-        if currentConfigName == "" then WindUI:Notify({ Title = "Error", Content = "Select or create a config!", Duration = 2 }) return end
-        local success, msg = SaveToConfig(currentConfigName)
-        WindUI:Notify({ Title = "Config", Content = msg, Duration = 2 })
-    end
-})
-
-Tabs.Settings:Divider()
-Tabs.Settings:Section({ Title = "Manage Config", TextSize = 16 })
-
-local renameInput = ""
-Tabs.Settings:Input({ Title = "New Name (for rename)", Placeholder = "Enter new name", Value = "", Callback = function(v) renameInput = v end })
-
-Tabs.Settings:Button({
-    Title = "Rename Config", Icon = "edit",
-    Callback = function()
-        if currentConfigName == "" then WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 }) return end
-        local success, msg = RenameConfig(currentConfigName, renameInput)
-        if success then RefreshConfigDropdown() UpdateConfigDisplay() UpdateConfigList() end
-        WindUI:Notify({ Title = success and "Config" or "Error", Content = msg, Duration = 2 })
-    end
-})
-
-local duplicateName = ""
-Tabs.Settings:Input({ Title = "Duplicate Name", Placeholder = "Name for copy", Value = "", Callback = function(v) duplicateName = v end })
-
-Tabs.Settings:Button({
-    Title = "Duplicate Config", Icon = "copy",
-    Callback = function()
-        if currentConfigName == "" then WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 }) return end
-        local success, msg = DuplicateConfig(currentConfigName, duplicateName)
-        if success then RefreshConfigDropdown() UpdateConfigList() end
-        WindUI:Notify({ Title = success and "Config" or "Error", Content = msg, Duration = 2 })
-    end
-})
-
-Tabs.Settings:Divider()
-Tabs.Settings:Section({ Title = "Delete", TextSize = 16 })
-
-Tabs.Settings:Button({
-    Title = "Delete Current Config", Icon = "trash",
-    Callback = function()
-        if currentConfigName == "" then WindUI:Notify({ Title = "Error", Content = "No config selected!", Duration = 2 }) return end
-        local success, msg = DeleteConfig(currentConfigName)
-        if success then RefreshConfigDropdown() UpdateConfigDisplay() UpdateConfigList() end
-        WindUI:Notify({ Title = success and "Config" or "Error", Content = msg, Duration = 2 })
-    end
-})
-
-Tabs.Settings:Button({
-    Title = "Delete ALL Configs", Icon = "alert-triangle",
-    Callback = function()
-        allConfigs = {}
-        currentConfigName = ""
-        SaveAllConfigs()
-        RefreshConfigDropdown()
-        UpdateConfigDisplay()
-        UpdateConfigList()
-        WindUI:Notify({ Title = "Config", Content = "All configs deleted!", Duration = 2 })
-    end
-})
-
-Tabs.Settings:Divider()
-Tabs.Settings:Section({ Title = "Saved Configs", TextSize = 16 })
-
-local configListParagraph = Tabs.Settings:Paragraph({ Title = "Configs", Desc = "Loading..." })
-
-function UpdateConfigList()
-    local names = GetConfigNames()
-    if #names == 0 then
-        pcall(function() configListParagraph:SetDesc("No configs saved") end)
-        return
-    end
-    local parts = {}
-    for _, name in ipairs(names) do
-        if name == currentConfigName then
-            parts[#parts + 1] = "> " .. name .. " (active)"
-        else
-            parts[#parts + 1] = "  " .. name
-        end
-    end
-    pcall(function() configListParagraph:SetDesc(table.concat(parts, "\n")) end)
-end
-
-Tabs.Settings:Button({ Title = "Refresh List", Icon = "refresh-cw", Callback = function() RefreshConfigDropdown() UpdateConfigList() UpdateConfigDisplay() end })
-
-Tabs.Settings:Divider()
-Tabs.Settings:Paragraph({ Title = "Info", Desc = "Press L to toggle UI\nVisual only - you see replacement, others see your real emote" })
-
--- ============================================================
--- INITIALIZE
--- ============================================================
-
-findEmoteModelScript()
+-- ═══════════════════════════════════════════════════════════════
+-- RESPAWN CONNECTIONS
+-- ═══════════════════════════════════════════════════════════════
 
 if player.Character then
     task.spawn(handleSingleRespawn)
@@ -1268,34 +1251,23 @@ if workspace:FindFirstChild("Game") and workspace.Game:FindFirstChild("Players")
     end)
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- INITIALIZE
+-- ═══════════════════════════════════════════════════════════════
+
+findEmoteModelScript()
+
+-- Auto-apply cosmetics from saved config on load
 task.spawn(function()
-    task.wait(1)
-    local loaded = LoadAllConfigs()
-    RefreshConfigDropdown()
-    UpdateConfigList()
-    UpdateConfigDisplay()
-    if currentConfigName ~= "" and allConfigs[currentConfigName] then
-        local success = LoadFromConfig(currentConfigName)
+    task.wait(1.5)
+    if cosmeticOwned ~= "" and cosmeticTarget ~= "" and not isCosmeticSwapped then
+        local success, msg = SwapCosmetics(true)
         if success then
-            UpdateAllUI()
-            task.wait(0.5)
-            if cosmetic1 ~= "" and cosmetic2 ~= "" and not isSwapped then
-                SwapCosmetics(true)
-                UpdateSwapStatus()
-            end
-            cleanUpLastEmoteFrame()
-            emoteFrame = getEmoteFrame()
-            if emoteFrame then
-                saveOriginalEmoteData(emoteFrame)
-                restoreOriginalEmotes()
-                if replacementEnabled then replaceEmotesFrame() end
-            end
-            WindUI:Notify({ Title = "Auto-Applied!", Content = "Config: " .. currentConfigName, Duration = 3 })
+            UpdateSwapStatus()
+            WindUI:Notify({ Title = "Auto-Applied", Content = "Cosmetics: " .. msg, Duration = 3 })
         end
-    else
-        WindUI:Notify({ Title = "Emote Changer", Content = "Create a config in Settings!", Duration = 3 })
     end
 end)
 
-print("Visual Emote Changer Loaded")
-print("Press L to toggle UI")
+print("Visual Emote Changer V5 Loaded")
+print("Emotes: 6 slots | Cosmetics: Visuals tab | Config: saves both")
