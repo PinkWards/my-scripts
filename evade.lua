@@ -71,11 +71,11 @@ local Config = {
 }
 
 local BounceConfig = {
-    Power = 100,
-    Boost = 190,
+    Power = 90,
+    Boost = 200,
     Cooldown = 0.9,
-    AirDuration = 10,
-    AirGain = 11,
+    AirDuration = 9,
+    AirGain = 10,
     AirMax = 290
 }
 
@@ -83,7 +83,7 @@ local EdgeConfig = {
     Boost = 35,
     MinSpeed = 3,
     Cooldown = 0.12,
-    MinEdge = 0.4,
+    MinEdge = 0.5,
     LastTime = 0,
     DetectionRange = 2.5,
     RayDepth = 5
@@ -117,7 +117,7 @@ local ColaSpeedPresets = {
 local BhopConfig = {
     PreJumpDistance = 4.5,
     PreJumpVelThreshold = -2,
-    GroundRayLength = 2.8,
+    GroundRayLength = 2.4,
     SlopeMaxAngle = 40,
     SpeedPreserveEnabled = true,
     MinPreserveSpeed = 10,
@@ -126,7 +126,7 @@ local BhopConfig = {
     ConsecutiveJumpBonus = 0.005,
     MaxConsecutiveBonus = 0.05,
     GroundCheckMultiRay = true,
-    MultiRaySpread = 1.4,
+    MultiRaySpread = 1.1,
 }
 
 local Humanoid, RootPart = nil, nil
