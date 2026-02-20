@@ -71,11 +71,11 @@ local Config = {
 }
 
 local BounceConfig = {
-    Power = 80,
-    Boost = 170,
+    Power =90,
+    Boost = 190,
     Cooldown = 0.9,
-    AirDuration = 12,
-    AirGain = 14,
+    AirDuration = 10,
+    AirGain = 12,
     AirMax = 290
 }
 
@@ -118,7 +118,7 @@ local BhopConfig = {
     PreJumpDistance = 4.5,
     PreJumpVelThreshold = -2,
     GroundRayLength = 2.4,
-    SlopeMaxAngle = 35,
+    SlopeMaxAngle = 40,
     SpeedPreserveEnabled = true,
     MinPreserveSpeed = 10,
     LandingBoostFactor = 2.02,
