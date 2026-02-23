@@ -23,6 +23,12 @@ local favEmotes, favAnims = {}, {}
 local isLoading, favEnabled, guiCreated = false, false, false
 local wheelCache, lastWheelCheck, lastWheelVisible, lastAction = nil, 0, 0, 0
 
+-- ═══════════════════════════════════════════
+-- AUTO-REAPPLY TOGGLE (NEW)
+-- ═══════════════════════════════════════════
+local autoReapplyEnabled = true  -- DEFAULT: ON (set to false to start with it off)
+local AutoReapplyBtn  -- GUI reference for the toggle button
+
 getgenv().lastAnim = getgenv().lastAnim or nil
 
 local COLORS = {
@@ -33,6 +39,8 @@ local COLORS = {
     PINK_ANIM = Color3.fromHex("#C8A2C8"),
     WHITE = Color3.fromRGB(255, 255, 255),
     PLACEHOLDER = Color3.fromRGB(255, 210, 230),
+    GREEN_ON = Color3.fromRGB(100, 220, 130),
+    RED_OFF = Color3.fromRGB(220, 100, 100),
 }
 
 -- GUI References
@@ -97,6 +105,20 @@ local function loadLastAnim()
     local data = loadFile("LastAnimation.json")
     if data and data.id then
         getgenv().lastAnim = data
+    end
+end
+
+-- ═══════════════════════════════════════════
+-- SAVE/LOAD AUTO-REAPPLY SETTING (NEW)
+-- ═══════════════════════════════════════════
+local function saveAutoReaplySetting()
+    saveFile("AutoReapplySetting.json", {enabled = autoReapplyEnabled})
+end
+
+local function loadAutoReaplySetting()
+    local data = loadFile("AutoReapplySetting.json")
+    if data and data.enabled ~= nil then
+        autoReapplyEnabled = data.enabled
     end
 end
 
@@ -180,6 +202,14 @@ local function applyPinkTheme()
     if ModeBtn then
         ModeBtn.BackgroundColor3 = mode == "animation" and COLORS.PINK_ANIM or COLORS.PINK_MEDIUM
         ModeBtn.BackgroundTransparency = 0.15
+    end
+    
+    -- ═══════════════════════════════════════════
+    -- AUTO-REAPPLY BUTTON COLOR UPDATE (NEW)
+    -- ═══════════════════════════════════════════
+    if AutoReapplyBtn then
+        AutoReapplyBtn.BackgroundColor3 = autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
+        AutoReapplyBtn.BackgroundTransparency = 0.15
     end
 end
 
@@ -685,6 +715,21 @@ local function toggleFavMode()
     updateDisplay()
 end
 
+-- ═══════════════════════════════════════════
+-- AUTO-REAPPLY TOGGLE FUNCTION (NEW)
+-- ═══════════════════════════════════════════
+local function toggleAutoReapply()
+    autoReapplyEnabled = not autoReapplyEnabled
+    saveAutoReaplySetting()
+    applyPinkTheme()
+    
+    if autoReapplyEnabled then
+        notify("💗 Auto-Reapply", "🔄 ON - Animations will restore on respawn", 3)
+    else
+        notify("💗 Auto-Reapply", "⏹️ OFF - Animations won't restore on respawn", 3)
+    end
+end
+
 --============ GUI CREATION ============--
 
 local function createGUI()
@@ -692,7 +737,7 @@ local function createGUI()
     if not wheel then return false end
     
     -- Clean old elements
-    for _, name in ipairs({"Under", "Top", "Favorite", "ModeToggle"}) do
+    for _, name in ipairs({"Under", "Top", "Favorite", "ModeToggle", "AutoReapplyToggle"}) do
         local existing = wheel:FindFirstChild(name)
         if existing then existing:Destroy() end
     end
@@ -848,6 +893,32 @@ local function createGUI()
     modeText.TextScaled = true
     modeText.ZIndex = ModeBtn.ZIndex + 1
     
+    -- ═══════════════════════════════════════════
+    -- AUTO-REAPPLY TOGGLE BUTTON (NEW)
+    -- ═══════════════════════════════════════════
+    AutoReapplyBtn = Instance.new("ImageButton")
+    AutoReapplyBtn.Name = "AutoReapplyToggle"
+    AutoReapplyBtn.Parent = wheel
+    AutoReapplyBtn.BackgroundColor3 = autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
+    AutoReapplyBtn.BackgroundTransparency = 0.15
+    AutoReapplyBtn.BorderSizePixel = 0
+    AutoReapplyBtn.Position = UDim2.new(0.454, 0, -0.108, 0)  -- Centered between fav and mode buttons
+    AutoReapplyBtn.Size = UDim2.new(0.0875, 0, 0.0875, 0)
+    AutoReapplyBtn.Image = ""
+    
+    local autoCorner = Instance.new("UICorner")
+    autoCorner.CornerRadius = UDim.new(0, 10)
+    autoCorner.Parent = AutoReapplyBtn
+    
+    local autoText = Instance.new("TextLabel")
+    autoText.Parent = AutoReapplyBtn
+    autoText.BackgroundTransparency = 1
+    autoText.Size = UDim2.new(1, 0, 1, 0)
+    autoText.Font = Enum.Font.SourceSans
+    autoText.Text = "🔄"
+    autoText.TextScaled = true
+    autoText.ZIndex = AutoReapplyBtn.ZIndex + 1
+    
     -- Connect events
     LeftBtn.MouseButton1Click:Connect(prevPage)
     RightBtn.MouseButton1Click:Connect(nextPage)
@@ -867,6 +938,7 @@ local function createGUI()
     
     FavBtn.MouseButton1Click:Connect(toggleFavMode)
     ModeBtn.MouseButton1Click:Connect(toggleMode)
+    AutoReapplyBtn.MouseButton1Click:Connect(toggleAutoReapply)  -- NEW
     
     applyPinkTheme()
     guiCreated = true
@@ -879,11 +951,15 @@ end
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid")
     
-    -- AUTO-RELOAD animation on respawn
-    if getgenv().lastAnim and getgenv().lastAnim.id then
+    -- ═══════════════════════════════════════════
+    -- AUTO-RELOAD animation on respawn (NOW RESPECTS TOGGLE)
+    -- ═══════════════════════════════════════════
+    if autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
         task.wait(0.5)
         applyAnim(getgenv().lastAnim)
         notify("💗 Auto-Reload", "🔄 Animation restored!", 3)
+    elseif not autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
+        notify("💗 Auto-Reload", "⏹️ Skipped (Auto-Reapply is OFF)", 3)
     end
     
     hum.Died:Connect(function()
@@ -943,6 +1019,8 @@ task.spawn(function()
         favEmotes = loadFile("FavoriteEmotes.json")
         favAnims = loadFile("FavoriteAnimations.json")
         loadLastAnim()
+        loadAutoReaplySetting()  -- NEW: Load saved auto-reapply preference
+        applyPinkTheme()  -- Update button color after loading setting
         
         fetchEmotes()
         fetchAnims()
@@ -1023,5 +1101,6 @@ print("   💗 PinkWards Emote + Animation System")
 print("   Press '.' to open")
 print("   🎬 = Toggle Animation Mode")
 print("   💗 = Favorite Mode")
+print("   🔄 = Toggle Auto-Reapply on Death")
 print("   ✅ Auto-saves animations on respawn!")
 print("=========================================")
