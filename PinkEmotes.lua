@@ -23,11 +23,8 @@ local favEmotes, favAnims = {}, {}
 local isLoading, favEnabled, guiCreated = false, false, false
 local wheelCache, lastWheelCheck, lastWheelVisible, lastAction = nil, 0, 0, 0
 
--- ═══════════════════════════════════════════
--- AUTO-REAPPLY TOGGLE (NEW)
--- ═══════════════════════════════════════════
-local autoReapplyEnabled = true  -- DEFAULT: ON (set to false to start with it off)
-local AutoReapplyBtn  -- GUI reference for the toggle button
+local autoReapplyEnabled = true
+local AutoReapplyBtn
 
 getgenv().lastAnim = getgenv().lastAnim or nil
 
@@ -43,7 +40,6 @@ local COLORS = {
     RED_OFF = Color3.fromRGB(220, 100, 100),
 }
 
--- GUI References
 local Under, LeftBtn, RightBtn, PagesLabel, SepLabel, PageNumBox
 local Top, Search, FavBtn, ModeBtn
 
@@ -108,9 +104,6 @@ local function loadLastAnim()
     end
 end
 
--- ═══════════════════════════════════════════
--- SAVE/LOAD AUTO-REAPPLY SETTING (NEW)
--- ═══════════════════════════════════════════
 local function saveAutoReaplySetting()
     saveFile("AutoReapplySetting.json", {enabled = autoReapplyEnabled})
 end
@@ -160,7 +153,6 @@ local function applyPinkTheme()
     local wheel = getWheel()
     if not wheel then return end
     
-    -- Apply pink to wheel background
     pcall(function()
         local back = wheel:FindFirstChild("Back")
         if back then
@@ -185,7 +177,6 @@ local function applyPinkTheme()
         end
     end)
     
-    -- Update GUI elements colors
     if LeftBtn then LeftBtn.ImageColor3 = COLORS.PINK_MEDIUM end
     if RightBtn then RightBtn.ImageColor3 = COLORS.PINK_MEDIUM end
     if PagesLabel then PagesLabel.TextColor3 = COLORS.WHITE end
@@ -203,10 +194,6 @@ local function applyPinkTheme()
         ModeBtn.BackgroundColor3 = mode == "animation" and COLORS.PINK_ANIM or COLORS.PINK_MEDIUM
         ModeBtn.BackgroundTransparency = 0.15
     end
-    
-    -- ═══════════════════════════════════════════
-    -- AUTO-REAPPLY BUTTON COLOR UPDATE (NEW)
-    -- ═══════════════════════════════════════════
     if AutoReapplyBtn then
         AutoReapplyBtn.BackgroundColor3 = autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
         AutoReapplyBtn.BackgroundTransparency = 0.15
@@ -272,11 +259,9 @@ local function applyAnim(data)
         return
     end
     
-    -- AUTO-SAVE for respawn
     getgenv().lastAnim = {id = data.id, name = data.name, bundledItems = bundled}
     saveLastAnim()
     
-    -- Stop current animations
     for _, track in pairs(hum:GetPlayingAnimationTracks()) do
         track:Stop()
     end
@@ -412,7 +397,6 @@ local function updateDisplay()
     desc:SetEmotes(emoteTable)
     desc:SetEquippedEmotes(equipped)
     
-    -- Update wheel images
     task.delay(0.1, function()
         local wheel = getWheel()
         if not wheel then return end
@@ -535,7 +519,6 @@ local function handleSector(index)
     end
 end
 
--- Input detection
 UserInputService.InputBegan:Connect(function(input)
     if mode ~= "animation" and not favEnabled then return end
     if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
@@ -563,7 +546,6 @@ UserInputService.InputBegan:Connect(function(input)
     handleSector(sectorIndex)
 end)
 
--- Track wheel visibility
 RunService.Heartbeat:Connect(function()
     pcall(function()
         local wheel = getWheel()
@@ -715,16 +697,13 @@ local function toggleFavMode()
     updateDisplay()
 end
 
--- ═══════════════════════════════════════════
--- AUTO-REAPPLY TOGGLE FUNCTION (NEW)
--- ═══════════════════════════════════════════
 local function toggleAutoReapply()
     autoReapplyEnabled = not autoReapplyEnabled
     saveAutoReaplySetting()
     applyPinkTheme()
     
     if autoReapplyEnabled then
-        notify("💗 Auto-Reapply", "🔄 ON - Animations will restore on respawn", 3)
+        notify("💗 Auto-Reapply", "🔄 ON - Animations restore on respawn", 3)
     else
         notify("💗 Auto-Reapply", "⏹️ OFF - Animations won't restore on respawn", 3)
     end
@@ -736,7 +715,6 @@ local function createGUI()
     local wheel = getWheel()
     if not wheel then return false end
     
-    -- Clean old elements
     for _, name in ipairs({"Under", "Top", "Favorite", "ModeToggle", "AutoReapplyToggle"}) do
         local existing = wheel:FindFirstChild(name)
         if existing then existing:Destroy() end
@@ -757,7 +735,6 @@ local function createGUI()
     underLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     underLayout.SortOrder = Enum.SortOrder.LayoutOrder
     
-    -- Left arrow
     LeftBtn = Instance.new("ImageButton")
     LeftBtn.Name = "LeftBtn"
     LeftBtn.Parent = Under
@@ -767,7 +744,6 @@ local function createGUI()
     LeftBtn.Image = "rbxassetid://93111945058621"
     LeftBtn.ImageColor3 = COLORS.PINK_MEDIUM
     
-    -- Page number input
     PageNumBox = Instance.new("TextBox")
     PageNumBox.Name = "PageNum"
     PageNumBox.Parent = Under
@@ -779,7 +755,6 @@ local function createGUI()
     PageNumBox.TextColor3 = COLORS.WHITE
     PageNumBox.TextScaled = true
     
-    -- Separator
     SepLabel = Instance.new("TextLabel")
     SepLabel.Name = "Separator"
     SepLabel.Parent = Under
@@ -791,7 +766,6 @@ local function createGUI()
     SepLabel.TextColor3 = COLORS.WHITE
     SepLabel.TextScaled = true
     
-    -- Total pages
     PagesLabel = Instance.new("TextLabel")
     PagesLabel.Name = "TotalPages"
     PagesLabel.Parent = Under
@@ -803,7 +777,6 @@ local function createGUI()
     PagesLabel.TextColor3 = COLORS.WHITE
     PagesLabel.TextScaled = true
     
-    -- Right arrow
     RightBtn = Instance.new("ImageButton")
     RightBtn.Name = "RightBtn"
     RightBtn.Parent = Under
@@ -845,7 +818,7 @@ local function createGUI()
     Search.TextColor3 = COLORS.WHITE
     Search.TextScaled = true
     
-    -- Favorite button
+    -- Favorite button (left side)
     FavBtn = Instance.new("ImageButton")
     FavBtn.Name = "Favorite"
     FavBtn.Parent = wheel
@@ -869,7 +842,7 @@ local function createGUI()
     favText.TextScaled = true
     favText.ZIndex = FavBtn.ZIndex + 1
     
-    -- Mode toggle button
+    -- Mode toggle button (right side)
     ModeBtn = Instance.new("ImageButton")
     ModeBtn.Name = "ModeToggle"
     ModeBtn.Parent = wheel
@@ -893,16 +866,14 @@ local function createGUI()
     modeText.TextScaled = true
     modeText.ZIndex = ModeBtn.ZIndex + 1
     
-    -- ═══════════════════════════════════════════
-    -- AUTO-REAPPLY TOGGLE BUTTON (NEW)
-    -- ═══════════════════════════════════════════
+    -- Auto-Reapply button (RIGHT NEXT TO the 🎬 mode button)
     AutoReapplyBtn = Instance.new("ImageButton")
     AutoReapplyBtn.Name = "AutoReapplyToggle"
     AutoReapplyBtn.Parent = wheel
     AutoReapplyBtn.BackgroundColor3 = autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
     AutoReapplyBtn.BackgroundTransparency = 0.15
     AutoReapplyBtn.BorderSizePixel = 0
-    AutoReapplyBtn.Position = UDim2.new(0.454, 0, -0.108, 0)  -- Centered between fav and mode buttons
+    AutoReapplyBtn.Position = UDim2.new(0.889, 0, -0.215, 0)  -- Directly above the 🎬 button
     AutoReapplyBtn.Size = UDim2.new(0.0875, 0, 0.0875, 0)
     AutoReapplyBtn.Image = ""
     
@@ -938,7 +909,7 @@ local function createGUI()
     
     FavBtn.MouseButton1Click:Connect(toggleFavMode)
     ModeBtn.MouseButton1Click:Connect(toggleMode)
-    AutoReapplyBtn.MouseButton1Click:Connect(toggleAutoReapply)  -- NEW
+    AutoReapplyBtn.MouseButton1Click:Connect(toggleAutoReapply)
     
     applyPinkTheme()
     guiCreated = true
@@ -951,15 +922,13 @@ end
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid")
     
-    -- ═══════════════════════════════════════════
-    -- AUTO-RELOAD animation on respawn (NOW RESPECTS TOGGLE)
-    -- ═══════════════════════════════════════════
+    -- Only auto-reapply if the toggle is ON
     if autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
         task.wait(0.5)
         applyAnim(getgenv().lastAnim)
         notify("💗 Auto-Reload", "🔄 Animation restored!", 3)
     elseif not autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
-        notify("💗 Auto-Reload", "⏹️ Skipped (Auto-Reapply is OFF)", 3)
+        notify("💗 Auto-Reload", "⏹️ Skipped (Auto-Reapply OFF)", 3)
     end
     
     hum.Died:Connect(function()
@@ -1019,8 +988,8 @@ task.spawn(function()
         favEmotes = loadFile("FavoriteEmotes.json")
         favAnims = loadFile("FavoriteAnimations.json")
         loadLastAnim()
-        loadAutoReaplySetting()  -- NEW: Load saved auto-reapply preference
-        applyPinkTheme()  -- Update button color after loading setting
+        loadAutoReaplySetting()
+        applyPinkTheme()
         
         fetchEmotes()
         fetchAnims()
@@ -1035,7 +1004,6 @@ end)
 
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
 
--- Keep emotes menu alive
 task.spawn(function()
     while true do
         pcall(function()
@@ -1056,7 +1024,6 @@ task.spawn(function()
     end
 end)
 
--- Mobile button
 if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
     pcall(function()
         local gui = Instance.new("ScreenGui")
@@ -1102,5 +1069,5 @@ print("   Press '.' to open")
 print("   🎬 = Toggle Animation Mode")
 print("   💗 = Favorite Mode")
 print("   🔄 = Toggle Auto-Reapply on Death")
-print("   ✅ Auto-saves animations on respawn!")
+print("   ✅ Setting saves between sessions!")
 print("=========================================")
