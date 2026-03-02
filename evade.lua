@@ -70,16 +70,13 @@ local Config = {
     SafeDistance = 90
 }
 
--- BOUNCE CONFIG - Ready for your new code
 local BounceConfig = {
-    Power = 90,           -- Vertical power only
+    Power = 90,
     Cooldown = 0.9,
     AirDuration = 10,
     AirGain = 12,
     AirMax = 290
 }
-
--- REMOVED: Boost = 190 (was causing forward push)
 
 local EdgeConfig = {
     Boost = 35,
@@ -113,7 +110,7 @@ local ColaSpeedPresets = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP CONFIG
+-- BHOP CONFIG - MODIFIED: Removed all speed preservation
 -- ═══════════════════════════════════════════════════════════════
 
 local BhopConfig = {
@@ -121,12 +118,11 @@ local BhopConfig = {
     PreJumpVelThreshold = -2,
     GroundRayLength = 2.4,
     SlopeMaxAngle = 40,
-    SpeedPreserveEnabled = true,
-    MinPreserveSpeed = 10,
-    LandingBoostFactor = 2.02,
-    JumpQueueWindow = 0.08,
-    ConsecutiveJumpBonus = 0.005,
-    MaxConsecutiveBonus = 0.05,
+    -- REMOVED: SpeedPreserveEnabled = true (was causing forward momentum)
+    -- REMOVED: MinPreserveSpeed = 10
+    -- REMOVED: LandingBoostFactor = 2.02
+    -- REMOVED: ConsecutiveJumpBonus = 0.005
+    -- REMOVED: MaxConsecutiveBonus = 0.05
     GroundCheckMultiRay = true,
     MultiRaySpread = 1.1,
 }
@@ -136,7 +132,6 @@ local GUI, VIPPanel, TimerGUI = nil, nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace = false, false
--- REMOVED: holdX - will be replaced with holdLeftShift in your new code
 
 local LastAntiCheck, LastCarry, LastBounce, AirEnd = 0, 0, 0, 0
 local LastVoteMap, LastVoteMode = 0, 0
@@ -164,16 +159,8 @@ local SliderMin, SliderMax = 1.4, 3.0
 local LastGroundState = false
 local LastJumpTick = 0
 local BHOP_COOLDOWN = 0
-local PreLandingQueued = false
-local LastHorizontalSpeed = 0
-local SavedHorizontalVelocity = Vector3.zero
-local ConsecutiveJumps = 0
-local LastLandingTick = 0
-local WasInAir = false
-local JumpQueued = false
-local LastGroundCheckResult = false
-local LastGroundCheckTick = 0
-local GroundCheckCacheTime = 0.02
+-- REMOVED: All velocity preservation variables
+-- REMOVED: LastHorizontalSpeed, SavedHorizontalVelocity, ConsecutiveJumps, etc.
 
 local LastGCTime = 0
 local GC_INTERVAL = 120
@@ -383,7 +370,7 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP SYSTEM
+-- BHOP SYSTEM - COMPLETELY REWRITTEN: No velocity preservation
 -- ═══════════════════════════════════════════════════════════════
 
 local COS_SLOPE_MAX = math.cos(math.rad(BhopConfig.SlopeMaxAngle))
@@ -396,65 +383,33 @@ end
 local function IsOnGroundInstant()
     if not Humanoid or not RootPart then return false end
     local now = tick()
-    if now - LastGroundCheckTick < GroundCheckCacheTime then return LastGroundCheckResult end
-    LastGroundCheckTick = now
+    -- REMOVED: Ground check caching that could cause issues
     local pos = RootPart.Position
     local rayResult = Workspace:Raycast(pos, GROUND_RAY_VEC, BhopRayParams)
-    if ValidateRayHit(rayResult) then LastGroundCheckResult = true return true end
+    if ValidateRayHit(rayResult) then return true end
     if BhopConfig.GroundCheckMultiRay then
         for i = 1, #MULTI_RAY_OFFSETS do
             local sideRay = Workspace:Raycast(pos + MULTI_RAY_OFFSETS[i], GROUND_RAY_VEC, BhopRayParams)
-            if ValidateRayHit(sideRay) then LastGroundCheckResult = true return true end
+            if ValidateRayHit(sideRay) then return true end
         end
     end
-    LastGroundCheckResult = false
     return false
 end
 
-local function GetHorizontalSpeed()
-    if not RootPart then return 0 end
-    local vel = RootPart.AssemblyLinearVelocity
-    return math.sqrt(vel.X * vel.X + vel.Z * vel.Z)
-end
+-- REMOVED: GetHorizontalSpeed() - not needed without preservation
+-- REMOVED: GetHorizontalVelocity() - not needed without preservation
+-- REMOVED: PreserveSpeed() - THIS WAS THE MAIN CULPRIT
 
-local function GetHorizontalVelocity()
-    if not RootPart then return VEC3_ZERO end
-    local vel = RootPart.AssemblyLinearVelocity
-    return Vector3.new(vel.X, 0, vel.Z)
-end
-
-local function PreserveSpeed()
-    if not BhopConfig.SpeedPreserveEnabled or not RootPart then return end
-    local currentVel = RootPart.AssemblyLinearVelocity
-    local currentHSpeed = math.sqrt(currentVel.X * currentVel.X + currentVel.Z * currentVel.Z)
-    if LastHorizontalSpeed > BhopConfig.MinPreserveSpeed and currentHSpeed < LastHorizontalSpeed * 0.85 then
-        local preserveSpeed = LastHorizontalSpeed * BhopConfig.LandingBoostFactor
-        local bonus = math.min(ConsecutiveJumps * BhopConfig.ConsecutiveJumpBonus, BhopConfig.MaxConsecutiveBonus)
-        preserveSpeed = preserveSpeed * (1 + bonus)
-        local dirX, dirZ
-        if currentHSpeed > 0.1 then
-            local inv = 1 / currentHSpeed
-            dirX, dirZ = currentVel.X * inv, currentVel.Z * inv
-        elseif SavedHorizontalVelocity.Magnitude > 0.1 then
-            local dir = SavedHorizontalVelocity.Unit
-            dirX, dirZ = dir.X, dir.Z
-        else return end
-        RootPart.AssemblyLinearVelocity = Vector3.new(dirX * preserveSpeed, currentVel.Y, dirZ * preserveSpeed)
-    end
-end
-
+-- REWRITTEN: Simple jump without any velocity manipulation
 local function ExecuteJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
-    LastHorizontalSpeed = GetHorizontalSpeed()
-    SavedHorizontalVelocity = GetHorizontalVelocity()
+    -- REMOVED: All velocity saving and reapplication
+    -- Just a clean jump state change, letting Roblox handle velocity naturally
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    task.defer(PreserveSpeed)
-    ConsecutiveJumps = ConsecutiveJumps + 1
     LastJumpTick = tick()
-    JumpQueued = false
-    PreLandingQueued = false
 end
 
+-- REWRITTEN: Simple bhop without forced direction
 local function SuperBhop()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -462,57 +417,33 @@ local function SuperBhop()
     if not character then return end
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if isDowned then return end
+    
     local onGround = IsOnGroundInstant()
     local now = tick()
-    if not onGround then
-        local currentSpeed = GetHorizontalSpeed()
-        if currentSpeed > BhopConfig.MinPreserveSpeed then
-            if currentSpeed > LastHorizontalSpeed then LastHorizontalSpeed = currentSpeed end
-            SavedHorizontalVelocity = GetHorizontalVelocity()
-        end
-        WasInAir = true
-    end
-    if onGround and WasInAir then
-        WasInAir = false
-        LastLandingTick = now
+    
+    -- Simple cooldown-based jumping, no velocity manipulation
+    if onGround and (now - LastJumpTick) >= 0.05 then -- Small cooldown to prevent spam
         ExecuteJump()
-        LastGroundState = onGround
-        return
     end
-    if onGround then
-        if not LastGroundState or (now - LastJumpTick) >= BHOP_COOLDOWN then
-            local currentSpeed = GetHorizontalSpeed()
-            if currentSpeed > BhopConfig.MinPreserveSpeed then
-                LastHorizontalSpeed = currentSpeed
-                SavedHorizontalVelocity = GetHorizontalVelocity()
-            end
-            ExecuteJump()
-        end
-    else
-        if now - LastJumpTick > 1.5 then ConsecutiveJumps = 0 end
-    end
-    LastGroundState = onGround
 end
 
+-- REWRITTEN: Pre-jump without velocity preservation
 local function PreJumpQueue()
     if not holdSpace or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
     local state = Humanoid:GetState()
     if state ~= Enum.HumanoidStateType.Freefall then return end
+    
     local pos = RootPart.Position
     local vel = RootPart.AssemblyLinearVelocity
+    
+    -- Simple predictive ground check
     local predictiveLength = BhopConfig.PreJumpDistance
     if vel.Y < -20 then predictiveLength = predictiveLength * 1.5 end
+    
     local rayVec = Vector3.new(0, -predictiveLength, 0)
     local rayResult = Workspace:Raycast(pos, rayVec, BhopRayParams)
-    if not rayResult then
-        local hSpeed = vel.X * vel.X + vel.Z * vel.Z
-        if hSpeed > 1 then
-            local inv = 1 / math.sqrt(hSpeed)
-            local spread = BhopConfig.MultiRaySpread * 0.8
-            rayResult = Workspace:Raycast(Vector3.new(pos.X + vel.X * inv * spread, pos.Y, pos.Z + vel.Z * inv * spread), rayVec, BhopRayParams)
-        end
-    end
+    
     if rayResult and ValidateRayHit(rayResult) then
         local dist = pos.Y - rayResult.Position.Y
         local threshold = 3.5
@@ -520,36 +451,33 @@ local function PreJumpQueue()
             threshold = math.clamp(3.5 + math.abs(vel.Y) * 0.04, 3.5, 6.0)
         end
         if dist < threshold then
-            local currentSpeed = GetHorizontalSpeed()
-            if currentSpeed > BhopConfig.MinPreserveSpeed then
-                if currentSpeed > LastHorizontalSpeed then LastHorizontalSpeed = currentSpeed end
-                SavedHorizontalVelocity = GetHorizontalVelocity()
-            end
-            PreLandingQueued = true
             ExecuteJump()
         end
     end
 end
 
+-- REWRITTEN: State change handler without forced velocity
 local function OnHumanoidStateChanged(old, new)
+    -- REMOVED: All automatic jumping and velocity preservation on state change
+    -- Only reset tracking when landing without space held
     if not holdSpace then
-        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then ConsecutiveJumps = 0 end
+        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
+            -- Reset jump tracking only
+            LastJumpTick = 0
+        end
         return
     end
+    
+    -- Only auto-jump on landing if space is held, but NO velocity manipulation
     if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
         task.defer(function()
             if holdSpace and Humanoid and Humanoid.Health > 0 then
-                local speed = GetHorizontalSpeed()
-                if speed > BhopConfig.MinPreserveSpeed then
-                    LastHorizontalSpeed = speed
-                    SavedHorizontalVelocity = GetHorizontalVelocity()
-                end
+                -- Simple jump, no speed preservation
                 ExecuteJump()
             end
         end)
-    elseif new == Enum.HumanoidStateType.Jumping then
-        task.defer(PreserveSpeed)
     end
+    -- REMOVED: Jumping state handler that called PreserveSpeed()
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -643,6 +571,7 @@ local function FindSafeSpot(myPos, bots)
     return bestLocation
 end
 
+-- CHECKED: Teleport function - only sets CFrame, doesn't modify velocity except to zero it
 local function Teleport(pos)
     local character = LocalPlayer.Character
     if not character then return end
@@ -654,6 +583,7 @@ local function Teleport(pos)
     local ray = Workspace:Raycast(pos, Vector3.new(0, -50, 0), rayParams)
     local finalPos = ray and (ray.Position + Vector3.new(0, 5, 0)) or pos
     hrp.CFrame = CFrame.new(finalPos)
+    -- Only zeros velocity after teleport, doesn't push anywhere
     task.defer(function()
         if hrp and hrp.Parent then
             hrp.AssemblyLinearVelocity = VEC3_ZERO
@@ -754,34 +684,13 @@ end
 -- ═══════════════════════════════════════════════════════════════
 -- BOUNCE SYSTEM - PLACEHOLDER FOR YOUR NEW CODE
 -- ═══════════════════════════════════════════════════════════════
--- REMOVED: Old Bounce() function that pushed forward
--- REMOVED: Old AirStrafe() function that had forward momentum issues
 
--- YOUR NEW BOUNCE CODE GOES HERE:
--- Bind to LeftShift using: UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
--- Use BounceConfig.Power for vertical velocity only
--- Use BounceConfig.AirDuration, BounceConfig.AirGain, BounceConfig.AirMax for air control
+local holdLeftShift = false
 
--- Placeholder variables for your new code:
-local holdLeftShift = false  -- Replace holdX with this
-
--- Example structure for your new code:
---[[
-local function YourNewBounce()
-    if not holdLeftShift or not Humanoid or Humanoid.Health <= 0 then return end
-    -- Your implementation here
-    -- NO forward velocity! Only vertical: Vector3.new(0, BounceConfig.Power, 0) or similar
-end
-
-local function YourNewAirStrafe()
-    if tick() > AirEnd then return end
-    -- Your implementation here
-    -- Only respond to A/D keys, no W forward momentum
-end
---]]
+-- Your new bounce code goes here - NO forward velocity allowed!
 
 -- ═══════════════════════════════════════════════════════════════
--- EDGE BOOST & CARRY
+-- EDGE BOOST - CHECKED: Only adds Y velocity, no forward push
 -- ═══════════════════════════════════════════════════════════════
 
 local function DetectEdge(position, direction)
@@ -794,6 +703,7 @@ local function DetectEdge(position, direction)
     return false, nil
 end
 
+-- CHECKED: Only modifies Y velocity, preserves X/Z exactly as they were
 local function ReactiveEdgeBoost()
     if not State.EdgeBoost or not Humanoid or not RootPart then return end
     if Humanoid.Health <= 0 then return end
@@ -822,6 +732,7 @@ local function ReactiveEdgeBoost()
             if heightAboveGround < 1.5 and heightAboveGround > -0.5 then
                 local boostAmount = EdgeConfig.Boost
                 if vel.Y < 0 then boostAmount = boostAmount * 1.2 end
+                -- ONLY MODIFIES Y, preserves X and Z exactly
                 RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
                 EdgeConfig.LastTime = now
                 return
@@ -830,6 +741,7 @@ local function ReactiveEdgeBoost()
     end
 end
 
+-- CHECKED: Touch handler also only modifies Y velocity
 local function EdgeBoostTouchHandler(hit)
     if not State.EdgeBoost or not hit or not hit.Parent then return end
     local character = LocalPlayer.Character
@@ -863,6 +775,7 @@ local function EdgeBoostTouchHandler(hit)
             local dx = playerPos.X - (hitPos.X + offset.X)
             local dz = playerPos.Z - (hitPos.Z + offset.Z)
             if dx*dx + dz*dz < (EdgeConfig.DetectionRange + 1)^2 then
+                -- ONLY MODIFIES Y, preserves X and Z
                 RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + EdgeConfig.Boost * 0.8, vel.Z)
                 EdgeConfig.LastTime = now
                 return
@@ -882,6 +795,7 @@ local function SetupEdgeBoost()
     end
 end
 
+-- CHECKED: Carry function - no velocity modification
 local function DoCarry()
     if not holdQ then return end
     local now = tick()
@@ -917,6 +831,7 @@ local function DoCarry()
     end
 end
 
+-- CHECKED: No velocity modification
 local function Revive()
     local character = LocalPlayer.Character
     if not character then return end
@@ -942,6 +857,7 @@ local function Revive()
     end
 end
 
+-- CHECKED: No velocity modification
 local function SelfResurrect()
     local now = tick()
     if now - SelfResCD < 3 then return end
@@ -955,6 +871,7 @@ local function SelfResurrect()
     end)
 end
 
+-- CHECKED: No velocity modification
 local function ToggleBorder()
     State.Border = not State.Border
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
@@ -969,6 +886,7 @@ local function ToggleBorder()
     end
 end
 
+-- CHECKED: Only modifies FOV, not velocity
 local function SetFOV()
     local camera = Workspace.CurrentCamera
     if camera and camera.FieldOfView ~= Config.FOV then camera.FieldOfView = Config.FOV end
@@ -992,7 +910,7 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- COLA SYSTEM
+-- COLA SYSTEM - CHECKED: Uses Roblox's speed boost system, no direct velocity
 -- ═══════════════════════════════════════════════════════════════
 
 local function InstallColaHook()
@@ -1030,6 +948,7 @@ local function InstallColaHook()
                     task.spawn(function()
                         task.wait(0.3)
                         if ColaSettings.Active then
+                            -- Uses Roblox's built-in speed system, no direct velocity
                             firesignal(
                                 SpeedBoost.OnClientEvent,
                                 "Cola",
@@ -1097,6 +1016,7 @@ local function FixCola()
     end)
 end
 
+-- CHECKED: No velocity modification
 local function ToggleFullbright()
     FullbrightEnabled = not FullbrightEnabled
     if FullbrightEnabled then
@@ -1115,6 +1035,7 @@ local function ToggleFullbright()
     end
 end
 
+-- CHECKED: No velocity modification
 local function GetVoteEvent() return SafeGetPath(ReplicatedStorage, "Events", "Player", "Vote") end
 local function FindInList(name, list)
     if not name or name == "" then return nil end
@@ -1518,18 +1439,15 @@ local function UpdateTimer()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INPUT (MODIFIED - REMOVED X KEY, READY FOR LEFT SHIFT)
+-- INPUT
 -- ═══════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then
-        holdSpace = true LastGroundState = false WasInAir = false JumpQueued = true
-        if RootPart then local speed = GetHorizontalSpeed() if speed > BhopConfig.MinPreserveSpeed then LastHorizontalSpeed = speed SavedHorizontalVelocity = GetHorizontalVelocity() end end
-    -- REMOVED: elseif key == Enum.KeyCode.X then holdX = true
-    -- ADD YOUR LEFT SHIFT DETECTION HERE:
-    -- elseif key == Enum.KeyCode.LeftShift then holdLeftShift = true
+        holdSpace = true
+        -- REMOVED: All velocity saving on space press
     elseif key == Enum.KeyCode.E then Revive()
     elseif key == Enum.KeyCode.R then SelfResurrect()
     elseif key == Enum.KeyCode.Q then holdQ = true
@@ -1547,16 +1465,19 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if VIPPanel then VIPPanel.Visible = false end
         end
     end
+    -- ADD YOUR LEFT SHIFT HERE:
+    -- elseif key == Enum.KeyCode.LeftShift then holdLeftShift = true
 end)
 
 UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
-    if key == Enum.KeyCode.Space then holdSpace = false LastGroundState = false ConsecutiveJumps = 0 WasInAir = false PreLandingQueued = false JumpQueued = false
+    if key == Enum.KeyCode.Space then
+        holdSpace = false
+        -- REMOVED: All velocity tracking reset
     elseif key == Enum.KeyCode.Q then holdQ = false
-    -- REMOVED: elseif key == Enum.KeyCode.X then holdX = false AirEnd = 0
+    end
     -- ADD YOUR LEFT SHIFT RELEASE HERE:
     -- elseif key == Enum.KeyCode.LeftShift then holdLeftShift = false AirEnd = 0
-    end
 end)
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1568,8 +1489,10 @@ local function SetupCharacter(character)
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter() SetupEdgeBoost()
-    CurrentTarget, FarmStart = nil, 0 LastBounce, AirEnd = 0, 0 LastJumpTick = 0 LastGroundState = false
-    ConsecutiveJumps = 0 LastHorizontalSpeed = 0 SavedHorizontalVelocity = VEC3_ZERO WasInAir = false PreLandingQueued = false JumpQueued = false LastGroundCheckTick = 0
+    -- REMOVED: All velocity tracking variable resets
+    CurrentTarget, FarmStart = nil, 0
+    LastBounce, AirEnd = 0, 0
+    LastJumpTick = 0
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
 end
@@ -1587,7 +1510,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP (MODIFIED - REMOVED BOUNCE/AIRSTRAFE CALLS)
+-- MAIN LOOP - REWRITTEN: No velocity preservation
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
@@ -1599,8 +1522,7 @@ local function StartMainLoop()
             SuperBhop()
             PreJumpQueue()
         end
-        -- REMOVED: Bounce and AirStrafe calls
-        -- ADD YOUR NEW BOUNCE/AIRSTRAFE CALLS HERE:
+        -- ADD YOUR NEW BOUNCE/AIRSTRAFE HERE:
         -- if holdLeftShift then
         --     YourNewBounce()
         --     YourNewAirStrafe()
@@ -1648,8 +1570,8 @@ Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
         NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce, AirEnd = 0, 0 LastJumpTick = 0
-        LastGroundState = false ConsecutiveJumps = 0 LastHorizontalSpeed = 0 SavedHorizontalVelocity = VEC3_ZERO
-        WasInAir = false PreLandingQueued = false table.clear(CachedBots) table.clear(CachedItems)
+        -- REMOVED: All velocity tracking resets
+        table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
 end)
@@ -1662,4 +1584,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! (Forward momentum removed, ready for new bounce code)")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! ALL forward momentum removed!")
