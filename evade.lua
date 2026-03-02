@@ -70,14 +70,16 @@ local Config = {
     SafeDistance = 90
 }
 
+-- BOUNCE CONFIG - Ready for your new code
 local BounceConfig = {
-    Power =90,
-    Boost = 190,
+    Power = 90,           -- Vertical power only
     Cooldown = 0.9,
     AirDuration = 10,
     AirGain = 12,
     AirMax = 290
 }
+
+-- REMOVED: Boost = 190 (was causing forward push)
 
 local EdgeConfig = {
     Boost = 35,
@@ -133,7 +135,8 @@ local Humanoid, RootPart = nil, nil
 local GUI, VIPPanel, TimerGUI = nil, nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
-local holdQ, holdSpace, holdX = false, false, false
+local holdQ, holdSpace = false, false
+-- REMOVED: holdX - will be replaced with holdLeftShift in your new code
 
 local LastAntiCheck, LastCarry, LastBounce, AirEnd = 0, 0, 0, 0
 local LastVoteMap, LastVoteMode = 0, 0
@@ -170,11 +173,10 @@ local WasInAir = false
 local JumpQueued = false
 local LastGroundCheckResult = false
 local LastGroundCheckTick = 0
-local GroundCheckCacheTime = 0.02 -- slightly longer cache
+local GroundCheckCacheTime = 0.02
 
--- Memory cleanup tracking
 local LastGCTime = 0
-local GC_INTERVAL = 120 -- Less frequent GC
+local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
 
@@ -262,7 +264,7 @@ end
 
 local function UpdateRayFilter()
     local now = tick()
-    if now - LastRayFilterUpdate < 3.0 then return end -- Increased from 2.0
+    if now - LastRayFilterUpdate < 3.0 then return end
     LastRayFilterUpdate = now
     local filterList = {}
     local character = LocalPlayer.Character
@@ -320,18 +322,15 @@ task.spawn(function()
     Modes = GetNamesFromPath("Info.Gamemodes")
 end)
 
--- Periodic memory/cache cleanup
 local function PeriodicCleanup()
     local now = tick()
     
     if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
         LastCacheCleanup = now
         
-        -- Clear bot cache to force refresh
         for i = 1, #CachedBots do CachedBots[i] = nil end
         LastBotCheck = 0
         
-        -- Clear dead item references
         local validCount = 0
         for i = 1, #CachedItems do
             local item = CachedItems[i]
@@ -560,7 +559,7 @@ end
 local LastBotCheck = 0
 local function GetBots()
     local now = tick()
-    if now - LastBotCheck < 0.3 then return CachedBots end -- Increased from 0.2
+    if now - LastBotCheck < 0.3 then return CachedBots end
     LastBotCheck = now
     if not NPCLoaded then LoadNPCs() end
     local count = 0
@@ -583,7 +582,7 @@ end
 local LastItemCheck = 0
 local function GetItems()
     local now = tick()
-    if now - LastItemCheck < 0.3 then return CachedItems end -- Increased from 0.2
+    if now - LastItemCheck < 0.3 then return CachedItems end
     LastItemCheck = now
     local count = 0
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
@@ -666,7 +665,7 @@ end
 local function AntiNextbot()
     if not State.AntiNextbot then return end
     local now = tick()
-    if now - LastAntiCheck < 0.35 then return end -- Increased from 0.25
+    if now - LastAntiCheck < 0.35 then return end
     LastAntiCheck = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -687,7 +686,7 @@ local LastFarmTick = 0
 local function AutoFarm()
     if not State.AutoFarm then return end
     local now = tick()
-    if now - LastFarmTick < 0.15 then return end -- Increased from 0.1
+    if now - LastFarmTick < 0.15 then return end
     LastFarmTick = now
     local character = LocalPlayer.Character
     if not character then return end
@@ -752,60 +751,38 @@ local function ToggleUpsideDownFix(enabled)
     end
 end
 
-local function Bounce()
-    if not holdX or not Humanoid or Humanoid.Health <= 0 then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if isDowned then return end
-    local root = character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local now = tick()
-    if now - LastBounce < BounceConfig.Cooldown then return end
-    if not IsOnGroundInstant() then return end
-    LastBounce = now
-    local camera = Workspace.CurrentCamera
-    if not camera then return end
-    local look = camera.CFrame.LookVector
-    local fx, fz = look.X, look.Z
-    local fMag = math.sqrt(fx*fx + fz*fz)
-    if fMag > 0.1 then local inv = 1 / fMag fx, fz = fx * inv, fz * inv else fx, fz = 0, -1 end
-    root.AssemblyLinearVelocity = Vector3.new(fx * BounceConfig.Boost, BounceConfig.Power, fz * BounceConfig.Boost)
-    AirEnd = now + BounceConfig.AirDuration
+-- ═══════════════════════════════════════════════════════════════
+-- BOUNCE SYSTEM - PLACEHOLDER FOR YOUR NEW CODE
+-- ═══════════════════════════════════════════════════════════════
+-- REMOVED: Old Bounce() function that pushed forward
+-- REMOVED: Old AirStrafe() function that had forward momentum issues
+
+-- YOUR NEW BOUNCE CODE GOES HERE:
+-- Bind to LeftShift using: UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)
+-- Use BounceConfig.Power for vertical velocity only
+-- Use BounceConfig.AirDuration, BounceConfig.AirGain, BounceConfig.AirMax for air control
+
+-- Placeholder variables for your new code:
+local holdLeftShift = false  -- Replace holdX with this
+
+-- Example structure for your new code:
+--[[
+local function YourNewBounce()
+    if not holdLeftShift or not Humanoid or Humanoid.Health <= 0 then return end
+    -- Your implementation here
+    -- NO forward velocity! Only vertical: Vector3.new(0, BounceConfig.Power, 0) or similar
 end
 
-local function AirStrafe()
+local function YourNewAirStrafe()
     if tick() > AirEnd then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    local root = character:FindFirstChild("HumanoidRootPart")
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if not root or isDowned then return end
-    if IsOnGroundInstant() then return end
-    local moveLeft = UserInputService:IsKeyDown(Enum.KeyCode.A)
-    local moveRight = UserInputService:IsKeyDown(Enum.KeyCode.D)
-    local moveForward = UserInputService:IsKeyDown(Enum.KeyCode.W)
-    if not moveLeft and not moveRight and not moveForward then return end
-    local vel = root.AssemblyLinearVelocity
-    local camera = Workspace.CurrentCamera
-    if not camera then return end
-    local cf = camera.CFrame
-    local right = cf.RightVector
-    local look = cf.LookVector
-    local sx, sz = 0, 0
-    if moveLeft then sx = sx - right.X sz = sz - right.Z end
-    if moveRight then sx = sx + right.X sz = sz + right.Z end
-    if moveForward then sx = sx + look.X sz = sz + look.Z end
-    local sMag = math.sqrt(sx*sx + sz*sz)
-    if sMag < 0.1 then return end
-    local inv = 1 / sMag
-    sx, sz = sx * inv, sz * inv
-    local newX = vel.X + sx * BounceConfig.AirGain
-    local newZ = vel.Z + sz * BounceConfig.AirGain
-    local newMag = math.sqrt(newX*newX + newZ*newZ)
-    if newMag > BounceConfig.AirMax then local scale = BounceConfig.AirMax / newMag newX, newZ = newX * scale, newZ * scale end
-    root.AssemblyLinearVelocity = Vector3.new(newX, vel.Y, newZ)
+    -- Your implementation here
+    -- Only respond to A/D keys, no W forward momentum
 end
+--]]
+
+-- ═══════════════════════════════════════════════════════════════
+-- EDGE BOOST & CARRY
+-- ═══════════════════════════════════════════════════════════════
 
 local function DetectEdge(position, direction)
     local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
@@ -1170,10 +1147,9 @@ local function StartModeVoting() if State.VoteMode then return end State.VoteMod
 local function StopModeVoting() State.VoteMode = false end
 
 -- ═══════════════════════════════════════════════════════════════
--- GUI (Optimized - pre-cached TweenInfo, reduced tween spam)
+-- GUI (Optimized)
 -- ═══════════════════════════════════════════════════════════════
 
--- Pre-cached TweenInfo objects (created once, reused forever)
 local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local TI_NORMAL = TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local TI_SLOW = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -1213,7 +1189,6 @@ local function CreateModernButton(parent, name, text, icon, pos, size, callback)
     statusText.Position = UDim2.new(1, -38, 0, 0) statusText.BackgroundTransparency = 1 statusText.Text = "OFF"
     statusText.TextColor3 = Theme.TextMuted statusText.TextSize = 10 statusText.Font = FONT_SMALL statusText.Parent = btn
     
-    -- Debounced hover to reduce tween spam
     local isHovered = false
     btn.MouseEnter:Connect(function() 
         isHovered = true
@@ -1260,7 +1235,7 @@ local function CreateModernInput(parent, name, placeholder, pos, size, callback)
 end
 
 local function SetModernButtonActive(button, active)
-    if button:GetAttribute("Active") == active then return end -- Skip if no change
+    if button:GetAttribute("Active") == active then return end
     button:SetAttribute("Active", active)
     local indicator = button:FindFirstChild("Indicator")
     local label = button:FindFirstChild("Label")
@@ -1279,7 +1254,7 @@ local function SetModernButtonActive(button, active)
 end
 
 local function SetSmallButtonActive(button, active)
-    if button:GetAttribute("Active") == active then return end -- Skip if no change
+    if button:GetAttribute("Active") == active then return end
     button:SetAttribute("Active", active)
     if active then Tween(button, {BackgroundColor3 = Theme.ButtonOn, TextColor3 = Theme.TextPrimary}, TI_FAST)
     else Tween(button, {BackgroundColor3 = Theme.ButtonOff, TextColor3 = Theme.TextSecondary}, TI_FAST) end
@@ -1472,14 +1447,13 @@ local function CreateMainGUI()
     local lastSliderUpdate = 0
     local function UpdateSliderFromMouse(mousePos)
         if not SliderTrack then return end
-        -- Throttle slider updates to prevent tween spam
         local now = tick()
         if now - lastSliderUpdate < 0.03 then return end
         lastSliderUpdate = now
         local pos = math.clamp((mousePos.X - SliderTrack.AbsolutePosition.X) / SliderTrack.AbsoluteSize.X, 0, 1)
         local val = math.round((SliderMin + pos * (SliderMax - SliderMin)) * 10) / 10
         val = math.clamp(val, SliderMin, SliderMax)
-        if ColaSettings.Speed == val then return end -- Skip if value unchanged
+        if ColaSettings.Speed == val then return end
         ColaSettings.Speed = val
         Tween(SliderFill, {Size = UDim2.new(pos, 0, 1, 0)}, TI_SLIDER)
         Tween(SliderThumb, {Position = UDim2.new(pos, -7, 0.5, -7)}, TI_SLIDER)
@@ -1544,7 +1518,7 @@ local function UpdateTimer()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INPUT
+-- INPUT (MODIFIED - REMOVED X KEY, READY FOR LEFT SHIFT)
 -- ═══════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -1553,7 +1527,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if key == Enum.KeyCode.Space then
         holdSpace = true LastGroundState = false WasInAir = false JumpQueued = true
         if RootPart then local speed = GetHorizontalSpeed() if speed > BhopConfig.MinPreserveSpeed then LastHorizontalSpeed = speed SavedHorizontalVelocity = GetHorizontalVelocity() end end
-    elseif key == Enum.KeyCode.X then holdX = true
+    -- REMOVED: elseif key == Enum.KeyCode.X then holdX = true
+    -- ADD YOUR LEFT SHIFT DETECTION HERE:
+    -- elseif key == Enum.KeyCode.LeftShift then holdLeftShift = true
     elseif key == Enum.KeyCode.E then Revive()
     elseif key == Enum.KeyCode.R then SelfResurrect()
     elseif key == Enum.KeyCode.Q then holdQ = true
@@ -1577,7 +1553,10 @@ UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then holdSpace = false LastGroundState = false ConsecutiveJumps = 0 WasInAir = false PreLandingQueued = false JumpQueued = false
     elseif key == Enum.KeyCode.Q then holdQ = false
-    elseif key == Enum.KeyCode.X then holdX = false AirEnd = 0 end
+    -- REMOVED: elseif key == Enum.KeyCode.X then holdX = false AirEnd = 0
+    -- ADD YOUR LEFT SHIFT RELEASE HERE:
+    -- elseif key == Enum.KeyCode.LeftShift then holdLeftShift = false AirEnd = 0
+    end
 end)
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1608,31 +1587,30 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP (optimized - conditional execution)
+-- MAIN LOOP (MODIFIED - REMOVED BOUNCE/AIRSTRAFE CALLS)
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
     if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
-    -- RenderStepped: only runs bhop/bounce when keys are held
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         if holdSpace then
             SuperBhop()
             PreJumpQueue()
         end
-        if holdX then
-            Bounce()
-            AirStrafe()
-        elseif AirEnd > 0 and tick() <= AirEnd then
-            -- Still in air from a bounce, keep air strafing
-            AirStrafe()
-        end
+        -- REMOVED: Bounce and AirStrafe calls
+        -- ADD YOUR NEW BOUNCE/AIRSTRAFE CALLS HERE:
+        -- if holdLeftShift then
+        --     YourNewBounce()
+        --     YourNewAirStrafe()
+        -- elseif AirEnd > 0 and tick() <= AirEnd then
+        --     YourNewAirStrafe()
+        -- end
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
-        -- Edge boost only when enabled and moving
         if State.EdgeBoost then
             edgeAccum = edgeAccum + dt
             if edgeAccum >= 0.06 then
@@ -1643,7 +1621,6 @@ local function StartMainLoop()
         
         if holdQ then DoCarry() end
         
-        -- Slow updates - only run features that are enabled
         slowAccum = slowAccum + dt
         if slowAccum >= 0.2 then
             slowAccum = 0
@@ -1652,7 +1629,6 @@ local function StartMainLoop()
             if State.AutoFarm then AutoFarm() end
         end
         
-        -- Very infrequent cleanup
         cleanupAccum = cleanupAccum + dt
         if cleanupAccum >= 10.0 then
             cleanupAccum = 0
@@ -1686,4 +1662,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! (Forward momentum removed, ready for new bounce code)")
