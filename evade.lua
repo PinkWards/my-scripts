@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 14
+local SCRIPT_VERSION = 16
 
 pcall(function()
     if queue_on_teleport then
@@ -71,13 +71,13 @@ local Config = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE CONFIG - SIMPLE: Just power and responsiveness
+-- BOUNCE CONFIG - PURE STACKING: Speed only goes up
 -- ═══════════════════════════════════════════════════════════════
 
 local BounceConfig = {
-    Power = 90,           -- Your bounce power
-    Cooldown = 0.25,      -- Responsive but not broken
-    RayLength = 3.5,      -- How early to detect ground (keeps speed)
+    Power = 90,           -- Vertical bounce power
+    Cooldown = 0.1,       -- Very responsive
+    MaxSpeed = 1000,      -- Hard cap
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -152,16 +152,13 @@ local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
 
--- SIMPLE BOUNCE STATE
+-- PURE STACKING BOUNCE STATE
 local WasInAir = false
+local RecordedSpeed = 16  -- Start at walk speed
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
 BhopRayParams.RespectCanCollide = true
-
-local BounceRayParams = RaycastParams.new()
-BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
-BounceRayParams.RespectCanCollide = true
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -257,7 +254,6 @@ local function UpdateRayFilter()
         if gamePlayers then filterList[#filterList + 1] = gamePlayers end
     end
     BhopRayParams.FilterDescendantsInstances = filterList
-    BounceRayParams.FilterDescendantsInstances = filterList
     EdgeRayParams.FilterDescendantsInstances = filterList
 end
 
@@ -454,74 +450,74 @@ local function OnHumanoidStateChanged(old, new)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM - SIMPLE: Touch ground → Bounce high → Repeat
+-- BOUNCE SYSTEM - PURE STACKING: Speed never reduces
 -- ═══════════════════════════════════════════════════════════════
 
--- Check if about to hit ground (small raycast to preserve speed)
-local function IsAboutToLand()
-    if not RootPart or not Humanoid then return false end
-    if Humanoid.Health <= 0 then return false end
-    
-    local pos = RootPart.Position
-    local vel = RootPart.AssemblyLinearVelocity
-    
-    -- Only check if falling
-    if vel.Y > -2 then return false end
-    
-    -- Raycast down to find ground
-    local rayVec = Vector3.new(0, -BounceConfig.RayLength, 0)
-    local result = Workspace:Raycast(pos, rayVec, BounceRayParams)
-    
-    return result ~= nil
-end
-
--- Execute bounce with power 90
+-- Execute bounce with PURE speed stacking
 local function DoBounce()
     local now = tick()
-    if now - LastBounce < BounceConfig.Cooldown then return false end
-    if not RootPart or not Humanoid then return false end
-    if Humanoid.Health <= 0 then return false end
-    
-    local vel = RootPart.AssemblyLinearVelocity
-    
-    -- BOUNCE: Preserve horizontal speed, add vertical power
-    RootPart.AssemblyLinearVelocity = Vector3.new(
-        vel.X,
-        BounceConfig.Power,
-        vel.Z
-    )
-    
-    LastBounce = now
-    return true
-end
-
--- Simple bounce update - hold shift, hit ground, bounce up
-local function UpdateBounce()
-    if not holdLeftShift then 
-        WasInAir = false
-        return 
-    end
-    
+    if now - LastBounce < BounceConfig.Cooldown then return end
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
     
-    -- Check if we're in air
-    local state = Humanoid:GetState()
-    local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
+    local vel = RootPart.AssemblyLinearVelocity
     
+    -- Get current horizontal
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    local hSpeed = hVel.Magnitude
+    
+    -- STACK: Keep the higher speed, never reduce
+    if hSpeed > RecordedSpeed then
+        RecordedSpeed = hSpeed  -- New record from ramp!
+    end
+    
+    -- Cap it
+    RecordedSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
+    
+    -- Direction: use current velocity or camera look
+    local dir = hVel.Unit
+    if hSpeed < 0.1 then
+        local cam = Workspace.CurrentCamera.CFrame
+        dir = Vector3.new(cam.LookVector.X, 0, cam.LookVector.Z).Unit
+    end
+    
+    -- BOUNCE with recorded speed (never loses speed!)
+    RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, BounceConfig.Power, 0)
+    
+    LastBounce = now
+end
+
+-- Main bounce update - PURE STACKING
+local function UpdateBounce()
+    if not RootPart or not Humanoid then return end
+    if Humanoid.Health <= 0 then return end
+    
+    local state = Humanoid:GetState()
+    local vel = RootPart.AssemblyLinearVelocity
+    
+    local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
+    local onGround = (state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running)
+    
+    -- Always track speed while in air (ramps can boost us)
     if inAir then
         WasInAir = true
+        local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+        if hSpeed > RecordedSpeed then
+            RecordedSpeed = hSpeed  -- Ramp boost!
+        end
         
-        -- Check if about to land and bounce immediately (keeps speed)
-        if IsAboutToLand() then
+    elseif onGround and WasInAir then
+        -- Just landed!
+        if holdLeftShift then
             DoBounce()
         end
+        WasInAir = false
         
-    elseif WasInAir and (state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running) then
-        -- We just landed - BOUNCE
-        if DoBounce() then
-            WasInAir = false
-        end
+    elseif onGround and not WasInAir then
+        -- Standing on ground without jumping
+        -- Optional: slowly reset when not active
+        -- Comment this out if you want speed to persist forever
+        -- RecordedSpeed = math.max(16, RecordedSpeed * 0.99)
     end
 end
 
@@ -1532,6 +1528,7 @@ local function SetupCharacter(character)
     LastBounce = 0
     LastJumpTick = 0
     WasInAir = false
+    RecordedSpeed = 16  -- Reset to walk speed on respawn
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
 end
@@ -1549,7 +1546,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP - SIMPLE: Hold shift, hit ground, bounce up, repeat
+-- MAIN LOOP - PURE STACKING: Speed never reduces
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
@@ -1562,10 +1559,8 @@ local function StartMainLoop()
             PreJumpQueue()
         end
         
-        -- SIMPLE BOUNCE: Hold shift → Land → Bounce up → Repeat
-        if holdLeftShift then
-            UpdateBounce()
-        end
+        -- PURE STACKING BOUNCE: Speed only goes up
+        UpdateBounce()
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
@@ -1608,6 +1603,7 @@ Workspace.ChildAdded:Connect(function(child)
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
         NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce = 0 LastJumpTick = 0
         WasInAir = false
+        RecordedSpeed = 16
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1621,4 +1617,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Simple bounce: Power 90, touch ground first, no requirements!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! PURE STACKING: Speed never reduces when bouncing!")
