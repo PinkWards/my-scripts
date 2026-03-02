@@ -61,7 +61,8 @@ local State = {
     GamemodeSearch = "",
     InfiniteCola = false,
     UpsideDownFix = false,
-    EdgeBoost = false
+    EdgeBoost = false,
+    ExchangeUnlocked = false
 }
 
 local Config = {
@@ -75,9 +76,9 @@ local Config = {
 -- ═══════════════════════════════════════════════════════════════
 
 local BounceConfig = {
-    Power = 90,           -- Vertical bounce power
-    Cooldown = 0.1,       -- Very responsive
-    MaxSpeed = 1000,      -- Hard cap
+    Power = 90,
+    Cooldown = 0.1,
+    MaxSpeed = 1000,
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -137,6 +138,7 @@ local LastCamera = nil
 
 local Connections = {}
 local EdgeTouchConnections = {}
+local ExchangeConnections = {}
 local CachedGame = nil
 local StateChangedConn = nil
 
@@ -154,7 +156,7 @@ local CACHE_CLEANUP_INTERVAL = 45
 
 -- PURE STACKING BOUNCE STATE
 local WasInAir = false
-local RecordedSpeed = 16  -- Start at walk speed
+local RecordedSpeed = 16
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -339,6 +341,9 @@ local function CleanupAll()
     table.clear(Connections)
     for _, conn in pairs(EdgeTouchConnections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(EdgeTouchConnections)
+    for _, conn in pairs(ExchangeConnections) do SafeCall(function() conn:Disconnect() end) end
+    table.clear(ExchangeConnections)
+    getgenv().var156_upvw_arg1 = nil
     if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
@@ -433,7 +438,6 @@ local function PreJumpQueue()
 end
 
 local function OnHumanoidStateChanged(old, new)
-    -- Bhop handling
     if not holdSpace then
         if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
             LastJumpTick = 0
@@ -453,7 +457,6 @@ end
 -- BOUNCE SYSTEM - PURE STACKING: Speed never reduces
 -- ═══════════════════════════════════════════════════════════════
 
--- Execute bounce with PURE speed stacking
 local function DoBounce()
     local now = tick()
     if now - LastBounce < BounceConfig.Cooldown then return end
@@ -462,32 +465,26 @@ local function DoBounce()
     
     local vel = RootPart.AssemblyLinearVelocity
     
-    -- Get current horizontal
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
-    -- STACK: Keep the higher speed, never reduce
     if hSpeed > RecordedSpeed then
-        RecordedSpeed = hSpeed  -- New record from ramp!
+        RecordedSpeed = hSpeed
     end
     
-    -- Cap it
     RecordedSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
     
-    -- Direction: use current velocity or camera look
     local dir = hVel.Unit
     if hSpeed < 0.1 then
         local cam = Workspace.CurrentCamera.CFrame
         dir = Vector3.new(cam.LookVector.X, 0, cam.LookVector.Z).Unit
     end
     
-    -- BOUNCE with recorded speed (never loses speed!)
     RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, BounceConfig.Power, 0)
     
     LastBounce = now
 end
 
--- Main bounce update - PURE STACKING
 local function UpdateBounce()
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
@@ -498,25 +495,21 @@ local function UpdateBounce()
     local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
     local onGround = (state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running)
     
-    -- Always track speed while in air (ramps can boost us)
     if inAir then
         WasInAir = true
         local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
         if hSpeed > RecordedSpeed then
-            RecordedSpeed = hSpeed  -- Ramp boost!
+            RecordedSpeed = hSpeed
         end
         
     elseif onGround and WasInAir then
-        -- Just landed!
         if holdLeftShift then
             DoBounce()
         end
         WasInAir = false
         
     elseif onGround and not WasInAir then
-        -- Standing on ground without jumping
         -- Optional: slowly reset when not active
-        -- Comment this out if you want speed to persist forever
         -- RecordedSpeed = math.max(16, RecordedSpeed * 0.99)
     end
 end
@@ -718,6 +711,87 @@ local function ToggleUpsideDownFix(enabled)
             if math.abs(rz) > 1.5708 then camera.CFrame = CFrame.new(cf.Position) * CFrame.Angles(rx, ry, 0) end
         end)
     end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- EXCHANGE BUTTON UNLOCKER - ORIGINAL CODE PRESERVED
+-- ═══════════════════════════════════════════════════════════════
+
+local function ForceEnableExchange()
+    if getgenv().var156_upvw_arg1 then
+        game:GetService("Players").LocalPlayer.PlayerGui.Global.Messages.Use:Fire("You can only use this at a time jae", "Error")
+        return
+    end
+    getgenv().var156_upvw_arg1 = true
+    
+    State.ExchangeUnlocked = true
+    
+    local Players = game:GetService("Players")
+    local player = Players.LocalPlayer
+
+    function arg69()
+        function arg_v5()
+            local exchangeButton = player.PlayerGui:FindFirstChild("Menu") and 
+            player.PlayerGui.Menu:FindFirstChild("Views") and 
+            player.PlayerGui.Menu.Views:FindFirstChild("Default") and 
+            player.PlayerGui.Menu.Views.Default:FindFirstChild("MainMenu") and 
+            player.PlayerGui.Menu.Views.Default.MainMenu:FindFirstChild("LeftCorner") and 
+            player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner:FindFirstChild("Exchange") and 
+            player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange:FindFirstChild("ImageButton")
+
+            local exitButton = player.PlayerGui:FindFirstChild("Menu") and 
+            player.PlayerGui.Menu:FindFirstChild("Views") and 
+            player.PlayerGui.Menu.Views:FindFirstChild("Battlepass") and 
+            player.PlayerGui.Menu.Views.Battlepass:FindFirstChild("Exchange") and 
+            player.PlayerGui.Menu.Views.Battlepass.Exchange:FindFirstChild("Center") and 
+            player.PlayerGui.Menu.Views.Battlepass.Exchange.Center:FindFirstChild("Exit") and 
+            player.PlayerGui.Menu.Views.Battlepass.Exchange.Center.Exit:FindFirstChild("ImageButton")
+
+            if exchangeButton then
+                player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange.Visible = true
+
+                if ExchangeConnections.ExchangeClick then
+                    ExchangeConnections.ExchangeClick:Disconnect()
+                end
+                
+                ExchangeConnections.ExchangeClick = exchangeButton.MouseButton1Click:Connect(function()
+                    local battlepass = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
+                    if battlepass then
+                        battlepass.Center.Visible = false
+                        battlepass.Exchange.Visible = true
+                    end
+                end)
+            end
+
+            if exitButton then
+                if ExchangeConnections.ExitClick then
+                    ExchangeConnections.ExitClick:Disconnect()
+                end
+                
+                ExchangeConnections.ExitClick = exitButton.MouseButton1Click:Connect(function()
+                    local battlepass = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
+                    if battlepass then
+                        repeat task.wait() until battlepass.Visible == false
+                        battlepass.Exchange.Visible = false
+                        battlepass.Center.Visible = true
+                    end
+                end)
+            end
+        end
+
+        arg_v5()
+
+        if ExchangeConnections.DescendantAdded then
+            ExchangeConnections.DescendantAdded:Disconnect()
+        end
+        
+        ExchangeConnections.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function()
+            task.wait(0.1)
+            arg_v5()
+        end)
+    end
+
+    arg69()
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1336,7 +1410,7 @@ local function CreateMainGUI()
     end)
     closeBtn.TextSize = 14 closeBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 30) closeBtn.TextColor3 = Theme.Danger
     local content = Instance.new("ScrollingFrame") content.Name = "Content" content.Size = UDim2.new(1, 0, 1, -46) content.Position = UDim2.new(0, 0, 0, 46)
-    content.BackgroundTransparency = 1 content.ScrollBarThickness = 3 content.ScrollBarImageColor3 = Theme.Accent content.BorderSizePixel = 0 content.CanvasSize = UDim2.new(0, 0, 0, 650) content.Parent = main
+    content.BackgroundTransparency = 1 content.ScrollBarThickness = 3 content.ScrollBarImageColor3 = Theme.Accent content.BorderSizePixel = 0 content.CanvasSize = UDim2.new(0, 0, 0, 700) content.Parent = main
 
     local y = 8
     CreateSectionLabel(content, "Visual", UDim2.new(0, 8, 0, y)) y = y + 24
@@ -1354,6 +1428,12 @@ local function CreateMainGUI()
     CreateModernButton(content, "Farm", "Auto Farm", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function() State.AutoFarm = not State.AutoFarm if not State.AutoFarm then CurrentTarget = nil end UpdateGUI() end) y = y + 40
     CreateModernButton(content, "EdgeBoost", "Edge Boost", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function() State.EdgeBoost = not State.EdgeBoost SetupEdgeBoost() UpdateGUI() end) y = y + 40
     CreateModernButton(content, "UpFix", "Upside Down Fix", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function() State.UpsideDownFix = not State.UpsideDownFix ToggleUpsideDownFix(State.UpsideDownFix) UpdateGUI() end) y = y + 46
+
+    CreateModernButton(content, "Exchange", "Unlock Exchange", nil, UDim2.new(0, 8, 0, y), UDim2.new(1, -16, 0, 36), function() 
+        ForceEnableExchange() 
+        UpdateGUI() 
+    end) 
+    y = y + 46
 
     CreateSectionLabel(content, "Cola", UDim2.new(0, 8, 0, y)) y = y + 24
     local fixBtn = CreateSmallButton(content, "Fix", "Fix", UDim2.new(0, 8, 0, y), UDim2.new(0, 70, 0, 30), FixCola) fixBtn.TextSize = 10
@@ -1528,7 +1608,7 @@ local function SetupCharacter(character)
     LastBounce = 0
     LastJumpTick = 0
     WasInAir = false
-    RecordedSpeed = 16  -- Reset to walk speed on respawn
+    RecordedSpeed = 16
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
 end
@@ -1559,7 +1639,6 @@ local function StartMainLoop()
             PreJumpQueue()
         end
         
-        -- PURE STACKING BOUNCE: Speed only goes up
         UpdateBounce()
     end)
     
