@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 11
+local SCRIPT_VERSION = 12
 
 pcall(function()
     if queue_on_teleport then
@@ -71,18 +71,20 @@ local Config = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE CONFIG - FIXED: Responsive predictive bounce
+-- BOUNCE CONFIG - FIXED: Uses in-game physics, no fake prediction
 -- ═══════════════════════════════════════════════════════════════
 
 local BounceConfig = {
-    Power = 90,
-    Cooldown = 0.9,
-    AirDuration = 10,
-    AirGain = 12,
-    AirMax = 290,
-    LandingPrediction = 2.5,
-    LandingVelocityBoost = 1.3,
-    MinFallSpeed = -10,
+    -- REMOVED: Power - using game physics instead
+    Cooldown = 0.5,       -- Reduced for more responsive feel
+    AirDuration = 8,      -- How long air control lasts after bounce
+    AirGain = 10,         -- Air strafe acceleration
+    AirMax = 250,         -- Max horizontal air speed
+    
+    -- NEW: Realistic bounce using game physics
+    JumpOnLand = true,    -- Trigger jump state on landing (uses game's bounce physics)
+    MinFallSpeed = -15,   -- Minimum fall speed to consider it a "bounce" landing
+    BounceWindow = 0.15,  -- Time window to press shift before/after landing
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -130,7 +132,6 @@ local LastVoteMap, LastVoteMode = 0, 0
 local SelfResCD = 0
 local LastRayFilterUpdate = 0
 local LastEdgeCheck = 0
-local WasInAir = false
 
 local CurrentTarget, FarmStart = nil, 0
 local NPCNames = {}
@@ -157,6 +158,11 @@ local LastGCTime = 0
 local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
+
+-- NEW: Realistic bounce tracking
+local JustLanded = false
+local LandTime = 0
+local WasFallingFast = false
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -434,79 +440,70 @@ local function PreJumpQueue()
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- BOUNCE SYSTEM - FIXED: Uses in-game physics, realistic timing
+-- ═══════════════════════════════════════════════════════════════
+
+-- NEW: Track when we land from a fast fall
 local function OnHumanoidStateChanged(old, new)
+    -- Bhop handling
     if not holdSpace then
         if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
             LastJumpTick = 0
         end
-        return
+    else
+        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
+            task.defer(function()
+                if holdSpace and Humanoid and Humanoid.Health > 0 then
+                    ExecuteJump()
+                end
+            end)
+        end
     end
     
-    if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
-        task.defer(function()
-            if holdSpace and Humanoid and Humanoid.Health > 0 then
-                ExecuteJump()
-            end
-        end)
+    -- NEW: Realistic bounce detection
+    if new == Enum.HumanoidStateType.Landed then
+        -- Check if we were falling fast enough for a "bounce"
+        if WasFallingFast then
+            JustLanded = true
+            LandTime = tick()
+        end
+        WasFallingFast = false
+    elseif new == Enum.HumanoidStateType.Freefall then
+        -- Track if we're falling fast enough for bounce
+        if RootPart then
+            local velY = RootPart.AssemblyLinearVelocity.Y
+            WasFallingFast = velY < BounceConfig.MinFallSpeed
+        end
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM - FIXED: Responsive predictive bounce
--- ═══════════════════════════════════════════════════════════════
-
-local function GetPredictedLanding()
-    if not RootPart or not Humanoid then return nil, 0 end
-    
-    local pos = RootPart.Position
-    local vel = RootPart.AssemblyLinearVelocity
-    
-    if vel.Y > -2 then return nil, 0 end
-    
-    local predictDist = math.abs(vel.Y) * 0.1 + BounceConfig.LandingPrediction
-    local rayVec = Vector3.new(0, -predictDist - 5, 0)
-    
-    local rayParams = RaycastParams.new()
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    rayParams.RespectCanCollide = true
-    
-    local result = Workspace:Raycast(pos, rayVec, rayParams)
-    if not result then return nil, 0 end
-    
-    local groundDist = pos.Y - result.Position.Y - Humanoid.HipHeight - 0.5
-    local timeToLand = math.abs(groundDist / vel.Y)
-    
-    return result, timeToLand
-end
-
-local function ExecuteBounce()
+-- NEW: Execute bounce using game physics (Jump state)
+local function ExecuteRealisticBounce()
     local now = tick()
+    
+    -- Check cooldown
     if now - LastBounce < BounceConfig.Cooldown then return false end
-    if not RootPart or not Humanoid then return false end
-    if Humanoid.Health <= 0 then return false end
     
-    local vel = RootPart.AssemblyLinearVelocity
-    
-    local fallMultiplier = 1.0
-    if vel.Y < BounceConfig.MinFallSpeed then
-        fallMultiplier = math.min(BounceConfig.LandingVelocityBoost, 1 + math.abs(vel.Y) / 100)
+    -- Check if we're in bounce window (just landed or about to)
+    if not (JustLanded and (now - LandTime) < BounceConfig.BounceWindow) then
+        return false
     end
     
-    local finalPower = BounceConfig.Power * fallMultiplier
+    if not Humanoid or Humanoid.Health <= 0 then return false end
     
-    RootPart.AssemblyLinearVelocity = Vector3.new(
-        vel.X,
-        finalPower,
-        vel.Z
-    )
+    -- Use game's jump physics for natural bounce feel
+    -- This preserves the game's natural bounce velocity calculations
+    Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
     LastBounce = now
     AirEnd = now + BounceConfig.AirDuration
+    JustLanded = false -- Consume the landing
     
     return true
 end
 
+-- Air strafe for momentum control
 local function AirStrafe()
     if not RootPart or not Humanoid then return end
     
@@ -541,8 +538,7 @@ local function AirStrafe()
     local hSpeed = hVel.Magnitude
     
     local targetVel = moveDir * math.min(hSpeed + BounceConfig.AirGain, BounceConfig.AirMax)
-    
-    local newHVel = hVel:Lerp(targetVel, 0.15)
+    local newHVel = hVel:Lerp(targetVel, 0.12)
     
     RootPart.AssemblyLinearVelocity = Vector3.new(
         newHVel.X,
@@ -551,27 +547,15 @@ local function AirStrafe()
     )
 end
 
+-- Main bounce update - called every frame
 local function UpdateBounce()
     if not holdLeftShift then 
-        WasInAir = false
+        JustLanded = false
         return 
     end
     
-    if not RootPart or not Humanoid then return end
-    if Humanoid.Health <= 0 then return end
-    
-    local state = Humanoid:GetState()
-    local isInAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
-    
-    if isInAir then
-        local landingResult, timeToLand = GetPredictedLanding()
-        
-        if landingResult and timeToLand < 0.08 and timeToLand > 0 then
-            ExecuteBounce()
-        end
-    end
-    
-    WasInAir = isInAir
+    -- Try to execute bounce if we just landed
+    ExecuteRealisticBounce()
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1521,7 +1505,7 @@ local function UpdateTimer()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INPUT - FIXED: Added Left Shift handling
+-- INPUT
 -- ═══════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -1580,7 +1564,8 @@ local function SetupCharacter(character)
     CurrentTarget, FarmStart = nil, 0
     LastBounce, AirEnd = 0, 0
     LastJumpTick = 0
-    WasInAir = false
+    JustLanded = false
+    WasFallingFast = false
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
 end
@@ -1598,7 +1583,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP - FIXED: Integrated bounce system
+-- MAIN LOOP - FIXED: Realistic bounce using game physics
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
@@ -1611,6 +1596,7 @@ local function StartMainLoop()
             PreJumpQueue()
         end
         
+        -- FIXED: Realistic bounce - only triggers on actual landing
         if holdLeftShift then
             UpdateBounce()
             AirStrafe()
@@ -1658,7 +1644,8 @@ Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
         NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce, AirEnd = 0, 0 LastJumpTick = 0
-        WasInAir = false
+        JustLanded = false
+        WasFallingFast = false
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1672,4 +1659,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Fixed bounce system active!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Realistic bounce using game physics!")
