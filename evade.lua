@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 13
+local SCRIPT_VERSION = 14
 
 pcall(function()
     if queue_on_teleport then
@@ -71,19 +71,13 @@ local Config = {
 }
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE CONFIG - BACK TO POWER 90, REALISTIC LANDING DETECTION
+-- BOUNCE CONFIG - SIMPLE: Just power and responsiveness
 -- ═══════════════════════════════════════════════════════════════
 
 local BounceConfig = {
-    Power = 90,           -- YOUR BOUNCE POWER IS BACK
-    Cooldown = 0.35,      -- Responsive but not spammy
-    AirDuration = 10,     -- Air control after bounce
-    AirGain = 12,         -- Air strafe acceleration
-    AirMax = 290,         -- Max horizontal air speed
-    
-    -- NEW: Realistic timing - tiny window after landing to trigger
-    LandWindow = 0.08,    -- 80ms window to press/hold shift after landing
-    MinFallSpeed = -8,    -- Must be falling this fast to count as "bounce landing"
+    Power = 90,           -- Your bounce power
+    Cooldown = 0.25,      -- Responsive but not broken
+    RayLength = 3.5,      -- How early to detect ground (keeps speed)
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -126,7 +120,7 @@ local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
 
-local LastAntiCheck, LastCarry, LastBounce, AirEnd = 0, 0, 0, 0
+local LastAntiCheck, LastCarry, LastBounce = 0, 0, 0
 local LastVoteMap, LastVoteMode = 0, 0
 local SelfResCD = 0
 local LastRayFilterUpdate = 0
@@ -158,15 +152,16 @@ local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
 
--- BOUNCE STATE: Track landing for realistic timing
-local LandedRecently = false
-local LandTime = 0
-local WasFallingFast = false
-local PendingBounce = false  -- Bounce queued for next frame (ensures visual landing first)
+-- SIMPLE BOUNCE STATE
+local WasInAir = false
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
 BhopRayParams.RespectCanCollide = true
+
+local BounceRayParams = RaycastParams.new()
+BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
+BounceRayParams.RespectCanCollide = true
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -262,6 +257,7 @@ local function UpdateRayFilter()
         if gamePlayers then filterList[#filterList + 1] = gamePlayers end
     end
     BhopRayParams.FilterDescendantsInstances = filterList
+    BounceRayParams.FilterDescendantsInstances = filterList
     EdgeRayParams.FilterDescendantsInstances = filterList
 end
 
@@ -440,13 +436,8 @@ local function PreJumpQueue()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM - FIXED: Power 90, realistic land-then-bounce
--- ═══════════════════════════════════════════════════════════════
-
--- Called when humanoid state changes - detects ACTUAL landing
 local function OnHumanoidStateChanged(old, new)
-    -- Bhop handling (space)
+    -- Bhop handling
     if not holdSpace then
         if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
             LastJumpTick = 0
@@ -460,55 +451,40 @@ local function OnHumanoidStateChanged(old, new)
             end)
         end
     end
-    
-    -- BOUNCE: Detect when we actually land from a fast fall
-    if new == Enum.HumanoidStateType.Landed then
-        if WasFallingFast and holdLeftShift then
-            -- We just landed while holding shift and were falling fast - QUEUE BOUNCE
-            -- Use task.defer to ensure visual landing happens first (next frame)
-            PendingBounce = true
-            LandTime = tick()
-        end
-        WasFallingFast = false
-        LandedRecently = true
-        
-    elseif new == Enum.HumanoidStateType.Freefall then
-        -- Track if we're falling fast enough for bounce
-        if RootPart then
-            local velY = RootPart.AssemblyLinearVelocity.Y
-            WasFallingFast = velY < BounceConfig.MinFallSpeed
-        end
-        LandedRecently = false
-        
-    elseif new == Enum.HumanoidStateType.Jumping then
-        -- Reset when we jump
-        LandedRecently = false
-        PendingBounce = false
-    end
 end
 
--- Execute the actual bounce with power 90
-local function ExecuteBouncePower()
-    local now = tick()
-    
-    -- Cooldown check
-    if now - LastBounce < BounceConfig.Cooldown then return false end
-    
+-- ═══════════════════════════════════════════════════════════════
+-- BOUNCE SYSTEM - SIMPLE: Touch ground → Bounce high → Repeat
+-- ═══════════════════════════════════════════════════════════════
+
+-- Check if about to hit ground (small raycast to preserve speed)
+local function IsAboutToLand()
     if not RootPart or not Humanoid then return false end
     if Humanoid.Health <= 0 then return false end
     
-    -- Must be on ground or just landed
-    local state = Humanoid:GetState()
-    if state ~= Enum.HumanoidStateType.Landed and state ~= Enum.HumanoidStateType.Running then
-        -- Allow very recent landing (within window)
-        if not (LandedRecently and (now - LandTime) < BounceConfig.LandWindow) then
-            return false
-        end
-    end
+    local pos = RootPart.Position
+    local vel = RootPart.AssemblyLinearVelocity
+    
+    -- Only check if falling
+    if vel.Y > -2 then return false end
+    
+    -- Raycast down to find ground
+    local rayVec = Vector3.new(0, -BounceConfig.RayLength, 0)
+    local result = Workspace:Raycast(pos, rayVec, BounceRayParams)
+    
+    return result ~= nil
+end
+
+-- Execute bounce with power 90
+local function DoBounce()
+    local now = tick()
+    if now - LastBounce < BounceConfig.Cooldown then return false end
+    if not RootPart or not Humanoid then return false end
+    if Humanoid.Health <= 0 then return false end
     
     local vel = RootPart.AssemblyLinearVelocity
     
-    -- BOUNCE WITH POWER 90 - preserves horizontal, adds vertical
+    -- BOUNCE: Preserve horizontal speed, add vertical power
     RootPart.AssemblyLinearVelocity = Vector3.new(
         vel.X,
         BounceConfig.Power,
@@ -516,68 +492,36 @@ local function ExecuteBouncePower()
     )
     
     LastBounce = now
-    AirEnd = now + BounceConfig.AirDuration
-    PendingBounce = false
-    LandedRecently = false  -- Consume the landing
-    
     return true
 end
 
--- Air strafe for momentum control after bounce
-local function AirStrafe()
-    if not RootPart or not Humanoid then return end
-    
-    local now = tick()
-    if now > AirEnd and not holdLeftShift then return end
-    
-    local vel = RootPart.AssemblyLinearVelocity
-    local camCF = Workspace.CurrentCamera.CFrame
-    
-    local moveDir = Vector3.new(0, 0, 0)
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        moveDir = moveDir + camCF.LookVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        moveDir = moveDir - camCF.LookVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        moveDir = moveDir - camCF.RightVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        moveDir = moveDir + camCF.RightVector
-    end
-    
-    moveDir = Vector3.new(moveDir.X, 0, moveDir.Z)
-    if moveDir.Magnitude > 0.01 then
-        moveDir = moveDir.Unit
-    else
-        return
-    end
-    
-    local hVel = Vector3.new(vel.X, 0, vel.Z)
-    local hSpeed = hVel.Magnitude
-    
-    local targetVel = moveDir * math.min(hSpeed + BounceConfig.AirGain, BounceConfig.AirMax)
-    local newHVel = hVel:Lerp(targetVel, 0.15)
-    
-    RootPart.AssemblyLinearVelocity = Vector3.new(
-        newHVel.X,
-        vel.Y,
-        newHVel.Z
-    )
-end
-
--- Main bounce update - handles pending bounces for realistic timing
+-- Simple bounce update - hold shift, hit ground, bounce up
 local function UpdateBounce()
     if not holdLeftShift then 
-        PendingBounce = false
-        LandedRecently = false
+        WasInAir = false
         return 
     end
     
-    -- Execute pending bounce from landing (happens next frame after land)
-    if PendingBounce then
-        ExecuteBouncePower()
+    if not RootPart or not Humanoid then return end
+    if Humanoid.Health <= 0 then return end
+    
+    -- Check if we're in air
+    local state = Humanoid:GetState()
+    local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
+    
+    if inAir then
+        WasInAir = true
+        
+        -- Check if about to land and bounce immediately (keeps speed)
+        if IsAboutToLand() then
+            DoBounce()
+        end
+        
+    elseif WasInAir and (state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running) then
+        -- We just landed - BOUNCE
+        if DoBounce() then
+            WasInAir = false
+        end
     end
 end
 
@@ -1585,11 +1529,9 @@ local function SetupCharacter(character)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter() SetupEdgeBoost()
     CurrentTarget, FarmStart = nil, 0
-    LastBounce, AirEnd = 0, 0
+    LastBounce = 0
     LastJumpTick = 0
-    LandedRecently = false
-    WasFallingFast = false
-    PendingBounce = false
+    WasInAir = false
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
 end
@@ -1607,7 +1549,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP - FIXED: Realistic land-then-bounce with power 90
+-- MAIN LOOP - SIMPLE: Hold shift, hit ground, bounce up, repeat
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
@@ -1620,12 +1562,9 @@ local function StartMainLoop()
             PreJumpQueue()
         end
         
-        -- BOUNCE: Land first, then bounce with power 90
+        -- SIMPLE BOUNCE: Hold shift → Land → Bounce up → Repeat
         if holdLeftShift then
             UpdateBounce()
-            AirStrafe()
-        elseif tick() <= AirEnd then
-            AirStrafe()
         end
     end)
     
@@ -1667,10 +1606,8 @@ LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce, AirEnd = 0, 0 LastJumpTick = 0
-        LandedRecently = false
-        WasFallingFast = false
-        PendingBounce = false
+        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce = 0 LastJumpTick = 0
+        WasInAir = false
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1684,4 +1621,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Bounce power 90, realistic land-then-bounce!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Simple bounce: Power 90, touch ground first, no requirements!")
