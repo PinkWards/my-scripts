@@ -11,22 +11,19 @@ local conns         = {}
 ----------------------------------------------------------------
 local CFG = {
     TP_DIST       = 80,
-    RING_RADIUS   = 45,
-    THREAT_RADIUS = 30,
-    THREAT_SPIN   = 15,
-    THREAT_SPEED  = 80,
+    RING_RADIUS   = 35,
+    THREAT_RADIUS = 20,
     COL_TICK      = 5,
-    FORCE_TICK    = 15,
-    PROX_TICK     = 10,
-    RING_TICK     = 3,
-    SHIELD_TICK   = 4,
+    FORCE_TICK    = 20,
+    PROX_TICK     = 8,
+    RING_TICK     = 5,
+    SHIELD_TICK   = 6,
+    BFD_TICK      = 3,
+    MAX_SCAN      = 40,
 }
 
--- ring parts spin VERY fast, normal game parts dont
--- these thresholds only catch actual ring behavior
-local RING_ANGULAR_MIN = 30   -- ring parts spin 50-500+ rad/s
-local RING_LINEAR_MIN  = 80   -- ring parts orbit at high speed
-local RING_COMBO       = true -- must have BOTH spin + speed
+local RING_ANGULAR_MIN = 30
+local RING_LINEAR_MIN  = 80
 
 ----------------------------------------------------------------
 --  DANGEROUS CLASSES
@@ -74,61 +71,38 @@ end
 
 ----------------------------------------------------------------
 -- RING DETECTION
--- super ring parts have a unique signature:
---   high angular velocity (spinning)
---   high linear velocity (orbiting)
---   unanchored
---   not in any character
---   usually multiple siblings doing the same thing
---
--- normal game parts (falling debris, tools, items):
---   low or zero angular velocity
---   moderate linear velocity (just falling/sliding)
---   OR high linear but zero angular (thrown object)
 ----------------------------------------------------------------
 local knownRingParts = setmetatable({}, {__mode = "k"})
 
 local function isRingPart(part)
+    if knownRingParts[part] then return true end
     if not part:IsA("BasePart") then return false end
     if part.Anchored then return false end
     if isInAnyCharacter(part) then return false end
-    if knownRingParts[part] then return true end
 
     local av = part.AssemblyAngularVelocity.Magnitude
     local lv = part.AssemblyLinearVelocity.Magnitude
 
-    if RING_COMBO then
-        -- BOTH spinning fast AND moving fast = ring
-        if av > RING_ANGULAR_MIN and lv > RING_LINEAR_MIN then
-            knownRingParts[part] = true
-            return true
-        end
-        -- extreme spin alone = also ring
-        if av > RING_ANGULAR_MIN * 3 then
-            knownRingParts[part] = true
-            return true
-        end
-    else
-        if av > RING_ANGULAR_MIN or lv > RING_LINEAR_MIN then
-            knownRingParts[part] = true
-            return true
-        end
+    if av > RING_ANGULAR_MIN and lv > RING_LINEAR_MIN then
+        knownRingParts[part] = true
+        return true
+    end
+    if av > RING_ANGULAR_MIN * 3 then
+        knownRingParts[part] = true
+        return true
     end
 
-    -- check siblings — if most siblings are spinning too,
-    -- this whole group is a ring even if this part is slow
     local parent = part.Parent
     if parent and parent ~= workspace and parent ~= game then
         local siblings = parent:GetChildren()
         if #siblings >= 3 then
             local spinCount = 0
-            local checkCount = math.min(#siblings, 10)
-            for i = 1, checkCount do
+            local limit = math.min(#siblings, 8)
+            for i = 1, limit do
                 local sib = siblings[i]
-                if sib:IsA("BasePart") and not sib.Anchored then
-                    if sib.AssemblyAngularVelocity.Magnitude > RING_ANGULAR_MIN * 0.5 then
-                        spinCount += 1
-                    end
+                if sib:IsA("BasePart") and not sib.Anchored
+                and sib.AssemblyAngularVelocity.Magnitude > RING_ANGULAR_MIN * 0.5 then
+                    spinCount += 1
                 end
             end
             if spinCount >= 3 then
@@ -141,24 +115,115 @@ local function isRingPart(part)
             end
         end
     end
-
     return false
 end
 
 ----------------------------------------------------------------
--- COLLISION GROUP SETUP
+-- COLLISION GROUPS
+-- 3 groups:
+--   ME     = your character
+--   PLAYER = all other player characters
+--   RING   = confirmed ring parts
+--
+-- ME cannot collide with PLAYER (no pushing/bumping)
+-- ME cannot collide with RING   (no ring fling)
+-- PLAYER can still collide with game world normally
+-- RING can still collide with game world normally
+-- YOU can still collide with game world normally
 ----------------------------------------------------------------
-local MY_GROUP   = "AntiFling_Me"
-local RING_GROUP = "AntiFling_Rings"
+local MY_GROUP     = "AntiFling_Me"
+local PLAYER_GROUP = "AntiFling_Players"
+local RING_GROUP   = "AntiFling_Rings"
 
 pcall(function() PhysicsService:RegisterCollisionGroup(MY_GROUP) end)
+pcall(function() PhysicsService:RegisterCollisionGroup(PLAYER_GROUP) end)
 pcall(function() PhysicsService:RegisterCollisionGroup(RING_GROUP) end)
 pcall(function()
+    PhysicsService:CollisionGroupSetCollidable(MY_GROUP, PLAYER_GROUP, false)
     PhysicsService:CollisionGroupSetCollidable(MY_GROUP, RING_GROUP, false)
 end)
 
 local function assignGroup(part, group)
     pcall(function() part.CollisionGroup = group end)
+end
+
+----------------------------------------------------------------
+-- BFD DETECTION
+----------------------------------------------------------------
+local playerTracker = {}
+
+local function initTracker(plr)
+    if plr == LP then return end
+    playerTracker[plr] = {
+        lastLook  = nil,
+        flipCount = 0,
+        lastReset = tick(),
+        flagged   = false,
+    }
+end
+
+local function cleanTracker(plr)
+    playerTracker[plr] = nil
+end
+
+local function updateBFD(plr, pHRP)
+    local t = playerTracker[plr]
+    if not t or not pHRP then return false end
+
+    local look = pHRP.CFrame.LookVector
+    local now  = tick()
+
+    if now - t.lastReset > 1 then
+        t.flagged   = t.flipCount > 15
+        t.flipCount = 0
+        t.lastReset = now
+    end
+
+    if t.lastLook then
+        if look:Dot(t.lastLook) < -0.5 then
+            t.flipCount += 1
+        end
+    end
+    t.lastLook = look
+
+    return t.flagged
+end
+
+----------------------------------------------------------------
+-- ASSIGN PLAYER PARTS TO PLAYER GROUP
+-- this is what makes you pass through ALL players
+-- engine-level, cannot be overridden by their client
+----------------------------------------------------------------
+local function groupPlayerChar(plrChar)
+    if not plrChar then return end
+    for _, p in ipairs(plrChar:GetDescendants()) do
+        if p:IsA("BasePart") then
+            assignGroup(p, PLAYER_GROUP)
+        end
+    end
+end
+
+local function watchPlayerGroups(plr)
+    if plr == LP then return end
+    if plr.Character then groupPlayerChar(plr.Character) end
+    reg(plr.CharacterAdded:Connect(function(c)
+        task.wait(0.1)
+        groupPlayerChar(c)
+        -- catch new parts added to their character
+        reg(c.DescendantAdded:Connect(function(p)
+            if p:IsA("BasePart") then
+                assignGroup(p, PLAYER_GROUP)
+            end
+        end))
+    end))
+    -- also watch existing character for new parts
+    if plr.Character then
+        reg(plr.Character.DescendantAdded:Connect(function(p)
+            if p:IsA("BasePart") then
+                assignGroup(p, PLAYER_GROUP)
+            end
+        end))
+    end
 end
 
 ----------------------------------------------------------------
@@ -168,6 +233,7 @@ local function protect(char)
     if not char then return end
     clearConns()
     knownRingParts = setmetatable({}, {__mode = "k"})
+    playerTracker  = {}
 
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
     local hum = char:WaitForChild("Humanoid", 5)
@@ -182,12 +248,25 @@ local function protect(char)
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
     ringParams.FilterDescendantsInstances = {char}
 
-    -- shield our parts
+    -- init trackers
+    for _, plr in ipairs(Players:GetPlayers()) do initTracker(plr) end
+    reg(Players.PlayerAdded:Connect(function(plr)
+        initTracker(plr)
+        watchPlayerGroups(plr)
+    end))
+    reg(Players.PlayerRemoving:Connect(cleanTracker))
+
+    -- assign YOUR parts to your group
     local function shieldPart(p)
         if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
     for _, p in ipairs(char:GetDescendants()) do shieldPart(p) end
     reg(char.DescendantAdded:Connect(shieldPart))
+
+    -- assign ALL other players to player group
+    for _, plr in ipairs(Players:GetPlayers()) do
+        watchPlayerGroups(plr)
+    end
 
     local function flagThreat()
         recentThreat = true
@@ -247,28 +326,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 3 · PLAYER COLLISION SHIELD
-    -- ═══════════════════════════════════════════
-    local function ncPart(p)
-        if p:IsA("BasePart") then p.CanCollide = false end
-    end
-    local function ncChar(c)
-        if not c then return end
-        for _, p in ipairs(c:GetDescendants()) do ncPart(p) end
-        reg(c.DescendantAdded:Connect(ncPart))
-    end
-    local function watchPlr(plr)
-        if plr == LP then return end
-        if plr.Character then ncChar(plr.Character) end
-        reg(plr.CharacterAdded:Connect(function(c)
-            task.wait(0.1) ncChar(c)
-        end))
-    end
-    for _, p in ipairs(Players:GetPlayers()) do watchPlr(p) end
-    reg(Players.PlayerAdded:Connect(watchPlr))
-
-    -- ═══════════════════════════════════════════
-    -- LAYER 4 · FOREIGN FORCE / WELD GUARD
+    -- LAYER 3 · FOREIGN FORCE / WELD GUARD
     -- ═══════════════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -311,7 +369,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 5 · SEAT-FLING BLOCK
+    -- LAYER 4 · SEAT-FLING BLOCK
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
@@ -333,15 +391,13 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 6 · RING INTERCEPTOR (spawn catch)
-    -- only flags parts with ring behavior
+    -- LAYER 5 · RING INTERCEPTOR
     -- ═══════════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") then return end
         if obj.Anchored then return end
         if obj:IsDescendantOf(char) then return end
 
-        -- delayed checks because ring scripts set velocity after spawn
         local function check()
             pcall(function()
                 if obj.Parent and isRingPart(obj) then
@@ -356,9 +412,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 7 · CONTACT SHIELD (Touched)
-    -- only reacts to confirmed ring parts
-    -- normal game parts pass through normally
+    -- LAYER 6 · CONTACT SHIELD
     -- ═══════════════════════════════════════════
     local touchCD = {}
 
@@ -369,8 +423,6 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) then return end
             if hit.Anchored then return end
-
-            -- ONLY react to ring parts
             if not isRingPart(hit) then return end
 
             touchCD[bodyPart] = true
@@ -411,7 +463,7 @@ local function protect(char)
             safeCF = hrp.CFrame
         end
 
-        -- keep our parts shielded
+        -- your parts stay in your group
         if frame % CFG.SHIELD_TICK == 0 then
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
@@ -420,7 +472,35 @@ local function protect(char)
             end
         end
 
-        -- RING RADAR — only targets ring-behavior parts
+        -- keep all player parts in player group
+        if frame % CFG.COL_TICK == 0 then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LP and plr.Character then
+                    for _, p in ipairs(plr.Character:GetDescendants()) do
+                        if p:IsA("BasePart") then
+                            assignGroup(p, PLAYER_GROUP)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- BFD detection
+        if frame % CFG.BFD_TICK == 0 then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LP and plr.Character then
+                    local pH = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if pH then
+                        local isBFD = updateBFD(plr, pH)
+                        if isBFD and (pH.Position - pos).Magnitude < CFG.THREAT_RADIUS then
+                            flagThreat()
+                        end
+                    end
+                end
+            end
+        end
+
+        -- ring radar
         if frame % CFG.RING_TICK == 0 then
             local ok, nearby = pcall(function()
                 return workspace:GetPartBoundsInRadius(
@@ -428,19 +508,24 @@ local function protect(char)
                 )
             end)
             if ok and nearby then
+                local scanned = 0
                 for _, part in ipairs(nearby) do
-                    -- already tagged = fast path
+                    if scanned >= CFG.MAX_SCAN then break end
                     if knownRingParts[part] then
                         handleRing(part)
-                    elseif isRingPart(part) then
-                        flagThreat()
-                        nukeRingFamily(part)
+                    elseif not part.Anchored
+                    and not isInAnyCharacter(part) then
+                        scanned += 1
+                        if isRingPart(part) then
+                            flagThreat()
+                            nukeRingFamily(part)
+                        end
                     end
                 end
             end
         end
 
-        -- post-fling recovery (only when threat active)
+        -- post-fling recovery
         if recentThreat then
             local av = hrp.AssemblyAngularVelocity
             local lv = hrp.AssemblyLinearVelocity
@@ -451,38 +536,6 @@ local function protect(char)
                 hrp.AssemblyLinearVelocity  = V3ZERO
                 hrp.AssemblyAngularVelocity = V3ZERO
                 hrp.CFrame = safeCF
-            end
-        end
-
-        -- proximity scanner
-        if frame % CFG.PROX_TICK == 0 then
-            for _, plr in ipairs(Players:GetPlayers()) do
-                if plr ~= LP and plr.Character then
-                    local pH = plr.Character:FindFirstChild("HumanoidRootPart")
-                    if pH and (pH.Position - pos).Magnitude < CFG.THREAT_RADIUS then
-                        if pH.AssemblyAngularVelocity.Magnitude > CFG.THREAT_SPIN
-                        or pH.AssemblyLinearVelocity.Magnitude > CFG.THREAT_SPEED then
-                            flagThreat()
-                            for _, p in ipairs(plr.Character:GetDescendants()) do
-                                if p:IsA("BasePart") then
-                                    p.CanCollide = false
-                                    p.CanTouch   = false
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        -- collision refresh
-        if frame % CFG.COL_TICK == 0 then
-            for _, plr in ipairs(Players:GetPlayers()) do
-                if plr ~= LP and plr.Character then
-                    for _, p in ipairs(plr.Character:GetDescendants()) do
-                        if p:IsA("BasePart") then p.CanCollide = false end
-                    end
-                end
             end
         end
 
