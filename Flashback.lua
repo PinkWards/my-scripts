@@ -6,7 +6,7 @@ local UserInputService = game:GetService("UserInputService")
 local FLASHBACK_KEY = Enum.KeyCode.C
 local MAX_RECORD_SECONDS = 60
 local RECORD_TOOLS = true
-local REWIND_SPEED = 1.5 -- 1.0 = same speed you moved, 1.5 = slightly faster, 2.0 = double speed
+local REWIND_SPEED = 1.5
 -- ============ END OF SETTINGS ============
 
 local LocalPlayer = Players.LocalPlayer
@@ -17,6 +17,7 @@ local Humanoid = nil
 local Frames = {}
 local MaxFrames = MAX_RECORD_SECONDS * 60
 local Rewinding = false
+local HoldingKey = false
 local RewindTimer = 0
 
 local SavedWalkSpeed = 16
@@ -42,24 +43,7 @@ local function IsAlive()
 	return true
 end
 
-local function BeginRewind()
-	if not IsAlive() then return end
-	if Rewinding then return end
-
-	Rewinding = true
-	RewindTimer = 0
-
-	SavedWalkSpeed = Humanoid.WalkSpeed
-	SavedJumpPower = Humanoid.JumpPower
-	SavedAutoRotate = Humanoid.AutoRotate
-
-	RootPart.Anchored = true
-	Humanoid.WalkSpeed = 0
-	Humanoid.JumpPower = 0
-	Humanoid.AutoRotate = false
-end
-
-local function EndRewind()
+local function StopRewind()
 	if not Rewinding then return end
 	Rewinding = false
 	RewindTimer = 0
@@ -74,6 +58,24 @@ local function EndRewind()
 	Humanoid.JumpPower = SavedJumpPower
 	Humanoid.AutoRotate = SavedAutoRotate
 	Humanoid.PlatformStand = false
+end
+
+local function StartRewind()
+	if not IsAlive() then return end
+	if Rewinding then return end
+	if #Frames == 0 then return end
+
+	Rewinding = true
+	RewindTimer = 0
+
+	SavedWalkSpeed = Humanoid.WalkSpeed
+	SavedJumpPower = Humanoid.JumpPower
+	SavedAutoRotate = Humanoid.AutoRotate
+
+	RootPart.Anchored = true
+	Humanoid.WalkSpeed = 0
+	Humanoid.JumpPower = 0
+	Humanoid.AutoRotate = false
 end
 
 local function Record(dt)
@@ -96,13 +98,16 @@ local function Record(dt)
 end
 
 local function Rewind(dt)
-	if not IsAlive() then return end
-
-	if #Frames == 0 then
+	if not IsAlive() then
+		StopRewind()
 		return
 	end
 
-	-- multiply dt by REWIND_SPEED so we consume frames faster
+	if #Frames == 0 then
+		StopRewind()
+		return
+	end
+
 	RewindTimer = RewindTimer + (dt * REWIND_SPEED)
 
 	while RewindTimer > 0 and #Frames > 0 do
@@ -126,35 +131,40 @@ local function Rewind(dt)
 			end
 		end
 	end
+
+	if #Frames == 0 then
+		StopRewind()
+	end
 end
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.KeyCode == FLASHBACK_KEY then
-		BeginRewind()
+		HoldingKey = true
+		StartRewind()
 	end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
 	if input.KeyCode == FLASHBACK_KEY then
-		EndRewind()
+		HoldingKey = false
+		StopRewind()
 	end
 end)
 
 RunService.Heartbeat:Connect(function(dt)
 	if not Character or not Character.Parent then
+		if Rewinding then StopRewind() end
 		RefreshCharacter()
 		return
 	end
 	if not RootPart or not RootPart.Parent then
+		if Rewinding then StopRewind() end
 		RefreshCharacter()
 		return
 	end
 	if not Humanoid or Humanoid.Health <= 0 then
-		if Rewinding then
-			Rewinding = false
-			RewindTimer = 0
-		end
+		if Rewinding then StopRewind() end
 		return
 	end
 
@@ -168,9 +178,10 @@ end)
 LocalPlayer.CharacterAdded:Connect(function(char)
 	task.wait(0.1)
 
-	Frames = {}
 	Rewinding = false
+	HoldingKey = false
 	RewindTimer = 0
+	Frames = {}
 
 	Character = char
 	RootPart = char:WaitForChild("HumanoidRootPart", 5)
@@ -182,10 +193,7 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 		SavedAutoRotate = Humanoid.AutoRotate
 
 		Humanoid.Died:Connect(function()
-			if Rewinding then
-				Rewinding = false
-				RewindTimer = 0
-			end
+			StopRewind()
 		end)
 	end
 end)
@@ -198,10 +206,7 @@ if LocalPlayer.Character then
 		SavedAutoRotate = Humanoid.AutoRotate
 
 		Humanoid.Died:Connect(function()
-			if Rewinding then
-				Rewinding = false
-				RewindTimer = 0
-			end
+			StopRewind()
 		end)
 	end
 end
