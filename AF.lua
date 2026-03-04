@@ -20,20 +20,15 @@ local CFG = {
     SHIELD_TICK   = 6,
     MAX_SCAN      = 40,
 
-    -- velocity deviation allowance
-    -- how much faster than your walkspeed before its a fling
-    -- 2.5 = allow up to 2.5x your walkspeed (for slopes, bounces)
     VEL_MULT      = 2.5,
-    -- minimum absolute threshold (so slow walkspeeds dont false flag)
     VEL_MIN       = 80,
-    -- vertical threshold multiplier over jumppower
     VERT_MULT     = 2.0,
     VERT_MIN      = 80,
-    -- angular threshold (always a fling above this)
     ANG_MAX       = 50,
-    -- how many consecutive fling frames before snap-back
-    -- prevents single-frame false positives
     FLING_FRAMES  = 2,
+
+    NEAR_COL_DIST = 15,
+    NEAR_COL_TICK = 2,
 }
 
 local RING_ANGULAR_MIN = 30
@@ -198,9 +193,7 @@ end
 local function groupPlayerChar(plrChar)
     if not plrChar then return end
     for _, p in ipairs(plrChar:GetDescendants()) do
-        if p:IsA("BasePart") then
-            assignGroup(p, PLAYER_GROUP)
-        end
+        if p:IsA("BasePart") then assignGroup(p, PLAYER_GROUP) end
     end
 end
 
@@ -234,6 +227,11 @@ local function protect(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hrp or not hum then return end
 
+    -- immediately shield
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
+    end
+
     local safeCF       = hrp.CFrame
     local lastPos      = hrp.Position
     local frame        = 0
@@ -245,7 +243,6 @@ local function protect(char)
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
     ringParams.FilterDescendantsInstances = {char}
 
-    -- init
     for _, plr in ipairs(Players:GetPlayers()) do
         initTracker(plr)
         watchPlayerGroups(plr)
@@ -259,12 +256,19 @@ local function protect(char)
     local function shieldPart(p)
         if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
-    for _, p in ipairs(char:GetDescendants()) do shieldPart(p) end
     reg(char.DescendantAdded:Connect(shieldPart))
 
     local function flagThreat()
         recentThreat = true
         task.delay(3, function() recentThreat = false end)
+    end
+
+    local function snapBack()
+        pcall(function()
+            hrp.AssemblyLinearVelocity  = V3ZERO
+            hrp.AssemblyAngularVelocity = V3ZERO
+            hrp.CFrame = safeCF
+        end)
     end
 
     local function handleRing(part)
@@ -292,14 +296,6 @@ local function protect(char)
         end)
     end
 
-    local function snapBack()
-        pcall(function()
-            hrp.AssemblyLinearVelocity  = V3ZERO
-            hrp.AssemblyAngularVelocity = V3ZERO
-            hrp.CFrame = safeCF
-        end)
-    end
-
     local function purgeChar()
         for _, d in ipairs(char:GetDescendants()) do
             if DANGEROUS[d.ClassName] then
@@ -320,30 +316,56 @@ local function protect(char)
 
     -- ═══════════════════════════════════════════
     -- STATE LOCKDOWN
+    -- only block Ragdoll always
+    -- FallingDown only blocked during active threat
+    -- this lets trip work normally
     -- ═══════════════════════════════════════════
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        -- DO NOT disable FallingDown globally
+        -- trip command needs it
     end)
+
     reg(hum.StateChanged:Connect(function(_, s)
-        if s == Enum.HumanoidStateType.Ragdoll
-        or s == Enum.HumanoidStateType.FallingDown then
+        if s == Enum.HumanoidStateType.Ragdoll then
             hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        -- only block FallingDown when actively threatened
+        if s == Enum.HumanoidStateType.FallingDown then
+            if recentThreat and not isTripping then
+                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+            end
         end
     end))
 
     -- ═══════════════════════════════════════════
     -- PLATFORM-STAND GUARD (trip-friendly)
+    --
+    -- how IY trip works:
+    --   1. sets PlatformStand = true
+    --   2. character falls over (FallingDown state)
+    --   3. character lies on ground
+    --
+    -- we allow this UNLESS there is an active threat
+    -- isTripping flag pauses ALL detection for the
+    -- duration so nothing interferes with the trip
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
             if recentThreat then
+                -- threat active = fling attempt, block it
                 hum.PlatformStand = false
                 snapBack()
             else
+                -- no threat = user command (trip), allow it
                 isTripping = true
-                task.delay(5, function() isTripping = false end)
             end
+        else
+            -- PlatformStand turned off = untrip
+            -- give a grace period for character to settle
+            task.delay(1, function()
+                isTripping = false
+            end)
         end
     end))
 
@@ -351,6 +373,11 @@ local function protect(char)
     -- FOREIGN FORCE / WELD GUARD
     -- ═══════════════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
+        if obj:IsA("BasePart") then
+            assignGroup(obj, MY_GROUP)
+            return
+        end
+
         if DANGEROUS[obj.ClassName] then
             task.defer(function()
                 pcall(function()
@@ -366,6 +393,7 @@ local function protect(char)
             end)
             return
         end
+
         if obj:IsA("JointInstance")
         or obj:IsA("WeldConstraint")
         or obj:IsA("Constraint") then
@@ -396,15 +424,25 @@ local function protect(char)
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
+        local isForeign = false
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LP and plr.Character
             and seat:IsDescendantOf(plr.Character) then
-                hum.Sit = false
-                task.defer(function()
-                    if hrp.Parent then snapBack() end
-                end)
+                isForeign = true
                 break
             end
+        end
+        if not isForeign and not seat.Anchored then
+            if seat.AssemblyAngularVelocity.Magnitude > 10
+            or seat.AssemblyLinearVelocity.Magnitude > 50 then
+                isForeign = true
+            end
+        end
+        if isForeign then
+            hum.Sit = false
+            task.defer(function()
+                if hrp.Parent then snapBack() end
+            end)
         end
     end))
 
@@ -453,10 +491,13 @@ local function protect(char)
     end
 
     for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
-    reg(char.DescendantAdded:Connect(hookTouch))
+    reg(char.DescendantAdded:Connect(function(p)
+        shieldPart(p)
+        hookTouch(p)
+    end))
 
     -- ═══════════════════════════════════════════
-    -- HEARTBEAT — VELOCITY DEVIATION DETECTION
+    -- HEARTBEAT
     -- ═══════════════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -476,53 +517,46 @@ local function protect(char)
         end
 
         -- ═══════════════════════════════════════
-        -- CALCULATE EXPECTED vs ACTUAL VELOCITY
+        -- VELOCITY DEVIATION DETECTION
+        -- completely skipped while tripping
         -- ═══════════════════════════════════════
-        local ws    = hum.WalkSpeed
-        local jp    = hum.JumpPower
+        local ws = hum.WalkSpeed
+        local jp = hum.JumpPower
         if jp == 0 then jp = hum.JumpHeight * 3 end
 
-        local curLV = hrp.AssemblyLinearVelocity
-        local curAV = hrp.AssemblyAngularVelocity
-
-        local hVel  = math.sqrt(curLV.X * curLV.X + curLV.Z * curLV.Z)
-        local vVel  = math.abs(curLV.Y)
+        local curLV  = hrp.AssemblyLinearVelocity
+        local curAV  = hrp.AssemblyAngularVelocity
+        local hVel   = math.sqrt(curLV.X * curLV.X + curLV.Z * curLV.Z)
+        local vVel   = math.abs(curLV.Y)
         local angMag = curAV.Magnitude
 
-        -- expected maximums based on character properties
         local maxH = math.max(ws * CFG.VEL_MULT, CFG.VEL_MIN)
         local maxV = math.max(jp * CFG.VERT_MULT, CFG.VERT_MIN)
 
-        local state = hum:GetState()
+        local state      = hum:GetState()
         local isSitting  = hum.Sit
         local isClimbing = state == Enum.HumanoidStateType.Climbing
         local isSwimming = state == Enum.HumanoidStateType.Swimming
         local isFalling  = state == Enum.HumanoidStateType.Freefall
         local isSeated   = state == Enum.HumanoidStateType.Seated
 
-        -- exempt states where velocity can be weird
+        -- FULL EXEMPT when tripping
+        -- this is the key fix — when isTripping is true,
+        -- ALL detection is paused so trip works perfectly
         local exempt = isTripping or isSitting or isSeated
             or isClimbing or isSwimming
+            or hum.PlatformStand
 
         local flingDetected = false
 
         if not exempt then
-            -- angular velocity check (always reliable)
             if angMag > CFG.ANG_MAX then
                 flingDetected = true
             end
-
-            -- horizontal overspeed
             if hVel > maxH then
-                -- could be a game boost, check if sustained
                 flingDetected = true
             end
-
-            -- vertical overspeed (not from normal jump/fall)
-            -- falling accelerates due to gravity so allow more
             if isFalling then
-                -- during freefall, allow higher vertical
-                -- gravity = ~196 studs/s/s, terminal ~200+
                 if vVel > math.max(maxV * 2, 200) then
                     flingDetected = true
                 end
@@ -533,17 +567,12 @@ local function protect(char)
             end
         end
 
-        -- FRAME COUNTER to prevent false positives
-        -- single frame spike = could be game mechanic
-        -- sustained spike = definitely a fling
         if flingDetected then
             flingCounter += 1
         else
-            -- decay slowly so brief legitimate spikes reset
             flingCounter = math.max(0, flingCounter - 1)
         end
 
-        -- SNAP BACK after sustained detection
         if flingCounter >= CFG.FLING_FRAMES then
             flagThreat()
             snapBack()
@@ -551,9 +580,11 @@ local function protect(char)
         end
 
         -- safe position update
+        -- never update while tripping (lying on ground = bad save)
         if flingCounter == 0
-        and hum.FloorMaterial ~= Enum.Material.Air
-        and not recentThreat then
+        and not isTripping
+        and not recentThreat
+        and hum.FloorMaterial ~= Enum.Material.Air then
             safeCF = hrp.CFrame
         end
 
@@ -573,6 +604,24 @@ local function protect(char)
                     for _, p in ipairs(plr.Character:GetDescendants()) do
                         if p:IsA("BasePart") then
                             assignGroup(p, PLAYER_GROUP)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- nearby player aggressive enforcement
+        if frame % CFG.NEAR_COL_TICK == 0 then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr ~= LP and plr.Character then
+                    local pH = plr.Character:FindFirstChild("HumanoidRootPart")
+                    if pH and (pH.Position - pos).Magnitude < CFG.NEAR_COL_DIST then
+                        for _, p in ipairs(plr.Character:GetDescendants()) do
+                            if p:IsA("BasePart") then
+                                assignGroup(p, PLAYER_GROUP)
+                                p.CanCollide = false
+                                p.CanTouch   = false
+                            end
                         end
                     end
                 end
@@ -629,6 +678,11 @@ end
 ----------------------------------------------------------------
 protect(LP.Character)
 LP.CharacterAdded:Connect(function(c)
+    pcall(function()
+        for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
+        end
+    end)
     task.wait(0.2)
     protect(c)
 end)
