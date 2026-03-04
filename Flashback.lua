@@ -16,8 +16,9 @@ local Humanoid = nil
 local RecordedFrames = {}
 local MaxFrameCount = MAX_RECORD_SECONDS * 60
 local IsRewinding = false
-local FrameTimer = 0
-local FrameStep = 1 / 60
+local RewindTimer = 0
+local SavedWalkSpeed = 16
+local SavedJumpPower = 50
 
 local function GetCharacter()
 	Character = LocalPlayer.Character
@@ -47,7 +48,24 @@ local function IsAlive()
 	return true
 end
 
-local function RecordFrame()
+local function FreezeCharacter()
+	if not Humanoid then return end
+	SavedWalkSpeed = Humanoid.WalkSpeed
+	SavedJumpPower = Humanoid.JumpPower
+	Humanoid.WalkSpeed = 0
+	Humanoid.JumpPower = 0
+	Humanoid.AutoRotate = false
+end
+
+local function UnfreezeCharacter()
+	if not Humanoid then return end
+	Humanoid.WalkSpeed = SavedWalkSpeed
+	Humanoid.JumpPower = SavedJumpPower
+	Humanoid.AutoRotate = true
+	Humanoid.PlatformStand = false
+end
+
+local function RecordFrame(dt)
 	if not IsAlive() then
 		return
 	end
@@ -61,6 +79,7 @@ local function RecordFrame()
 		Velocity = RootPart.AssemblyLinearVelocity,
 		MoveState = Humanoid:GetState(),
 		Standing = Humanoid.PlatformStand,
+		Delta = dt,
 	}
 
 	if RECORD_TOOLS then
@@ -70,7 +89,7 @@ local function RecordFrame()
 	RecordedFrames[#RecordedFrames + 1] = data
 end
 
-local function PlaybackFrame()
+local function PlaybackFrames(dt)
 	if not IsAlive() then
 		return
 	end
@@ -80,23 +99,32 @@ local function PlaybackFrame()
 		return
 	end
 
-	local frame = RecordedFrames[count]
-	RecordedFrames[count] = nil
+	RewindTimer = RewindTimer + dt
 
-	RootPart.CFrame = frame.Position
-	RootPart.AssemblyLinearVelocity = -frame.Velocity * 0.5
+	while RewindTimer > 0 and #RecordedFrames > 0 do
+		count = #RecordedFrames
+		local frame = RecordedFrames[count]
 
-	Humanoid:ChangeState(frame.MoveState)
-	Humanoid.PlatformStand = frame.Standing
+		if not frame then break end
 
-	if RECORD_TOOLS then
-		local currentTool = Character:FindFirstChildOfClass("Tool")
-		if frame.HeldTool and frame.HeldTool.Parent then
-			if not currentTool then
-				Humanoid:EquipTool(frame.HeldTool)
+		RewindTimer = RewindTimer - frame.Delta
+		RecordedFrames[count] = nil
+
+		RootPart.CFrame = frame.Position
+		RootPart.AssemblyLinearVelocity = -frame.Velocity * 0.3
+
+		Humanoid:ChangeState(frame.MoveState)
+		Humanoid.PlatformStand = frame.Standing
+
+		if RECORD_TOOLS then
+			local currentTool = Character:FindFirstChildOfClass("Tool")
+			if frame.HeldTool and frame.HeldTool.Parent then
+				if not currentTool then
+					Humanoid:EquipTool(frame.HeldTool)
+				end
+			elseif currentTool then
+				Humanoid:UnequipTools()
 			end
-		elseif currentTool then
-			Humanoid:UnequipTools()
 		end
 	end
 end
@@ -107,17 +135,16 @@ UserInputService.InputBegan:Connect(function(input, typing)
 	end
 	if input.KeyCode == FLASHBACK_KEY then
 		IsRewinding = true
-		FrameTimer = 0
+		RewindTimer = 0
+		FreezeCharacter()
 	end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
 	if input.KeyCode == FLASHBACK_KEY then
 		IsRewinding = false
-		FrameTimer = 0
-		if IsAlive() then
-			Humanoid.PlatformStand = false
-		end
+		RewindTimer = 0
+		UnfreezeCharacter()
 	end
 end)
 
@@ -134,18 +161,10 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 
-	FrameTimer = FrameTimer + deltaTime
-
 	if IsRewinding then
-		while FrameTimer >= FrameStep and #RecordedFrames > 0 do
-			FrameTimer = FrameTimer - FrameStep
-			PlaybackFrame()
-		end
+		PlaybackFrames(deltaTime)
 	else
-		while FrameTimer >= FrameStep do
-			FrameTimer = FrameTimer - FrameStep
-			RecordFrame()
-		end
+		RecordFrame(deltaTime)
 	end
 end)
 
@@ -154,13 +173,16 @@ LocalPlayer.CharacterAdded:Connect(function(newCharacter)
 
 	RecordedFrames = {}
 	IsRewinding = false
-	FrameTimer = 0
+	RewindTimer = 0
 
 	Character = newCharacter
 	RootPart = newCharacter:WaitForChild("HumanoidRootPart", 5)
 	Humanoid = newCharacter:WaitForChild("Humanoid", 5)
 
 	if Humanoid then
+		SavedWalkSpeed = Humanoid.WalkSpeed
+		SavedJumpPower = Humanoid.JumpPower
+
 		Humanoid.Died:Connect(function()
 			IsRewinding = false
 		end)
@@ -170,6 +192,9 @@ end)
 if LocalPlayer.Character then
 	GetCharacter()
 	if Humanoid then
+		SavedWalkSpeed = Humanoid.WalkSpeed
+		SavedJumpPower = Humanoid.JumpPower
+
 		Humanoid.Died:Connect(function()
 			IsRewinding = false
 		end)
@@ -178,5 +203,4 @@ end
 
 print("====== FLASHBACK LOADED ======")
 print("Hold [" .. FLASHBACK_KEY.Name .. "] to rewind")
-print("Rewind matches your real movement speed")
 print("==============================")
