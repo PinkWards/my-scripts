@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 16
+local SCRIPT_VERSION = 17
 
 pcall(function()
     if queue_on_teleport then
@@ -77,8 +77,11 @@ local Config = {
 
 local BounceConfig = {
     Power = 90,
-    Cooldown = 0.1,
+    Cooldown = 0.05,
     MaxSpeed = 1000,
+    GroundRayLength = 3.5,
+    PreBounceRayLength = 8,
+    MinBounceVelocityY = -5,
 }
 
 -- ═══════════════════════════════════════════════════════════════
@@ -157,6 +160,8 @@ local CACHE_CLEANUP_INTERVAL = 45
 -- PURE STACKING BOUNCE STATE
 local WasInAir = false
 local RecordedSpeed = 16
+local IsBouncing = false
+local LastBounceVelocity = nil
 
 local BhopRayParams = RaycastParams.new()
 BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -166,6 +171,11 @@ local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
 EdgeRayParams.RespectCanCollide = true
+
+local BounceGroundParams = RaycastParams.new()
+BounceGroundParams.FilterType = Enum.RaycastFilterType.Exclude
+BounceGroundParams.RespectCanCollide = true
+BounceGroundParams.IgnoreWater = true
 
 local VEC3_ZERO = Vector3.zero
 local VEC3_DOWN = Vector3.new(0, -1, 0)
@@ -259,9 +269,22 @@ local function UpdateRayFilter()
     EdgeRayParams.FilterDescendantsInstances = filterList
 end
 
+local function UpdateBounceRayFilter()
+    local filterList = {}
+    local character = LocalPlayer.Character
+    if character then filterList[#filterList + 1] = character end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            filterList[#filterList + 1] = player.Character
+        end
+    end
+    BounceGroundParams.FilterDescendantsInstances = filterList
+end
+
 local function ForceUpdateRayFilter()
     LastRayFilterUpdate = 0
     UpdateRayFilter()
+    UpdateBounceRayFilter()
 end
 
 local function SafeCall(func, ...)
@@ -454,63 +477,158 @@ local function OnHumanoidStateChanged(old, new)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM - PURE STACKING: Speed never reduces
+-- BOUNCE SYSTEM - RESPONSIVE CONTINUOUS BOUNCING
 -- ═══════════════════════════════════════════════════════════════
 
-local function DoBounce()
+local function IsNearGround(extraLength)
+    if not RootPart then return false, nil, nil end
+    local pos = RootPart.Position
+    local rayLen = BounceConfig.GroundRayLength + (extraLength or 0)
+    local rayResult = Workspace:Raycast(pos, Vector3.new(0, -rayLen, 0), BounceGroundParams)
+    if rayResult then
+        return true, rayResult.Position, rayResult.Normal
+    end
+    local offsets = {
+        Vector3.new(1, 0, 0),
+        Vector3.new(-1, 0, 0),
+        Vector3.new(0, 0, 1),
+        Vector3.new(0, 0, -1),
+    }
+    for _, offset in ipairs(offsets) do
+        rayResult = Workspace:Raycast(pos + offset, Vector3.new(0, -rayLen, 0), BounceGroundParams)
+        if rayResult then
+            return true, rayResult.Position, rayResult.Normal
+        end
+    end
+    return false, nil, nil
+end
+
+local function ExecuteBounce()
     local now = tick()
     if now - LastBounce < BounceConfig.Cooldown then return end
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
-    
+
     local vel = RootPart.AssemblyLinearVelocity
-    
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
-    
+
     if hSpeed > RecordedSpeed then
         RecordedSpeed = hSpeed
     end
-    
-    RecordedSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
-    
-    local dir = hVel.Unit
-    if hSpeed < 0.1 then
-        local cam = Workspace.CurrentCamera.CFrame
-        dir = Vector3.new(cam.LookVector.X, 0, cam.LookVector.Z).Unit
+
+    local useSpeed = math.max(RecordedSpeed, hSpeed)
+    useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
+
+    local dir
+    if hSpeed > 1 then
+        dir = hVel.Unit
+    else
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local look = cam.CFrame.LookVector
+            dir = Vector3.new(look.X, 0, look.Z)
+            if dir.Magnitude > 0.01 then
+                dir = dir.Unit
+            else
+                dir = Vector3.new(0, 0, -1)
+            end
+        else
+            dir = Vector3.new(0, 0, -1)
+        end
     end
-    
-    RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, BounceConfig.Power, 0)
-    
+
+    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
+
+    if Humanoid:GetState() ~= Enum.HumanoidStateType.Jumping then
+        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+
+    IsBouncing = true
     LastBounce = now
 end
 
 local function UpdateBounce()
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
-    
-    local state = Humanoid:GetState()
+
     local vel = RootPart.AssemblyLinearVelocity
-    
-    local inAir = (state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping)
-    local onGround = (state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running)
-    
-    if inAir then
-        WasInAir = true
-        local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-        if hSpeed > RecordedSpeed then
-            RecordedSpeed = hSpeed
+    local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+
+    if IsBouncing and hSpeed > RecordedSpeed then
+        RecordedSpeed = hSpeed
+    end
+
+    if not holdLeftShift then
+        if IsBouncing then
+            IsBouncing = false
         end
-        
-    elseif onGround and WasInAir then
-        if holdLeftShift then
-            DoBounce()
+        return
+    end
+
+    local character = LocalPlayer.Character
+    if character then
+        local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+        if isDowned then return end
+    end
+
+    local state = Humanoid:GetState()
+    local isFalling = (vel.Y < BounceConfig.MinBounceVelocityY)
+
+    -- METHOD 1: Predictive bounce - detect ground BEFORE we hit it
+    if isFalling then
+        local fallSpeed = math.abs(vel.Y)
+        local predictLength = math.clamp(fallSpeed * 0.08, 1, 5)
+        local nearGround, groundPos, groundNormal = IsNearGround(predictLength)
+
+        if nearGround and groundPos then
+            local distToGround = RootPart.Position.Y - groundPos.Y
+            local bounceThreshold = math.clamp(2.0 + fallSpeed * 0.05, 2.0, 6.0)
+            if distToGround < bounceThreshold and distToGround > -1 then
+                ExecuteBounce()
+                return
+            end
         end
-        WasInAir = false
-        
-    elseif onGround and not WasInAir then
-        -- Optional: slowly reset when not active
-        -- RecordedSpeed = math.max(16, RecordedSpeed * 0.99)
+    end
+
+    -- METHOD 2: State-based detection as backup
+    if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
+        ExecuteBounce()
+        return
+    end
+
+    -- METHOD 3: Raycast ground check even when not falling fast
+    if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then
+        local nearGround = IsNearGround(0)
+        if nearGround then
+            ExecuteBounce()
+            return
+        end
+    end
+
+    -- METHOD 4: Very close to ground with any downward velocity
+    if vel.Y < 0 then
+        local nearGround, groundPos = IsNearGround(1)
+        if nearGround and groundPos then
+            local dist = RootPart.Position.Y - groundPos.Y
+            if dist < 2.5 then
+                ExecuteBounce()
+                return
+            end
+        end
+    end
+
+    -- While in air, maintain speed by counteracting drag
+    if IsBouncing and state == Enum.HumanoidStateType.Freefall then
+        local currentHSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+        if currentHSpeed > 1 and currentHSpeed < RecordedSpeed * 0.9 then
+            local dir = Vector3.new(vel.X, 0, vel.Z).Unit
+            RootPart.AssemblyLinearVelocity = Vector3.new(
+                dir.X * RecordedSpeed,
+                vel.Y,
+                dir.Z * RecordedSpeed
+            )
+        end
     end
 end
 
@@ -714,7 +832,7 @@ local function ToggleUpsideDownFix(enabled)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- EXCHANGE BUTTON UNLOCKER - ORIGINAL CODE PRESERVED
+-- EXCHANGE BUTTON UNLOCKER
 -- ═══════════════════════════════════════════════════════════════
 
 local function ForceEnableExchange()
@@ -1568,6 +1686,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         UpdateGUI()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
+        -- Initialize bounce when shift is first pressed
+        if RootPart and Humanoid and Humanoid.Health > 0 then
+            local vel = RootPart.AssemblyLinearVelocity
+            local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+            if hSpeed > RecordedSpeed then
+                RecordedSpeed = hSpeed
+            end
+        end
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local mainFrame = GUI.Main
@@ -1592,6 +1718,9 @@ UserInputService.InputEnded:Connect(function(input)
         holdQ = false
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = false
+        -- Reset bounce state when shift is released
+        IsBouncing = false
+        RecordedSpeed = 16
     end
 end)
 
@@ -1603,11 +1732,13 @@ local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
-    ForceUpdateRayFilter() SetupEdgeBoost()
+    ForceUpdateRayFilter()
+    SetupEdgeBoost()
     CurrentTarget, FarmStart = nil, 0
     LastBounce = 0
     LastJumpTick = 0
     WasInAir = false
+    IsBouncing = false
     RecordedSpeed = 16
     table.clear(CachedBots) table.clear(CachedItems)
     if Humanoid then StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged) end
@@ -1626,7 +1757,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MAIN LOOP - PURE STACKING: Speed never reduces
+-- MAIN LOOP
 -- ═══════════════════════════════════════════════════════════════
 
 local function StartMainLoop()
@@ -1682,6 +1813,7 @@ Workspace.ChildAdded:Connect(function(child)
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
         NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce = 0 LastJumpTick = 0
         WasInAir = false
+        IsBouncing = false
         RecordedSpeed = 16
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
@@ -1696,4 +1828,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! PURE STACKING: Speed never reduces when bouncing!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Responsive bounce: 4-method ground detection, speed preservation, continuous bouncing!")
