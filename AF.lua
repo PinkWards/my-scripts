@@ -10,25 +10,20 @@ local conns         = {}
 --  CONFIGURATION
 ----------------------------------------------------------------
 local CFG = {
-    TP_DIST       = 80,
-    RING_RADIUS   = 35,
-    THREAT_RADIUS = 25,
-    COL_TICK      = 5,
-    FORCE_TICK    = 20,
-    BFD_TICK      = 3,
-    RING_TICK     = 5,
-    SHIELD_TICK   = 6,
-    MAX_SCAN      = 40,
-
-    VEL_MULT      = 2.5,
-    VEL_MIN       = 80,
-    VERT_MULT     = 2.0,
-    VERT_MIN      = 80,
-    ANG_MAX       = 50,
-    FLING_FRAMES  = 2,
-
-    NEAR_COL_DIST = 15,
-    NEAR_COL_TICK = 2,
+    TP_DIST        = 80,
+    RING_RADIUS    = 35,
+    THREAT_RADIUS  = 25,
+    COL_TICK       = 5,
+    FORCE_TICK     = 20,
+    BFD_TICK       = 3,
+    RING_TICK      = 5,
+    SHIELD_TICK    = 6,
+    NEAR_COL_TICK  = 2,
+    NEAR_COL_DIST  = 15,
+    MAX_SCAN       = 40,
+    -- only angular velocity this high = definitely fling
+    -- normal gameplay NEVER produces this
+    SPIN_KILL      = 50,
 }
 
 local RING_ANGULAR_MIN = 30
@@ -227,17 +222,13 @@ local function protect(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hrp or not hum then return end
 
-    -- immediately shield
+    -- immediately shield all parts
     for _, p in ipairs(char:GetDescendants()) do
         if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
 
-    local safeCF       = hrp.CFrame
-    local lastPos      = hrp.Position
-    local frame        = 0
-    local recentThreat = false
-    local isTripping   = false
-    local flingCounter = 0
+    local lastPos = hrp.Position
+    local frame   = 0
 
     local ringParams = OverlapParams.new()
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -257,19 +248,6 @@ local function protect(char)
         if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
     reg(char.DescendantAdded:Connect(shieldPart))
-
-    local function flagThreat()
-        recentThreat = true
-        task.delay(3, function() recentThreat = false end)
-    end
-
-    local function snapBack()
-        pcall(function()
-            hrp.AssemblyLinearVelocity  = V3ZERO
-            hrp.AssemblyAngularVelocity = V3ZERO
-            hrp.CFrame = safeCF
-        end)
-    end
 
     local function handleRing(part)
         assignGroup(part, RING_GROUP)
@@ -315,59 +293,24 @@ local function protect(char)
     purgeChar()
 
     -- ═══════════════════════════════════════════
-    -- STATE LOCKDOWN
-    -- only block Ragdoll always
-    -- FallingDown only blocked during active threat
-    -- this lets trip work normally
+    -- ANTI-RAGDOLL (only this state blocked)
+    -- everything else (FallingDown, PlatformStand,
+    -- Physics, Freefall) left completely alone
     -- ═══════════════════════════════════════════
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-        -- DO NOT disable FallingDown globally
-        -- trip command needs it
     end)
-
     reg(hum.StateChanged:Connect(function(_, s)
         if s == Enum.HumanoidStateType.Ragdoll then
             hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
-        -- only block FallingDown when actively threatened
-        if s == Enum.HumanoidStateType.FallingDown then
-            if recentThreat and not isTripping then
-                hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            end
-        end
     end))
 
     -- ═══════════════════════════════════════════
-    -- PLATFORM-STAND GUARD (trip-friendly)
-    --
-    -- how IY trip works:
-    --   1. sets PlatformStand = true
-    --   2. character falls over (FallingDown state)
-    --   3. character lies on ground
-    --
-    -- we allow this UNLESS there is an active threat
-    -- isTripping flag pauses ALL detection for the
-    -- duration so nothing interferes with the trip
+    -- NO PLATFORMSTAND GUARD
+    -- trip works 100% because we never touch it
+    -- collision groups protect you even while tripped
     -- ═══════════════════════════════════════════
-    reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
-        if hum.PlatformStand then
-            if recentThreat then
-                -- threat active = fling attempt, block it
-                hum.PlatformStand = false
-                snapBack()
-            else
-                -- no threat = user command (trip), allow it
-                isTripping = true
-            end
-        else
-            -- PlatformStand turned off = untrip
-            -- give a grace period for character to settle
-            task.delay(1, function()
-                isTripping = false
-            end)
-        end
-    end))
 
     -- ═══════════════════════════════════════════
     -- FOREIGN FORCE / WELD GUARD
@@ -440,9 +383,6 @@ local function protect(char)
         end
         if isForeign then
             hum.Sit = false
-            task.defer(function()
-                if hrp.Parent then snapBack() end
-            end)
         end
     end))
 
@@ -457,7 +397,6 @@ local function protect(char)
         local function check()
             pcall(function()
                 if obj.Parent and isRingPart(obj) then
-                    flagThreat()
                     nukeRingFamily(obj)
                 end
             end)
@@ -469,6 +408,9 @@ local function protect(char)
 
     -- ═══════════════════════════════════════════
     -- CONTACT SHIELD
+    -- if a ring part somehow touches you,
+    -- neutralize it and zero ONLY your angular
+    -- velocity (no teleport, no position change)
     -- ═══════════════════════════════════════════
     local touchCD = {}
 
@@ -484,9 +426,12 @@ local function protect(char)
             touchCD[bodyPart] = true
             task.delay(0.05, function() touchCD[bodyPart] = nil end)
 
-            flagThreat()
             nukeRingFamily(hit)
-            snapBack()
+
+            -- only zero spinning, never teleport
+            pcall(function()
+                hrp.AssemblyAngularVelocity = V3ZERO
+            end)
         end))
     end
 
@@ -498,6 +443,12 @@ local function protect(char)
 
     -- ═══════════════════════════════════════════
     -- HEARTBEAT
+    -- no velocity clamping
+    -- no position tracking
+    -- no snap-back
+    -- no teleporting
+    -- just maintain collision groups and
+    -- kill spinning (angular velocity only)
     -- ═══════════════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -510,82 +461,15 @@ local function protect(char)
             task.delay(0.6, function() isTeleporting = false end)
         end
         lastPos = pos
-        if isTeleporting then
-            safeCF = hrp.CFrame
-            flingCounter = 0
-            return
-        end
+        if isTeleporting then return end
 
-        -- ═══════════════════════════════════════
-        -- VELOCITY DEVIATION DETECTION
-        -- completely skipped while tripping
-        -- ═══════════════════════════════════════
-        local ws = hum.WalkSpeed
-        local jp = hum.JumpPower
-        if jp == 0 then jp = hum.JumpHeight * 3 end
-
-        local curLV  = hrp.AssemblyLinearVelocity
-        local curAV  = hrp.AssemblyAngularVelocity
-        local hVel   = math.sqrt(curLV.X * curLV.X + curLV.Z * curLV.Z)
-        local vVel   = math.abs(curLV.Y)
-        local angMag = curAV.Magnitude
-
-        local maxH = math.max(ws * CFG.VEL_MULT, CFG.VEL_MIN)
-        local maxV = math.max(jp * CFG.VERT_MULT, CFG.VERT_MIN)
-
-        local state      = hum:GetState()
-        local isSitting  = hum.Sit
-        local isClimbing = state == Enum.HumanoidStateType.Climbing
-        local isSwimming = state == Enum.HumanoidStateType.Swimming
-        local isFalling  = state == Enum.HumanoidStateType.Freefall
-        local isSeated   = state == Enum.HumanoidStateType.Seated
-
-        -- FULL EXEMPT when tripping
-        -- this is the key fix — when isTripping is true,
-        -- ALL detection is paused so trip works perfectly
-        local exempt = isTripping or isSitting or isSeated
-            or isClimbing or isSwimming
-            or hum.PlatformStand
-
-        local flingDetected = false
-
-        if not exempt then
-            if angMag > CFG.ANG_MAX then
-                flingDetected = true
-            end
-            if hVel > maxH then
-                flingDetected = true
-            end
-            if isFalling then
-                if vVel > math.max(maxV * 2, 200) then
-                    flingDetected = true
-                end
-            else
-                if vVel > maxV then
-                    flingDetected = true
-                end
-            end
-        end
-
-        if flingDetected then
-            flingCounter += 1
-        else
-            flingCounter = math.max(0, flingCounter - 1)
-        end
-
-        if flingCounter >= CFG.FLING_FRAMES then
-            flagThreat()
-            snapBack()
-            flingCounter = 0
-        end
-
-        -- safe position update
-        -- never update while tripping (lying on ground = bad save)
-        if flingCounter == 0
-        and not isTripping
-        and not recentThreat
-        and hum.FloorMaterial ~= Enum.Material.Air then
-            safeCF = hrp.CFrame
+        -- ONLY thing we touch on your character:
+        -- kill spinning. thats it.
+        -- normal gameplay never hits 50 angular velocity
+        -- you can fall, jump, trip, boost, fly — untouched
+        local angMag = hrp.AssemblyAngularVelocity.Magnitude
+        if angMag > CFG.SPIN_KILL then
+            hrp.AssemblyAngularVelocity = V3ZERO
         end
 
         -- shield enforcement
@@ -628,7 +512,7 @@ local function protect(char)
             end
         end
 
-        -- BFD detection
+        -- BFD detection — extra isolate flippers
         if frame % CFG.BFD_TICK == 0 then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LP and plr.Character then
@@ -636,7 +520,13 @@ local function protect(char)
                     if pH then
                         local isBFD = updateBFD(plr, pH)
                         if isBFD and (pH.Position - pos).Magnitude < CFG.THREAT_RADIUS then
-                            flagThreat()
+                            for _, p in ipairs(plr.Character:GetDescendants()) do
+                                if p:IsA("BasePart") then
+                                    assignGroup(p, PLAYER_GROUP)
+                                    p.CanCollide = false
+                                    p.CanTouch   = false
+                                end
+                            end
                         end
                     end
                 end
@@ -660,7 +550,6 @@ local function protect(char)
                     and not isInAnyCharacter(part) then
                         scanned += 1
                         if isRingPart(part) then
-                            flagThreat()
                             nukeRingFamily(part)
                         end
                     end
