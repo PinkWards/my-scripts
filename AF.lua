@@ -12,14 +12,28 @@ local conns         = {}
 local CFG = {
     TP_DIST       = 80,
     RING_RADIUS   = 35,
-    THREAT_RADIUS = 20,
+    THREAT_RADIUS = 25,
     COL_TICK      = 5,
     FORCE_TICK    = 20,
-    PROX_TICK     = 8,
+    BFD_TICK      = 3,
     RING_TICK     = 5,
     SHIELD_TICK   = 6,
-    BFD_TICK      = 3,
     MAX_SCAN      = 40,
+
+    -- velocity deviation allowance
+    -- how much faster than your walkspeed before its a fling
+    -- 2.5 = allow up to 2.5x your walkspeed (for slopes, bounces)
+    VEL_MULT      = 2.5,
+    -- minimum absolute threshold (so slow walkspeeds dont false flag)
+    VEL_MIN       = 80,
+    -- vertical threshold multiplier over jumppower
+    VERT_MULT     = 2.0,
+    VERT_MIN      = 80,
+    -- angular threshold (always a fling above this)
+    ANG_MAX       = 50,
+    -- how many consecutive fling frames before snap-back
+    -- prevents single-frame false positives
+    FLING_FRAMES  = 2,
 }
 
 local RING_ANGULAR_MIN = 30
@@ -120,16 +134,6 @@ end
 
 ----------------------------------------------------------------
 -- COLLISION GROUPS
--- 3 groups:
---   ME     = your character
---   PLAYER = all other player characters
---   RING   = confirmed ring parts
---
--- ME cannot collide with PLAYER (no pushing/bumping)
--- ME cannot collide with RING   (no ring fling)
--- PLAYER can still collide with game world normally
--- RING can still collide with game world normally
--- YOU can still collide with game world normally
 ----------------------------------------------------------------
 local MY_GROUP     = "AntiFling_Me"
 local PLAYER_GROUP = "AntiFling_Players"
@@ -185,14 +189,11 @@ local function updateBFD(plr, pHRP)
         end
     end
     t.lastLook = look
-
     return t.flagged
 end
 
 ----------------------------------------------------------------
--- ASSIGN PLAYER PARTS TO PLAYER GROUP
--- this is what makes you pass through ALL players
--- engine-level, cannot be overridden by their client
+-- PLAYER GROUP ASSIGNMENT
 ----------------------------------------------------------------
 local function groupPlayerChar(plrChar)
     if not plrChar then return end
@@ -205,25 +206,19 @@ end
 
 local function watchPlayerGroups(plr)
     if plr == LP then return end
-    if plr.Character then groupPlayerChar(plr.Character) end
+    if plr.Character then
+        groupPlayerChar(plr.Character)
+        reg(plr.Character.DescendantAdded:Connect(function(p)
+            if p:IsA("BasePart") then assignGroup(p, PLAYER_GROUP) end
+        end))
+    end
     reg(plr.CharacterAdded:Connect(function(c)
         task.wait(0.1)
         groupPlayerChar(c)
-        -- catch new parts added to their character
         reg(c.DescendantAdded:Connect(function(p)
-            if p:IsA("BasePart") then
-                assignGroup(p, PLAYER_GROUP)
-            end
+            if p:IsA("BasePart") then assignGroup(p, PLAYER_GROUP) end
         end))
     end))
-    -- also watch existing character for new parts
-    if plr.Character then
-        reg(plr.Character.DescendantAdded:Connect(function(p)
-            if p:IsA("BasePart") then
-                assignGroup(p, PLAYER_GROUP)
-            end
-        end))
-    end
 end
 
 ----------------------------------------------------------------
@@ -243,30 +238,29 @@ local function protect(char)
     local lastPos      = hrp.Position
     local frame        = 0
     local recentThreat = false
+    local isTripping   = false
+    local flingCounter = 0
 
     local ringParams = OverlapParams.new()
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
     ringParams.FilterDescendantsInstances = {char}
 
-    -- init trackers
-    for _, plr in ipairs(Players:GetPlayers()) do initTracker(plr) end
+    -- init
+    for _, plr in ipairs(Players:GetPlayers()) do
+        initTracker(plr)
+        watchPlayerGroups(plr)
+    end
     reg(Players.PlayerAdded:Connect(function(plr)
         initTracker(plr)
         watchPlayerGroups(plr)
     end))
     reg(Players.PlayerRemoving:Connect(cleanTracker))
 
-    -- assign YOUR parts to your group
     local function shieldPart(p)
         if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
     for _, p in ipairs(char:GetDescendants()) do shieldPart(p) end
     reg(char.DescendantAdded:Connect(shieldPart))
-
-    -- assign ALL other players to player group
-    for _, plr in ipairs(Players:GetPlayers()) do
-        watchPlayerGroups(plr)
-    end
 
     local function flagThreat()
         recentThreat = true
@@ -298,35 +292,63 @@ local function protect(char)
         end)
     end
 
+    local function snapBack()
+        pcall(function()
+            hrp.AssemblyLinearVelocity  = V3ZERO
+            hrp.AssemblyAngularVelocity = V3ZERO
+            hrp.CFrame = safeCF
+        end)
+    end
+
+    local function purgeChar()
+        for _, d in ipairs(char:GetDescendants()) do
+            if DANGEROUS[d.ClassName] then
+                pcall(function()
+                    if isFromOtherPlayer(d) then kill(d) return end
+                    for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
+                        local ok, val = pcall(function() return d[prop] end)
+                        if ok and val and typeof(val) == "Instance"
+                        and isFromOtherPlayer(val) then
+                            kill(d) return
+                        end
+                    end
+                end)
+            end
+        end
+    end
+    purgeChar()
+
     -- ═══════════════════════════════════════════
-    -- LAYER 1 · ANTI-RAGDOLL
+    -- STATE LOCKDOWN
     -- ═══════════════════════════════════════════
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
     end)
     reg(hum.StateChanged:Connect(function(_, s)
-        if s == Enum.HumanoidStateType.Ragdoll then
+        if s == Enum.HumanoidStateType.Ragdoll
+        or s == Enum.HumanoidStateType.FallingDown then
             hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 2 · PLATFORM-STAND GUARD (trip ok)
+    -- PLATFORM-STAND GUARD (trip-friendly)
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
-            local lv = hrp.AssemblyLinearVelocity.Magnitude
-            local av = hrp.AssemblyAngularVelocity.Magnitude
-            if lv > 100 or av > 30 then
+            if recentThreat then
                 hum.PlatformStand = false
-                hrp.AssemblyLinearVelocity  = V3ZERO
-                hrp.AssemblyAngularVelocity = V3ZERO
+                snapBack()
+            else
+                isTripping = true
+                task.delay(5, function() isTripping = false end)
             end
         end
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 3 · FOREIGN FORCE / WELD GUARD
+    -- FOREIGN FORCE / WELD GUARD
     -- ═══════════════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -369,7 +391,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 4 · SEAT-FLING BLOCK
+    -- SEAT-FLING BLOCK
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
@@ -379,11 +401,7 @@ local function protect(char)
             and seat:IsDescendantOf(plr.Character) then
                 hum.Sit = false
                 task.defer(function()
-                    if hrp.Parent then
-                        hrp.CFrame = safeCF
-                        hrp.AssemblyLinearVelocity  = V3ZERO
-                        hrp.AssemblyAngularVelocity = V3ZERO
-                    end
+                    if hrp.Parent then snapBack() end
                 end)
                 break
             end
@@ -391,7 +409,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 5 · RING INTERCEPTOR
+    -- RING INTERCEPTOR
     -- ═══════════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") then return end
@@ -412,7 +430,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 6 · CONTACT SHIELD
+    -- CONTACT SHIELD
     -- ═══════════════════════════════════════════
     local touchCD = {}
 
@@ -430,12 +448,7 @@ local function protect(char)
 
             flagThreat()
             nukeRingFamily(hit)
-
-            pcall(function()
-                hrp.AssemblyLinearVelocity  = V3ZERO
-                hrp.AssemblyAngularVelocity = V3ZERO
-                hrp.CFrame = safeCF
-            end)
+            snapBack()
         end))
     end
 
@@ -443,7 +456,7 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════════════
-    -- HEARTBEAT
+    -- HEARTBEAT — VELOCITY DEVIATION DETECTION
     -- ═══════════════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -456,14 +469,95 @@ local function protect(char)
             task.delay(0.6, function() isTeleporting = false end)
         end
         lastPos = pos
-        if isTeleporting then safeCF = hrp.CFrame return end
+        if isTeleporting then
+            safeCF = hrp.CFrame
+            flingCounter = 0
+            return
+        end
 
-        -- safe position
-        if hum.FloorMaterial ~= Enum.Material.Air then
+        -- ═══════════════════════════════════════
+        -- CALCULATE EXPECTED vs ACTUAL VELOCITY
+        -- ═══════════════════════════════════════
+        local ws    = hum.WalkSpeed
+        local jp    = hum.JumpPower
+        if jp == 0 then jp = hum.JumpHeight * 3 end
+
+        local curLV = hrp.AssemblyLinearVelocity
+        local curAV = hrp.AssemblyAngularVelocity
+
+        local hVel  = math.sqrt(curLV.X * curLV.X + curLV.Z * curLV.Z)
+        local vVel  = math.abs(curLV.Y)
+        local angMag = curAV.Magnitude
+
+        -- expected maximums based on character properties
+        local maxH = math.max(ws * CFG.VEL_MULT, CFG.VEL_MIN)
+        local maxV = math.max(jp * CFG.VERT_MULT, CFG.VERT_MIN)
+
+        local state = hum:GetState()
+        local isSitting  = hum.Sit
+        local isClimbing = state == Enum.HumanoidStateType.Climbing
+        local isSwimming = state == Enum.HumanoidStateType.Swimming
+        local isFalling  = state == Enum.HumanoidStateType.Freefall
+        local isSeated   = state == Enum.HumanoidStateType.Seated
+
+        -- exempt states where velocity can be weird
+        local exempt = isTripping or isSitting or isSeated
+            or isClimbing or isSwimming
+
+        local flingDetected = false
+
+        if not exempt then
+            -- angular velocity check (always reliable)
+            if angMag > CFG.ANG_MAX then
+                flingDetected = true
+            end
+
+            -- horizontal overspeed
+            if hVel > maxH then
+                -- could be a game boost, check if sustained
+                flingDetected = true
+            end
+
+            -- vertical overspeed (not from normal jump/fall)
+            -- falling accelerates due to gravity so allow more
+            if isFalling then
+                -- during freefall, allow higher vertical
+                -- gravity = ~196 studs/s/s, terminal ~200+
+                if vVel > math.max(maxV * 2, 200) then
+                    flingDetected = true
+                end
+            else
+                if vVel > maxV then
+                    flingDetected = true
+                end
+            end
+        end
+
+        -- FRAME COUNTER to prevent false positives
+        -- single frame spike = could be game mechanic
+        -- sustained spike = definitely a fling
+        if flingDetected then
+            flingCounter += 1
+        else
+            -- decay slowly so brief legitimate spikes reset
+            flingCounter = math.max(0, flingCounter - 1)
+        end
+
+        -- SNAP BACK after sustained detection
+        if flingCounter >= CFG.FLING_FRAMES then
+            flagThreat()
+            snapBack()
+            flingCounter = 0
+        end
+
+        -- safe position update
+        if flingCounter == 0
+        and hum.FloorMaterial ~= Enum.Material.Air
+        and not recentThreat then
             safeCF = hrp.CFrame
         end
 
-        -- your parts stay in your group
+        -- shield enforcement
         if frame % CFG.SHIELD_TICK == 0 then
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
@@ -472,7 +566,7 @@ local function protect(char)
             end
         end
 
-        -- keep all player parts in player group
+        -- player group enforcement
         if frame % CFG.COL_TICK == 0 then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LP and plr.Character then
@@ -525,36 +619,8 @@ local function protect(char)
             end
         end
 
-        -- post-fling recovery
-        if recentThreat then
-            local av = hrp.AssemblyAngularVelocity
-            local lv = hrp.AssemblyLinearVelocity
-            if av.Magnitude > 25 then
-                hrp.AssemblyAngularVelocity = V3ZERO
-            end
-            if lv.Magnitude > 250 then
-                hrp.AssemblyLinearVelocity  = V3ZERO
-                hrp.AssemblyAngularVelocity = V3ZERO
-                hrp.CFrame = safeCF
-            end
-        end
-
         -- force sweep
-        if frame % CFG.FORCE_TICK == 0 then
-            for _, d in ipairs(char:GetDescendants()) do
-                if DANGEROUS[d.ClassName] then
-                    pcall(function()
-                        for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
-                            local ok2, val = pcall(function() return d[prop] end)
-                            if ok2 and val and typeof(val) == "Instance"
-                            and isFromOtherPlayer(val) then
-                                kill(d) return
-                            end
-                        end
-                    end)
-                end
-            end
-        end
+        if frame % CFG.FORCE_TICK == 0 then purgeChar() end
     end))
 end
 
