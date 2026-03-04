@@ -9,10 +9,6 @@ local conns        = {}
 --  CONFIGURATION
 ----------------------------------------------------------------
 local CFG = {
-    SPIKE_LINEAR   = 350,
-    SPIKE_ANGULAR  = 50,
-    SPIN_MAX       = 60,
-
     TP_DIST        = 80,
 
     RING_RADIUS    = 32,
@@ -57,8 +53,29 @@ local function kill(o) pcall(function() o:Destroy() end) end
 
 local function purgeForces(root)
     for _, d in ipairs(root:GetDescendants()) do
-        if DANGEROUS[d.ClassName] then kill(d) end
+        if DANGEROUS[d.ClassName] then
+            -- only destroy if it came from another player
+            local owner = d:FindFirstAncestorWhichIsA("Model")
+            if owner then
+                for _, plr in ipairs(Players:GetPlayers()) do
+                    if plr ~= LP and plr.Character == owner then
+                        kill(d)
+                        break
+                    end
+                end
+            end
+        end
     end
+end
+
+local function isFromOtherPlayer(obj)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character
+        and obj:IsDescendantOf(plr.Character) then
+            return true
+        end
+    end
+    return false
 end
 
 local function isCharacterPart(part)
@@ -97,32 +114,30 @@ local function protect(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hrp or not hum then return end
 
-    local safeCF   = hrp.CFrame
-    local lastPos  = hrp.Position
-    local lastLV   = hrp.AssemblyLinearVelocity
-    local lastAV   = hrp.AssemblyAngularVelocity
-    local frame    = 0
+    local safeCF  = hrp.CFrame
+    local lastPos = hrp.Position
+    local frame   = 0
 
     local ringParams = OverlapParams.new()
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
     ringParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════════════
-    -- LAYER 1 · ANTI-RAGDOLL / STATE LOCKDOWN
+    -- LAYER 1 · ANTI-RAGDOLL
+    -- only blocks ragdoll caused by other players
     -- ═══════════════════════════════════════════
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
     end)
     reg(hum.StateChanged:Connect(function(_, s)
-        if s == Enum.HumanoidStateType.Ragdoll
-        or s == Enum.HumanoidStateType.Physics then
+        if s == Enum.HumanoidStateType.Ragdoll then
             hum:ChangeState(Enum.HumanoidStateType.GettingUp)
         end
     end))
 
     -- ═══════════════════════════════════════════
     -- LAYER 2 · PLATFORM-STAND GUARD (trip-friendly)
+    -- only blocks if suspicious velocity present
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
@@ -137,7 +152,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 3 · COLLISION SHIELD (other players)
+    -- LAYER 3 · COLLISION SHIELD (other players only)
     -- ═══════════════════════════════════════════
     local function ncPart(p)
         if p:IsA("BasePart") then p.CanCollide = false end
@@ -158,15 +173,39 @@ local function protect(char)
     reg(Players.PlayerAdded:Connect(watchPlr))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 4 · FORCE ANNIHILATOR + WELD GUARD
+    -- LAYER 4 · FOREIGN FORCE / WELD GUARD
+    -- only destroys things from other players
+    -- game-made forces are left alone
     -- ═══════════════════════════════════════════
-    purgeForces(char)
-
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
-            task.defer(function() kill(obj) end)
+            task.defer(function()
+                pcall(function()
+                    -- check if this force connects to another player
+                    local parent = obj.Parent
+                    if not parent then return end
+
+                    -- if the force object itself references another player
+                    if isFromOtherPlayer(obj) then
+                        obj:Destroy()
+                        return
+                    end
+
+                    -- check if any attachment/part links to another player
+                    for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
+                        local ok, val = pcall(function() return obj[prop] end)
+                        if ok and val and typeof(val) == "Instance" then
+                            if isFromOtherPlayer(val) then
+                                obj:Destroy()
+                                return
+                            end
+                        end
+                    end
+                end)
+            end)
             return
         end
+
         if obj:IsA("JointInstance")
         or obj:IsA("WeldConstraint")
         or obj:IsA("Constraint") then
@@ -185,12 +224,8 @@ local function protect(char)
                     local o1 = p1:IsDescendantOf(char)
                     if o0 == o1 then return end
                     local foreign = o0 and p1 or p0
-                    for _, plr in ipairs(Players:GetPlayers()) do
-                        if plr ~= LP and plr.Character
-                        and foreign:IsDescendantOf(plr.Character) then
-                            obj:Destroy()
-                            return
-                        end
+                    if isFromOtherPlayer(foreign) then
+                        obj:Destroy()
                     end
                 end)
             end)
@@ -199,6 +234,7 @@ local function protect(char)
 
     -- ═══════════════════════════════════════════
     -- LAYER 5 · SEAT-FLING BLOCK
+    -- only blocks seats owned by other players
     -- ═══════════════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
@@ -220,7 +256,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 6 · RING INTERCEPTOR (instant spawn catch)
+    -- LAYER 6 · RING INTERCEPTOR
     -- ═══════════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") or obj.Anchored then return end
@@ -242,7 +278,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════════
-    -- LAYER 7 · CONTACT SHIELD (Touched)
+    -- LAYER 7 · CONTACT SHIELD
     -- ═══════════════════════════════════════════
     local touchCD = {}
 
@@ -256,13 +292,11 @@ local function protect(char)
             and hit.AssemblyLinearVelocity.Magnitude < CFG.RING_SPEED then
                 return
             end
+            -- only react to non-game parts
+            if isCharacterPart(hit) or not isThreat(hit) then return end
             touchCD[part] = true
             task.delay(CFG.TOUCH_CD, function() touchCD[part] = nil end)
             neutralize(hit)
-            pcall(function()
-                hrp.AssemblyLinearVelocity  = V3ZERO
-                hrp.AssemblyAngularVelocity = V3ZERO
-            end)
         end))
     end
 
@@ -270,7 +304,7 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════════════
-    -- HEARTBEAT — SPIKE DETECTION + RADAR
+    -- HEARTBEAT — LIGHTWEIGHT MONITORING
     -- ═══════════════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -283,41 +317,10 @@ local function protect(char)
             task.delay(0.6, function() isTeleporting = false end)
         end
         lastPos = pos
-        if isTeleporting then
-            safeCF = hrp.CFrame
-            lastLV = hrp.AssemblyLinearVelocity
-            lastAV = hrp.AssemblyAngularVelocity
-            return
-        end
+        if isTeleporting then safeCF = hrp.CFrame return end
 
-        local curLV = hrp.AssemblyLinearVelocity
-        local curAV = hrp.AssemblyAngularVelocity
-        local flung = false
-
-        local lvDelta = (curLV - lastLV).Magnitude
-        local avDelta = (curAV - lastAV).Magnitude
-
-        if curAV.Magnitude > CFG.SPIN_MAX then
-            hrp.AssemblyAngularVelocity = V3ZERO
-            hrp.AssemblyLinearVelocity  = V3ZERO
-            hrp.CFrame = safeCF
-            flung = true
-        elseif lvDelta > CFG.SPIKE_LINEAR then
-            hrp.AssemblyLinearVelocity  = V3ZERO
-            hrp.AssemblyAngularVelocity = V3ZERO
-            hrp.CFrame = safeCF
-            flung = true
-        elseif avDelta > CFG.SPIKE_ANGULAR then
-            hrp.AssemblyAngularVelocity = V3ZERO
-            hrp.AssemblyLinearVelocity  = V3ZERO
-            hrp.CFrame = safeCF
-            flung = true
-        end
-
-        lastLV = hrp.AssemblyLinearVelocity
-        lastAV = hrp.AssemblyAngularVelocity
-
-        if not flung and hum.FloorMaterial ~= Enum.Material.Air then
+        -- safe position (grounded)
+        if hum.FloorMaterial ~= Enum.Material.Air then
             safeCF = hrp.CFrame
         end
 
@@ -339,7 +342,7 @@ local function protect(char)
             end
         end
 
-        -- PROXIMITY SCANNER
+        -- PROXIMITY SCANNER (spinning players)
         if frame % CFG.PROX_TICK == 0 then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LP and plr.Character then
@@ -370,8 +373,24 @@ local function protect(char)
             end
         end
 
-        -- FORCE SWEEP
-        if frame % CFG.FORCE_TICK == 0 then purgeForces(char) end
+        -- FORCE SWEEP (only foreign)
+        if frame % CFG.FORCE_TICK == 0 then
+            for _, d in ipairs(char:GetDescendants()) do
+                if DANGEROUS[d.ClassName] then
+                    pcall(function()
+                        for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
+                            local ok2, val = pcall(function() return d[prop] end)
+                            if ok2 and val and typeof(val) == "Instance" then
+                                if isFromOtherPlayer(val) then
+                                    kill(d)
+                                    return
+                                end
+                            end
+                        end
+                    end)
+                end
+            end
+        end
     end))
 end
 
