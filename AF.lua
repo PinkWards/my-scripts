@@ -1,27 +1,32 @@
-local Players    = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local LP         = Players.LocalPlayer
+local Players        = game:GetService("Players")
+local RunService     = game:GetService("RunService")
+local PhysicsService = game:GetService("PhysicsService")
+local LP             = Players.LocalPlayer
 
 local isTeleporting = false
-local conns        = {}
+local conns         = {}
 
 ----------------------------------------------------------------
 --  CONFIGURATION
 ----------------------------------------------------------------
 local CFG = {
-    TP_DIST        = 80,
-    RING_RADIUS    = 45,
-    RING_SPIN      = 5,
-    RING_SPEED     = 20,
-    THREAT_RADIUS  = 30,
-    THREAT_SPIN    = 15,
-    THREAT_SPEED   = 80,
-    COL_TICK       = 5,
-    FORCE_TICK     = 15,
-    PROX_TICK      = 10,
-    RING_TICK      = 3,
-    SHIELD_TICK    = 2,
+    TP_DIST       = 80,
+    RING_RADIUS   = 45,
+    THREAT_RADIUS = 30,
+    THREAT_SPIN   = 15,
+    THREAT_SPEED  = 80,
+    COL_TICK      = 5,
+    FORCE_TICK    = 15,
+    PROX_TICK     = 10,
+    RING_TICK     = 3,
+    SHIELD_TICK   = 4,
 }
+
+-- ring parts spin VERY fast, normal game parts dont
+-- these thresholds only catch actual ring behavior
+local RING_ANGULAR_MIN = 30   -- ring parts spin 50-500+ rad/s
+local RING_LINEAR_MIN  = 80   -- ring parts orbit at high speed
+local RING_COMBO       = true -- must have BOTH spin + speed
 
 ----------------------------------------------------------------
 --  DANGEROUS CLASSES
@@ -37,8 +42,7 @@ for _, cn in ipairs({
 ----------------------------------------------------------------
 --  HELPERS
 ----------------------------------------------------------------
-local V3ZERO   = Vector3.zero
-local HUGE_CF  = CFrame.new(0, 10000, 0)
+local V3ZERO = Vector3.zero
 
 local function clearConns()
     for i = #conns, 1, -1 do
@@ -69,25 +73,89 @@ local function isInAnyCharacter(part)
 end
 
 ----------------------------------------------------------------
--- COLLISION GROUP SETUP
--- This is the nuclear option against ring parts.
--- Your character gets its own collision group that
--- CANNOT collide with unanchored non-character parts.
+-- RING DETECTION
+-- super ring parts have a unique signature:
+--   high angular velocity (spinning)
+--   high linear velocity (orbiting)
+--   unanchored
+--   not in any character
+--   usually multiple siblings doing the same thing
+--
+-- normal game parts (falling debris, tools, items):
+--   low or zero angular velocity
+--   moderate linear velocity (just falling/sliding)
+--   OR high linear but zero angular (thrown object)
 ----------------------------------------------------------------
-local PhysicsService = game:GetService("PhysicsService")
+local knownRingParts = setmetatable({}, {__mode = "k"})
 
+local function isRingPart(part)
+    if not part:IsA("BasePart") then return false end
+    if part.Anchored then return false end
+    if isInAnyCharacter(part) then return false end
+    if knownRingParts[part] then return true end
+
+    local av = part.AssemblyAngularVelocity.Magnitude
+    local lv = part.AssemblyLinearVelocity.Magnitude
+
+    if RING_COMBO then
+        -- BOTH spinning fast AND moving fast = ring
+        if av > RING_ANGULAR_MIN and lv > RING_LINEAR_MIN then
+            knownRingParts[part] = true
+            return true
+        end
+        -- extreme spin alone = also ring
+        if av > RING_ANGULAR_MIN * 3 then
+            knownRingParts[part] = true
+            return true
+        end
+    else
+        if av > RING_ANGULAR_MIN or lv > RING_LINEAR_MIN then
+            knownRingParts[part] = true
+            return true
+        end
+    end
+
+    -- check siblings — if most siblings are spinning too,
+    -- this whole group is a ring even if this part is slow
+    local parent = part.Parent
+    if parent and parent ~= workspace and parent ~= game then
+        local siblings = parent:GetChildren()
+        if #siblings >= 3 then
+            local spinCount = 0
+            local checkCount = math.min(#siblings, 10)
+            for i = 1, checkCount do
+                local sib = siblings[i]
+                if sib:IsA("BasePart") and not sib.Anchored then
+                    if sib.AssemblyAngularVelocity.Magnitude > RING_ANGULAR_MIN * 0.5 then
+                        spinCount += 1
+                    end
+                end
+            end
+            if spinCount >= 3 then
+                for _, sib in ipairs(siblings) do
+                    if sib:IsA("BasePart") then
+                        knownRingParts[sib] = true
+                    end
+                end
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+----------------------------------------------------------------
+-- COLLISION GROUP SETUP
+----------------------------------------------------------------
 local MY_GROUP   = "AntiFling_Me"
 local RING_GROUP = "AntiFling_Rings"
 
-local function setupCollisionGroups()
-    pcall(function() PhysicsService:RegisterCollisionGroup(MY_GROUP) end)
-    pcall(function() PhysicsService:RegisterCollisionGroup(RING_GROUP) end)
-    pcall(function()
-        PhysicsService:CollisionGroupSetCollidable(MY_GROUP, RING_GROUP, false)
-    end)
-end
-
-setupCollisionGroups()
+pcall(function() PhysicsService:RegisterCollisionGroup(MY_GROUP) end)
+pcall(function() PhysicsService:RegisterCollisionGroup(RING_GROUP) end)
+pcall(function()
+    PhysicsService:CollisionGroupSetCollidable(MY_GROUP, RING_GROUP, false)
+end)
 
 local function assignGroup(part, group)
     pcall(function() part.CollisionGroup = group end)
@@ -99,25 +167,24 @@ end
 local function protect(char)
     if not char then return end
     clearConns()
+    knownRingParts = setmetatable({}, {__mode = "k"})
 
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hrp or not hum then return end
 
-    local safeCF      = hrp.CFrame
-    local lastPos     = hrp.Position
-    local frame       = 0
+    local safeCF       = hrp.CFrame
+    local lastPos      = hrp.Position
+    local frame        = 0
     local recentThreat = false
 
     local ringParams = OverlapParams.new()
     ringParams.FilterType = Enum.RaycastFilterType.Exclude
     ringParams.FilterDescendantsInstances = {char}
 
-    -- assign all our parts to our collision group
+    -- shield our parts
     local function shieldPart(p)
-        if p:IsA("BasePart") then
-            assignGroup(p, MY_GROUP)
-        end
+        if p:IsA("BasePart") then assignGroup(p, MY_GROUP) end
     end
     for _, p in ipairs(char:GetDescendants()) do shieldPart(p) end
     reg(char.DescendantAdded:Connect(shieldPart))
@@ -127,10 +194,9 @@ local function protect(char)
         task.delay(3, function() recentThreat = false end)
     end
 
-    -- try to neutralize (may be overridden by network owner)
-    local function tryNeutralize(part)
+    local function handleRing(part)
+        assignGroup(part, RING_GROUP)
         pcall(function()
-            assignGroup(part, RING_GROUP)
             part.CanCollide              = false
             part.CanTouch                = false
             part.AssemblyLinearVelocity  = V3ZERO
@@ -138,26 +204,19 @@ local function protect(char)
         end)
     end
 
-    local function isThreat(part)
-        if not part:IsA("BasePart") or part.Anchored then return false end
-        if isInAnyCharacter(part) then return false end
-        local av = part.AssemblyAngularVelocity.Magnitude
-        local lv = part.AssemblyLinearVelocity.Magnitude
-        return av > CFG.RING_SPIN or lv > CFG.RING_SPEED
-    end
-
-    local function nukeFamily(part)
+    local function nukeRingFamily(part)
+        handleRing(part)
         pcall(function()
             local parent = part.Parent
-            if parent and parent ~= workspace then
+            if parent and parent ~= workspace and parent ~= game then
                 for _, sib in ipairs(parent:GetChildren()) do
                     if sib:IsA("BasePart") and not sib.Anchored then
-                        tryNeutralize(sib)
+                        knownRingParts[sib] = true
+                        handleRing(sib)
                     end
                 end
             end
         end)
-        tryNeutralize(part)
     end
 
     -- ═══════════════════════════════════════════
@@ -218,10 +277,9 @@ local function protect(char)
                     if isFromOtherPlayer(obj) then obj:Destroy() return end
                     for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
                         local ok, val = pcall(function() return obj[prop] end)
-                        if ok and val and typeof(val) == "Instance" then
-                            if isFromOtherPlayer(val) then
-                                obj:Destroy() return
-                            end
+                        if ok and val and typeof(val) == "Instance"
+                        and isFromOtherPlayer(val) then
+                            obj:Destroy() return
                         end
                     end
                 end)
@@ -276,44 +334,31 @@ local function protect(char)
 
     -- ═══════════════════════════════════════════
     -- LAYER 6 · RING INTERCEPTOR (spawn catch)
+    -- only flags parts with ring behavior
     -- ═══════════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") then return end
+        if obj.Anchored then return end
         if obj:IsDescendantOf(char) then return end
 
-        -- immediately assign to ring group if unanchored
-        if not obj.Anchored and not isInAnyCharacter(obj) then
-            assignGroup(obj, RING_GROUP)
+        -- delayed checks because ring scripts set velocity after spawn
+        local function check()
+            pcall(function()
+                if obj.Parent and isRingPart(obj) then
+                    flagThreat()
+                    nukeRingFamily(obj)
+                end
+            end)
         end
-
-        task.defer(function()
-            pcall(function()
-                if obj.Parent and isThreat(obj) then
-                    flagThreat()
-                    nukeFamily(obj)
-                end
-            end)
-        end)
-        task.delay(0.1, function()
-            pcall(function()
-                if obj.Parent and isThreat(obj) then
-                    flagThreat()
-                    nukeFamily(obj)
-                end
-            end)
-        end)
-        task.delay(0.3, function()
-            pcall(function()
-                if obj.Parent and isThreat(obj) then
-                    flagThreat()
-                    nukeFamily(obj)
-                end
-            end)
-        end)
+        task.defer(check)
+        task.delay(0.15, check)
+        task.delay(0.4, check)
     end))
 
     -- ═══════════════════════════════════════════
     -- LAYER 7 · CONTACT SHIELD (Touched)
+    -- only reacts to confirmed ring parts
+    -- normal game parts pass through normally
     -- ═══════════════════════════════════════════
     local touchCD = {}
 
@@ -324,17 +369,15 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) then return end
             if hit.Anchored then return end
-            if isInAnyCharacter(hit) then return end
 
-            local av = hit.AssemblyAngularVelocity.Magnitude
-            local lv = hit.AssemblyLinearVelocity.Magnitude
-            if av < 3 and lv < 15 then return end
+            -- ONLY react to ring parts
+            if not isRingPart(hit) then return end
 
             touchCD[bodyPart] = true
             task.delay(0.05, function() touchCD[bodyPart] = nil end)
 
             flagThreat()
-            nukeFamily(hit)
+            nukeRingFamily(hit)
 
             pcall(function()
                 hrp.AssemblyLinearVelocity  = V3ZERO
@@ -355,6 +398,7 @@ local function protect(char)
         frame += 1
         local pos = hrp.Position
 
+        -- teleport whitelist
         if lastPos and (pos - lastPos).Magnitude > CFG.TP_DIST then
             isTeleporting = true
             task.delay(0.6, function() isTeleporting = false end)
@@ -362,13 +406,12 @@ local function protect(char)
         lastPos = pos
         if isTeleporting then safeCF = hrp.CFrame return end
 
+        -- safe position
         if hum.FloorMaterial ~= Enum.Material.Air then
             safeCF = hrp.CFrame
         end
 
-        -- CONTINUOUS COLLISION GROUP ENFORCEMENT
-        -- even if network owner resets properties,
-        -- your parts stay in your group
+        -- keep our parts shielded
         if frame % CFG.SHIELD_TICK == 0 then
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
@@ -377,7 +420,7 @@ local function protect(char)
             end
         end
 
-        -- RING RADAR + COLLISION GROUP ASSIGNMENT
+        -- RING RADAR — only targets ring-behavior parts
         if frame % CFG.RING_TICK == 0 then
             local ok, nearby = pcall(function()
                 return workspace:GetPartBoundsInRadius(
@@ -386,35 +429,32 @@ local function protect(char)
             end)
             if ok and nearby then
                 for _, part in ipairs(nearby) do
-                    if not part.Anchored
-                    and not isInAnyCharacter(part) then
-                        -- always assign to ring group
-                        assignGroup(part, RING_GROUP)
-
-                        if isThreat(part) then
-                            flagThreat()
-                            nukeFamily(part)
-                        end
+                    -- already tagged = fast path
+                    if knownRingParts[part] then
+                        handleRing(part)
+                    elseif isRingPart(part) then
+                        flagThreat()
+                        nukeRingFamily(part)
                     end
                 end
             end
         end
 
-        -- POST-FLING RECOVERY
+        -- post-fling recovery (only when threat active)
         if recentThreat then
             local av = hrp.AssemblyAngularVelocity
             local lv = hrp.AssemblyLinearVelocity
-            if av.Magnitude > 20 then
+            if av.Magnitude > 25 then
                 hrp.AssemblyAngularVelocity = V3ZERO
             end
-            if lv.Magnitude > 200 then
+            if lv.Magnitude > 250 then
                 hrp.AssemblyLinearVelocity  = V3ZERO
                 hrp.AssemblyAngularVelocity = V3ZERO
                 hrp.CFrame = safeCF
             end
         end
 
-        -- PROXIMITY SCANNER
+        -- proximity scanner
         if frame % CFG.PROX_TICK == 0 then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LP and plr.Character then
@@ -435,7 +475,7 @@ local function protect(char)
             end
         end
 
-        -- COLLISION REFRESH
+        -- collision refresh
         if frame % CFG.COL_TICK == 0 then
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= LP and plr.Character then
@@ -446,17 +486,16 @@ local function protect(char)
             end
         end
 
-        -- FORCE SWEEP
+        -- force sweep
         if frame % CFG.FORCE_TICK == 0 then
             for _, d in ipairs(char:GetDescendants()) do
                 if DANGEROUS[d.ClassName] then
                     pcall(function()
                         for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
                             local ok2, val = pcall(function() return d[prop] end)
-                            if ok2 and val and typeof(val) == "Instance" then
-                                if isFromOtherPlayer(val) then
-                                    kill(d) return
-                                end
+                            if ok2 and val and typeof(val) == "Instance"
+                            and isFromOtherPlayer(val) then
+                                kill(d) return
                             end
                         end
                     end)
