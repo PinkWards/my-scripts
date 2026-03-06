@@ -45,7 +45,7 @@ local function markRing(part)
         ringParts[part] = true
         pcall(function()
             local par = part.Parent
-            if par and par ~= workspace and par ~= game then
+            if par and par ~= workspace then
                 for _, sib in ipairs(par:GetChildren()) do
                     if sib:IsA("BasePart") and not sib.Anchored then
                         ringParts[sib] = true
@@ -66,20 +66,30 @@ local function protect(char)
     if not hrp or not hum then return end
 
     -- ═══════════════════════════════════════
-    -- ANTI-RAGDOLL (only ragdoll blocked)
-    -- trip, falling, platformstand all untouched
+    -- NO STATE BLOCKING AT ALL
+    --
+    -- IY trip does:
+    --   Humanoid.PlatformStand = true
+    --
+    -- what happens:
+    --   1. humanoid stops controlling character
+    --   2. character becomes pure physics object
+    --   3. gravity tips it over (ragdoll)
+    --   4. character lies on ground
+    --
+    -- old script blocked Ragdoll state
+    -- which prevented step 3
+    -- character froze standing up
+    --
+    -- we dont need state blocking because:
+    --   players cant collide with you (Stepped)
+    --   forces get destroyed (DescendantAdded)
+    --   rings get neutralized
+    --   nothing CAN ragdoll you except YOUR commands
     -- ═══════════════════════════════════════
-    pcall(function()
-        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-    end)
-    reg(hum.StateChanged:Connect(function(_, s)
-        if s == Enum.HumanoidStateType.Ragdoll then
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-    end))
 
     -- ═══════════════════════════════════════
-    -- FORCE / WELD GUARD (event-driven only)
+    -- FORCE / WELD GUARD (event-driven)
     -- ═══════════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -92,9 +102,15 @@ local function protect(char)
                                 obj:Destroy()
                                 return
                             end
-                            for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
-                                local ok, val = pcall(function() return obj[prop] end)
-                                if ok and val and typeof(val) == "Instance"
+                            for _, prop in ipairs({
+                                "Attachment0","Attachment1",
+                                "Part0","Part1"
+                            }) do
+                                local ok, val = pcall(function()
+                                    return obj[prop]
+                                end)
+                                if ok and val
+                                and typeof(val) == "Instance"
                                 and val:IsDescendantOf(plr.Character) then
                                     obj:Destroy()
                                     return
@@ -115,7 +131,8 @@ local function protect(char)
                     if not obj.Parent then return end
                     local p0, p1
                     if obj:IsA("Constraint") then
-                        local a0, a1 = obj.Attachment0, obj.Attachment1
+                        local a0 = obj.Attachment0
+                        local a1 = obj.Attachment1
                         p0 = a0 and a0.Parent
                         p1 = a1 and a1.Parent
                     else
@@ -179,8 +196,6 @@ local function protect(char)
 
     -- ═══════════════════════════════════════
     -- CONTACT SHIELD
-    -- if spinning part touches us, cache it
-    -- lower threshold since its already on us
     -- ═══════════════════════════════════════
     local touchCD = {}
 
@@ -201,7 +216,8 @@ local function protect(char)
                     local par = hit.Parent
                     if par and par ~= workspace then
                         for _, sib in ipairs(par:GetChildren()) do
-                            if sib:IsA("BasePart") and not sib.Anchored then
+                            if sib:IsA("BasePart")
+                            and not sib.Anchored then
                                 ringParts[sib] = true
                             end
                         end
@@ -217,8 +233,7 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════════
-    -- INITIAL SCAN (runs once in background)
-    -- catches ring parts already in workspace
+    -- INITIAL RING SCAN (once, background)
     -- ═══════════════════════════════════════
     task.spawn(function()
         for _, obj in ipairs(workspace:GetDescendants()) do
@@ -231,55 +246,63 @@ local function protect(char)
     end)
 
     -- ═══════════════════════════════════════
-    -- STEPPED — PRE-PHYSICS
+    -- STEPPED — RUNS BEFORE PHYSICS
     --
-    -- this is the ENTIRE anti-fling engine
-    -- runs BEFORE physics calculates collisions
-    -- CanCollide = false set here is used by
-    -- the physics engine for that step
-    -- network owner cannot override in time
-    -- because Stepped and physics run on same thread
+    -- this is the ONLY per-frame work
+    -- everything else is event-driven
     --
-    -- timeline each frame:
-    --   1. network updates arrive (CanCollide reset to true)
-    --   2. Stepped fires
-    --   3. we set CanCollide = false
-    --   4. physics simulation runs (sees our false)
-    --   5. no collision calculated
-    --   6. no force transferred
-    --   7. you dont move
+    -- uses GetDescendants to catch ALL parts
+    -- including hat handles, tool handles,
+    -- accessory meshes, hair, etc
     --
-    -- thats it. pure immunity. no teleporting.
-    -- no velocity clamping. no position tracking.
+    -- only processes players within 60 studs
     -- ═══════════════════════════════════════
     reg(RunService.Stepped:Connect(function()
         if not char.Parent or not hrp.Parent then return end
 
-        -- kill extreme spin (only thing touched on you)
+        -- kill extreme spin
         if hrp.AssemblyAngularVelocity.Magnitude > SPIN_KILL then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
         local myPos = hrp.Position
 
-        -- player no-collide (only nearby, < 60 studs)
+        -- ═══════════════════════════════════
+        -- PLAYER PASS-THROUGH
+        --
+        -- GetDescendants catches EVERYTHING:
+        --   Head, Torso, Arms, Legs
+        --   HumanoidRootPart
+        --   Hat Handle (inside Accessory)
+        --   Hair MeshPart (inside Accessory)
+        --   Tool Handle (inside Tool)
+        --   Any part added by scripts
+        --
+        -- set CanCollide = false on ALL of them
+        -- physics engine sees false this frame
+        -- they literally do not exist to you
+        -- ═══════════════════════════════════
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LP and plr.Character then
-                local pH = plr.Character:FindFirstChild("HumanoidRootPart")
-                if pH and (pH.Position - myPos).Magnitude < 60 then
-                    for _, p in ipairs(plr.Character:GetChildren()) do
-                        if p:IsA("BasePart") then
-                            p.CanCollide = false
-                        elseif p:IsA("Accessory") or p:IsA("Tool") then
-                            local h = p:FindFirstChildWhichIsA("BasePart")
-                            if h then h.CanCollide = false end
+                local pH = plr.Character:FindFirstChild(
+                    "HumanoidRootPart"
+                )
+                if pH then
+                    local dist = (pH.Position - myPos).Magnitude
+                    if dist < 60 then
+                        for _, p in ipairs(
+                            plr.Character:GetDescendants()
+                        ) do
+                            if p:IsA("BasePart") then
+                                p.CanCollide = false
+                            end
                         end
                     end
                 end
             end
         end
 
-        -- ring no-collide
+        -- ring pass-through
         for part in pairs(ringParts) do
             if part.Parent then
                 part.CanCollide = false
