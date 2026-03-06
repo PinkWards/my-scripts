@@ -8,9 +8,9 @@ local ringParts = setmetatable({}, {__mode = "k"})
 
 local V3ZERO    = Vector3.zero
 local SPIN_KILL = 50
-local RING_ANG  = 20
-local RING_LIN  = 50
-local TOUCH_ANG = 12
+local RING_ANG  = 8
+local RING_LIN  = 25
+local TOUCH_ANG = 5
 
 local DANGEROUS = {}
 for _, cn in ipairs({
@@ -28,76 +28,56 @@ local function clearConns()
 end
 local function reg(c) conns[#conns + 1] = c return c end
 
-----------------------------------------------------------------
--- CANCOLLIDE LOCK
--- once locked, the part can NEVER collide with you
--- even if network owner sets CanCollide = true 1000x/sec
--- the property changed signal fires and sets it false instantly
---
--- this is faster than Stepped because its event-driven
--- zero iteration, zero per-frame cost per locked part
-----------------------------------------------------------------
 local function lockPart(part)
     if partLocks[part] then return end
     pcall(function() part.CanCollide = false end)
-    local lockConn
-    lockConn = part:GetPropertyChangedSignal("CanCollide"):Connect(
+    local c = part:GetPropertyChangedSignal("CanCollide"):Connect(
         function()
             if part.CanCollide then
                 part.CanCollide = false
             end
         end
     )
-    partLocks[part] = lockConn
-    reg(lockConn)
+    partLocks[part] = c
+    reg(c)
 end
 
 local function lockCharacter(plrChar)
     if not plrChar then return end
     for _, p in ipairs(plrChar:GetDescendants()) do
-        if p:IsA("BasePart") then
-            lockPart(p)
-        end
+        if p:IsA("BasePart") then lockPart(p) end
     end
     reg(plrChar.DescendantAdded:Connect(function(p)
-        if p:IsA("BasePart") then
-            lockPart(p)
-        end
+        if p:IsA("BasePart") then lockPart(p) end
     end))
 end
 
-----------------------------------------------------------------
--- RING DETECTION
-----------------------------------------------------------------
 local function isCharPart(part)
     local model = part:FindFirstAncestorWhichIsA("Model")
     return model and model:FindFirstChildOfClass("Humanoid") ~= nil
 end
 
-local function lockRing(part)
-    if not part or not part.Parent then return end
-    ringParts[part] = true
-    lockPart(part)
-    pcall(function() part.CanTouch = false end)
+local function isOurPart(part, char)
+    return part:IsDescendantOf(char)
 end
 
-local function markRing(part)
+local function markRing(part, char)
     if not part or not part.Parent then return end
     if not part:IsA("BasePart") or part.Anchored then return end
     if isCharPart(part) then return end
+    if char and part:IsDescendantOf(char) then return end
 
     local av = part.AssemblyAngularVelocity.Magnitude
     local lv = part.AssemblyLinearVelocity.Magnitude
 
-    if (av > RING_ANG and lv > RING_LIN)
-    or av > RING_ANG * 3 then
-        lockRing(part)
+    if av > RING_ANG or lv > RING_LIN then
+        ringParts[part] = true
         pcall(function()
             local par = part.Parent
-            if par and par ~= workspace then
+            if par and par ~= workspace and par ~= game then
                 for _, sib in ipairs(par:GetChildren()) do
                     if sib:IsA("BasePart") and not sib.Anchored then
-                        lockRing(sib)
+                        ringParts[sib] = true
                     end
                 end
             end
@@ -105,9 +85,6 @@ local function markRing(part)
     end
 end
 
-----------------------------------------------------------------
--- MAIN PROTECTION
-----------------------------------------------------------------
 local function protect(char)
     if not char then return end
     clearConns()
@@ -118,8 +95,12 @@ local function protect(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hrp or not hum then return end
 
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    overlapParams.FilterDescendantsInstances = {char}
+
     -- ═══════════════════════════════════════
-    -- LOCK ALL EXISTING PLAYERS
+    -- LOCK ALL PLAYERS (event-driven)
     -- ═══════════════════════════════════════
     local function watchPlayer(plr)
         if plr == LP then return end
@@ -129,10 +110,7 @@ local function protect(char)
             lockCharacter(c)
         end))
     end
-
-    for _, plr in ipairs(Players:GetPlayers()) do
-        watchPlayer(plr)
-    end
+    for _, plr in ipairs(Players:GetPlayers()) do watchPlayer(plr) end
     reg(Players.PlayerAdded:Connect(watchPlayer))
 
     -- ═══════════════════════════════════════
@@ -228,7 +206,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════
-    -- RING INTERCEPTOR
+    -- RING INTERCEPTOR (catches on spawn)
     -- ═══════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") or obj.Anchored then return end
@@ -237,12 +215,14 @@ local function protect(char)
 
         local function check()
             pcall(function()
-                if obj.Parent then markRing(obj) end
+                if obj.Parent then markRing(obj, char) end
             end)
         end
         task.defer(check)
+        task.delay(0.1, check)
         task.delay(0.2, check)
         task.delay(0.5, check)
+        task.delay(1.0, check)
     end))
 
     -- ═══════════════════════════════════════
@@ -258,18 +238,19 @@ local function protect(char)
             if hit:IsDescendantOf(char) or hit.Anchored then return end
             if isCharPart(hit) then return end
 
-            if hit.AssemblyAngularVelocity.Magnitude > TOUCH_ANG then
+            if hit.AssemblyAngularVelocity.Magnitude > TOUCH_ANG
+            or hit.AssemblyLinearVelocity.Magnitude > RING_LIN then
                 touchCD[bp] = true
                 task.delay(0.1, function() touchCD[bp] = nil end)
 
-                lockRing(hit)
+                ringParts[hit] = true
                 pcall(function()
                     local par = hit.Parent
                     if par and par ~= workspace then
                         for _, sib in ipairs(par:GetChildren()) do
                             if sib:IsA("BasePart")
                             and not sib.Anchored then
-                                lockRing(sib)
+                                ringParts[sib] = true
                             end
                         end
                     end
@@ -291,20 +272,98 @@ local function protect(char)
             if obj:IsA("BasePart") and not obj.Anchored
             and not obj:IsDescendantOf(char)
             and not isCharPart(obj) then
-                markRing(obj)
+                markRing(obj, char)
             end
         end
     end)
 
     -- ═══════════════════════════════════════
-    -- STEPPED — ONLY SPIN KILL
-    -- no player iteration needed anymore
-    -- lockPart handles everything
+    -- STEPPED — PRE-PHYSICS
+    --
+    -- two jobs:
+    -- 1. kill our spin
+    -- 2. scan nearby parts and disable
+    --    ANY unanchored non-character part
+    --    that is spinning or moving fast
+    --
+    -- this runs BEFORE physics so even if
+    -- attacker network-owns the ring parts
+    -- and sets CanCollide = true, we set it
+    -- false RIGHT BEFORE physics calculates
+    --
+    -- uses GetPartBoundsInRadius with 15 stud
+    -- radius — only parts close enough to
+    -- actually hit you. game debris further
+    -- away is untouched.
     -- ═══════════════════════════════════════
     reg(RunService.Stepped:Connect(function()
         if not char.Parent or not hrp.Parent then return end
+
         if hrp.AssemblyAngularVelocity.Magnitude > SPIN_KILL then
             hrp.AssemblyAngularVelocity = V3ZERO
+        end
+
+        -- RING DEFENSE: scan close radius
+        -- disable ANY unanchored non-character
+        -- part near us that is moving/spinning
+        local ok, nearby = pcall(function()
+            return workspace:GetPartBoundsInRadius(
+                hrp.Position, 15, overlapParams
+            )
+        end)
+
+        if ok and nearby then
+            for _, part in ipairs(nearby) do
+                if not part.Anchored
+                and not part:IsDescendantOf(char) then
+                    -- already known ring = instant disable
+                    if ringParts[part] then
+                        part.CanCollide = false
+                        part.CanTouch   = false
+                        part.AssemblyLinearVelocity  = V3ZERO
+                        part.AssemblyAngularVelocity = V3ZERO
+                    -- unknown part but spinning/fast = disable
+                    elseif not isCharPart(part) then
+                        local av = part.AssemblyAngularVelocity
+                                       .Magnitude
+                        local lv = part.AssemblyLinearVelocity
+                                       .Magnitude
+                        if av > TOUCH_ANG or lv > RING_LIN then
+                            ringParts[part] = true
+                            part.CanCollide = false
+                            part.CanTouch   = false
+                            part.AssemblyLinearVelocity  = V3ZERO
+                            part.AssemblyAngularVelocity = V3ZERO
+                            -- tag siblings too
+                            pcall(function()
+                                local par = part.Parent
+                                if par
+                                and par ~= workspace
+                                and par ~= game then
+                                    for _, sib in ipairs(
+                                        par:GetChildren()
+                                    ) do
+                                        if sib:IsA("BasePart")
+                                        and not sib.Anchored then
+                                            ringParts[sib] = true
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- also enforce on ALL known ring parts
+        -- even those outside radius (they might
+        -- come back)
+        for part in pairs(ringParts) do
+            if part.Parent then
+                part.CanCollide = false
+                part.CanTouch   = false
+            end
         end
     end))
 end
