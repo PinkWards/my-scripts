@@ -1,397 +1,375 @@
--- Animation Copy v9.3 - CLEAN (No UI clutter)
-
-local Players = game:GetService("Players")
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local LP = Players.LocalPlayer
+local LP         = Players.LocalPlayer
 
--- CONFIG
-local TOGGLE_KEY = Enum.KeyCode.G
-local MAX_DIST = 150
+local conns     = {}
+local partLocks = setmetatable({}, {__mode = "k"})
+local ringParts = setmetatable({}, {__mode = "k"})
 
--- STATE
-local copying = false
-local target = nil
-local hasTarget = false
+local V3ZERO    = Vector3.zero
+local SPIN_KILL = 50
+local RING_ANG  = 8
+local RING_LIN  = 25
+local TOUCH_ANG = 5
 
--- CACHE
-local char, hum, animator, root = nil, nil, nil, nil
-local targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
+local DANGEROUS = {}
+for _, cn in ipairs({
+    "BodyVelocity","BodyAngularVelocity","BodyForce",
+    "BodyPosition","BodyGyro","BodyThrust","RocketPropulsion",
+    "Torque","VectorForce","LinearVelocity","AlignPosition",
+    "AlignOrientation","AngularVelocity",
+}) do DANGEROUS[cn] = true end
 
--- ANIMATION STORAGE
-local tracks = {}
-
--- ═══════════════════════════════════════════════════════════════════
--- CACHE FUNCTIONS
--- ═══════════════════════════════════════════════════════════════════
-
-local function cacheLocal()
-    local c = LP.Character
-    if not c then
-        char, hum, animator, root = nil, nil, nil, nil
-        return false
+local function clearConns()
+    for i = #conns, 1, -1 do
+        pcall(function() conns[i]:Disconnect() end)
+        conns[i] = nil
     end
-    
-    char = c
-    hum = c:FindFirstChildOfClass("Humanoid")
-    root = c:FindFirstChild("HumanoidRootPart")
-    
-    if hum then
-        animator = hum:FindFirstChildOfClass("Animator")
-        if not animator then
-            animator = Instance.new("Animator")
-            animator.Parent = hum
+end
+local function reg(c) conns[#conns + 1] = c return c end
+
+local function lockPart(part)
+    if partLocks[part] then return end
+    pcall(function() part.CanCollide = false end)
+    local c = part:GetPropertyChangedSignal("CanCollide"):Connect(
+        function()
+            if part.CanCollide then
+                part.CanCollide = false
+            end
         end
-    end
-    
-    return hum ~= nil and root ~= nil and animator ~= nil
+    )
+    partLocks[part] = c
+    reg(c)
 end
 
-local function cacheTarget()
-    if not target then
-        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
-        return false
+local function lockCharacter(plrChar)
+    if not plrChar then return end
+    for _, p in ipairs(plrChar:GetDescendants()) do
+        if p:IsA("BasePart") then lockPart(p) end
     end
-    
-    local tc = target.Character
-    if not tc then
-        targetChar, targetHum, targetAnimator, targetRoot = nil, nil, nil, nil
-        return false
-    end
-    
-    targetChar = tc
-    targetHum = tc:FindFirstChildOfClass("Humanoid")
-    targetRoot = tc:FindFirstChild("HumanoidRootPart")
-    
-    if targetHum then
-        targetAnimator = targetHum:FindFirstChildOfClass("Animator")
-    end
-    
-    return targetHum ~= nil and targetAnimator ~= nil and targetRoot ~= nil
+    reg(plrChar.DescendantAdded:Connect(function(p)
+        if p:IsA("BasePart") then lockPart(p) end
+    end))
 end
 
--- ═══════════════════════════════════════════════════════════════════
--- ANIMATE SCRIPT CONTROL
--- ═══════════════════════════════════════════════════════════════════
+local function isCharPart(part)
+    local model = part:FindFirstAncestorWhichIsA("Model")
+    return model and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
 
-local function disableAnimate()
+local function isOurPart(part, char)
+    return part:IsDescendantOf(char)
+end
+
+local function markRing(part, char)
+    if not part or not part.Parent then return end
+    if not part:IsA("BasePart") or part.Anchored then return end
+    if isCharPart(part) then return end
+    if char and part:IsDescendantOf(char) then return end
+
+    local av = part.AssemblyAngularVelocity.Magnitude
+    local lv = part.AssemblyLinearVelocity.Magnitude
+
+    if av > RING_ANG or lv > RING_LIN then
+        ringParts[part] = true
+        pcall(function()
+            local par = part.Parent
+            if par and par ~= workspace and par ~= game then
+                for _, sib in ipairs(par:GetChildren()) do
+                    if sib:IsA("BasePart") and not sib.Anchored then
+                        ringParts[sib] = true
+                    end
+                end
+            end
+        end)
+    end
+end
+
+local function protect(char)
     if not char then return end
-    
-    local animate = char:FindFirstChild("Animate")
-    if animate and animate:IsA("LocalScript") then
-        animate.Disabled = true
+    clearConns()
+    partLocks = setmetatable({}, {__mode = "k"})
+    ringParts = setmetatable({}, {__mode = "k"})
+
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
+    local hum = char:WaitForChild("Humanoid", 5)
+    if not hrp or not hum then return end
+
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    overlapParams.FilterDescendantsInstances = {char}
+
+    -- ═══════════════════════════════════════
+    -- LOCK ALL PLAYERS (event-driven)
+    -- ═══════════════════════════════════════
+    local function watchPlayer(plr)
+        if plr == LP then return end
+        if plr.Character then lockCharacter(plr.Character) end
+        reg(plr.CharacterAdded:Connect(function(c)
+            task.wait(0.1)
+            lockCharacter(c)
+        end))
     end
-    
-    if animator then
-        for _, track in animator:GetPlayingAnimationTracks() do
-            track:Stop(0.1)
+    for _, plr in ipairs(Players:GetPlayers()) do watchPlayer(plr) end
+    reg(Players.PlayerAdded:Connect(watchPlayer))
+
+    -- ═══════════════════════════════════════
+    -- FORCE / WELD GUARD
+    -- ═══════════════════════════════════════
+    reg(char.DescendantAdded:Connect(function(obj)
+        if DANGEROUS[obj.ClassName] then
+            task.defer(function()
+                pcall(function()
+                    if not obj.Parent then return end
+                    for _, plr in ipairs(Players:GetPlayers()) do
+                        if plr ~= LP and plr.Character then
+                            if obj:IsDescendantOf(plr.Character) then
+                                obj:Destroy()
+                                return
+                            end
+                            for _, prop in ipairs({
+                                "Attachment0","Attachment1",
+                                "Part0","Part1"
+                            }) do
+                                local ok, val = pcall(function()
+                                    return obj[prop]
+                                end)
+                                if ok and val
+                                and typeof(val) == "Instance"
+                                and val:IsDescendantOf(
+                                    plr.Character
+                                ) then
+                                    obj:Destroy()
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end)
+            end)
+            return
         end
-    end
-end
 
-local function enableAnimate()
-    if not char then return end
-    
-    local animate = char:FindFirstChild("Animate")
-    if animate and animate:IsA("LocalScript") then
-        animate.Disabled = false
-    end
-end
+        if obj:IsA("JointInstance")
+        or obj:IsA("WeldConstraint")
+        or obj:IsA("Constraint") then
+            task.defer(function()
+                pcall(function()
+                    if not obj.Parent then return end
+                    local p0, p1
+                    if obj:IsA("Constraint") then
+                        local a0 = obj.Attachment0
+                        local a1 = obj.Attachment1
+                        p0 = a0 and a0.Parent
+                        p1 = a1 and a1.Parent
+                    else
+                        p0, p1 = obj.Part0, obj.Part1
+                    end
+                    if not p0 or not p1 then return end
+                    local o0 = p0:IsDescendantOf(char)
+                    local o1 = p1:IsDescendantOf(char)
+                    if o0 == o1 then return end
+                    local foreign = o0 and p1 or p0
+                    for _, plr in ipairs(Players:GetPlayers()) do
+                        if plr ~= LP and plr.Character
+                        and foreign:IsDescendantOf(
+                            plr.Character
+                        ) then
+                            obj:Destroy()
+                            return
+                        end
+                    end
+                end)
+            end)
+        end
+    end))
 
--- ═══════════════════════════════════════════════════════════════════
--- ANIMATION SYNC
--- ═══════════════════════════════════════════════════════════════════
-
-local function cleanSync()
-    if not copying or not hasTarget then return end
-    if not animator or not targetAnimator then return end
-    
-    local ok, targetTracks = pcall(targetAnimator.GetPlayingAnimationTracks, targetAnimator)
-    if not ok or not targetTracks then return end
-    
-    local currentActive = {}
-    
-    for _, targetTrack in targetTracks do
-        if targetTrack.IsPlaying and targetTrack.Animation then
-            local animId = targetTrack.Animation.AnimationId
-            if animId and animId ~= "" then
-                currentActive[animId] = targetTrack
+    -- ═══════════════════════════════════════
+    -- SEAT FLING BLOCK
+    -- ═══════════════════════════════════════
+    reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
+        local seat = hum.SeatPart
+        if not seat then return end
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LP and plr.Character
+            and seat:IsDescendantOf(plr.Character) then
+                hum.Sit = false
+                return
             end
         end
-    end
-    
-    for animId, myTrack in pairs(tracks) do
-        if not currentActive[animId] then
-            myTrack:Stop(0.1)
-            myTrack:Destroy()
-            tracks[animId] = nil
-        end
-    end
-    
-    for animId, targetTrack in pairs(currentActive) do
-        local myTrack = tracks[animId]
-        
-        if not myTrack then
-            local anim = Instance.new("Animation")
-            anim.AnimationId = animId
-            
-            local success, newTrack = pcall(animator.LoadAnimation, animator, anim)
-            if success and newTrack then
-                newTrack.Priority = Enum.AnimationPriority.Action4
-                myTrack = newTrack
-                tracks[animId] = myTrack
-                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
-            end
-            
-            anim:Destroy()
-        end
-        
-        if myTrack then
-            local timeDiff = math.abs(myTrack.TimePosition - targetTrack.TimePosition)
-            if timeDiff > 0.05 then
-                myTrack.TimePosition = targetTrack.TimePosition
-            end
-            
-            if myTrack.Speed ~= targetTrack.Speed then
-                myTrack:AdjustSpeed(targetTrack.Speed)
-            end
-            
-            local weightDiff = math.abs(myTrack.WeightCurrent - targetTrack.WeightCurrent)
-            if weightDiff > 0.05 then
-                myTrack:AdjustWeight(targetTrack.WeightCurrent, 0.1)
-            end
-            
-            if not myTrack.IsPlaying then
-                myTrack:Play(0.1, targetTrack.WeightCurrent, targetTrack.Speed)
+        if not seat.Anchored then
+            if seat.AssemblyAngularVelocity.Magnitude > 10
+            or seat.AssemblyLinearVelocity.Magnitude > 50 then
+                hum.Sit = false
             end
         end
-    end
-end
+    end))
 
--- ═══════════════════════════════════════════════════════════════════
--- STOP ALL ANIMATIONS
--- ═══════════════════════════════════════════════════════════════════
+    -- ═══════════════════════════════════════
+    -- RING INTERCEPTOR (catches on spawn)
+    -- ═══════════════════════════════════════
+    reg(workspace.DescendantAdded:Connect(function(obj)
+        if not obj:IsA("BasePart") or obj.Anchored then return end
+        if obj:IsDescendantOf(char) then return end
+        if isCharPart(obj) then return end
 
-local function stopAllTracks()
-    for animId, track in pairs(tracks) do
-        if track then
-            track:Stop(0.1)
-            track:Destroy()
+        local function check()
+            pcall(function()
+                if obj.Parent then markRing(obj, char) end
+            end)
         end
+        task.defer(check)
+        task.delay(0.1, check)
+        task.delay(0.2, check)
+        task.delay(0.5, check)
+        task.delay(1.0, check)
+    end))
+
+    -- ═══════════════════════════════════════
+    -- CONTACT SHIELD
+    -- ═══════════════════════════════════════
+    local touchCD = {}
+
+    local function hookTouch(bp)
+        if not bp:IsA("BasePart") then return end
+        reg(bp.Touched:Connect(function(hit)
+            if touchCD[bp] then return end
+            if not hit or not hit.Parent then return end
+            if hit:IsDescendantOf(char) or hit.Anchored then return end
+            if isCharPart(hit) then return end
+
+            if hit.AssemblyAngularVelocity.Magnitude > TOUCH_ANG
+            or hit.AssemblyLinearVelocity.Magnitude > RING_LIN then
+                touchCD[bp] = true
+                task.delay(0.1, function() touchCD[bp] = nil end)
+
+                ringParts[hit] = true
+                pcall(function()
+                    local par = hit.Parent
+                    if par and par ~= workspace then
+                        for _, sib in ipairs(par:GetChildren()) do
+                            if sib:IsA("BasePart")
+                            and not sib.Anchored then
+                                ringParts[sib] = true
+                            end
+                        end
+                    end
+                end)
+
+                hrp.AssemblyAngularVelocity = V3ZERO
+            end
+        end))
     end
-    table.clear(tracks)
-    
-    if animator then
-        for _, track in animator:GetPlayingAnimationTracks() do
-            track:Stop(0.1)
+
+    for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
+    reg(char.DescendantAdded:Connect(hookTouch))
+
+    -- ═══════════════════════════════════════
+    -- INITIAL RING SCAN
+    -- ═══════════════════════════════════════
+    task.spawn(function()
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and not obj.Anchored
+            and not obj:IsDescendantOf(char)
+            and not isCharPart(obj) then
+                markRing(obj, char)
+            end
         end
-    end
-end
+    end)
 
--- ═══════════════════════════════════════════════════════════════════
--- FIND NEAREST PLAYER
--- ═══════════════════════════════════════════════════════════════════
+    -- ═══════════════════════════════════════
+    -- STEPPED — PRE-PHYSICS
+    --
+    -- two jobs:
+    -- 1. kill our spin
+    -- 2. scan nearby parts and disable
+    --    ANY unanchored non-character part
+    --    that is spinning or moving fast
+    --
+    -- this runs BEFORE physics so even if
+    -- attacker network-owns the ring parts
+    -- and sets CanCollide = true, we set it
+    -- false RIGHT BEFORE physics calculates
+    --
+    -- uses GetPartBoundsInRadius with 15 stud
+    -- radius — only parts close enough to
+    -- actually hit you. game debris further
+    -- away is untouched.
+    -- ═══════════════════════════════════════
+    reg(RunService.Stepped:Connect(function()
+        if not char.Parent or not hrp.Parent then return end
 
-local function findNearest()
-    if not root then return nil end
-    
-    local myPos = root.Position
-    local bestPlayer, bestDist = nil, MAX_DIST
-    
-    for _, player in Players:GetPlayers() do
-        if player ~= LP and player.Character then
-            local playerRoot = player.Character:FindFirstChild("HumanoidRootPart")
-            if playerRoot then
-                local dist = (myPos - playerRoot.Position).Magnitude
-                if dist < bestDist then
-                    bestPlayer = player
-                    bestDist = dist
+        if hrp.AssemblyAngularVelocity.Magnitude > SPIN_KILL then
+            hrp.AssemblyAngularVelocity = V3ZERO
+        end
+
+        -- RING DEFENSE: scan close radius
+        -- disable ANY unanchored non-character
+        -- part near us that is moving/spinning
+        local ok, nearby = pcall(function()
+            return workspace:GetPartBoundsInRadius(
+                hrp.Position, 15, overlapParams
+            )
+        end)
+
+        if ok and nearby then
+            for _, part in ipairs(nearby) do
+                if not part.Anchored
+                and not part:IsDescendantOf(char) then
+                    -- already known ring = instant disable
+                    if ringParts[part] then
+                        part.CanCollide = false
+                        part.CanTouch   = false
+                        part.AssemblyLinearVelocity  = V3ZERO
+                        part.AssemblyAngularVelocity = V3ZERO
+                    -- unknown part but spinning/fast = disable
+                    elseif not isCharPart(part) then
+                        local av = part.AssemblyAngularVelocity
+                                       .Magnitude
+                        local lv = part.AssemblyLinearVelocity
+                                       .Magnitude
+                        if av > TOUCH_ANG or lv > RING_LIN then
+                            ringParts[part] = true
+                            part.CanCollide = false
+                            part.CanTouch   = false
+                            part.AssemblyLinearVelocity  = V3ZERO
+                            part.AssemblyAngularVelocity = V3ZERO
+                            -- tag siblings too
+                            pcall(function()
+                                local par = part.Parent
+                                if par
+                                and par ~= workspace
+                                and par ~= game then
+                                    for _, sib in ipairs(
+                                        par:GetChildren()
+                                    ) do
+                                        if sib:IsA("BasePart")
+                                        and not sib.Anchored then
+                                            ringParts[sib] = true
+                                        end
+                                    end
+                                end
+                            end)
+                        end
+                    end
                 end
             end
         end
-    end
-    
-    return bestPlayer
-end
 
--- ═══════════════════════════════════════════════════════════════════
--- MAIN LOOP
--- ═══════════════════════════════════════════════════════════════════
-
-RunService.RenderStepped:Connect(function()
-    if copying and hasTarget then
-        cleanSync()
-    end
-end)
-
-local cacheTimer = 0
-RunService.Heartbeat:Connect(function(dt)
-    if not copying then return end
-    
-    cacheTimer += dt
-    if cacheTimer < 1 then return end
-    cacheTimer = 0
-    
-    if hasTarget and target then
-        if not target.Parent then
-            print("⚠️ Target left")
-            hasTarget = false
-            target = nil
-            stopAllTracks()
-            enableAnimate()
-        elseif target.Character ~= targetChar then
-            cacheTarget()
+        -- also enforce on ALL known ring parts
+        -- even those outside radius (they might
+        -- come back)
+        for part in pairs(ringParts) do
+            if part.Parent then
+                part.CanCollide = false
+                part.CanTouch   = false
+            end
         end
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- TARGET HANDLING
--- ═══════════════════════════════════════════════════════════════════
-
-local targetConnections = {}
-
-local function cleanupTargetConnections()
-    for _, conn in pairs(targetConnections) do
-        if conn then conn:Disconnect() end
-    end
-    table.clear(targetConnections)
+    end))
 end
 
-local function setupTargetConnections()
-    cleanupTargetConnections()
-    
-    if not target then return end
-    
-    targetConnections.charAdded = target.CharacterAdded:Connect(function()
-        task.wait(0.5)
-        cacheTarget()
-        if copying and hasTarget then
-            disableAnimate()
-        end
-    end)
-    
-    if target.Character then
-        local targetHumanoid = target.Character:FindFirstChildOfClass("Humanoid")
-        if targetHumanoid then
-            targetConnections.died = targetHumanoid.Died:Connect(function()
-                stopAllTracks()
-            end)
-        end
-    end
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- START / STOP
--- ═══════════════════════════════════════════════════════════════════
-
-local function start()
-    if copying then return end
-    
-    if not cacheLocal() then
-        print("❌ No character")
-        return
-    end
-    
-    local nearest = findNearest()
-    if not nearest then
-        print("❌ No player nearby")
-        return
-    end
-    
-    target = nearest
-    
-    if not cacheTarget() then
-        print("❌ Target has no animator")
-        target = nil
-        return
-    end
-    
-    copying = true
-    hasTarget = true
-    
-    stopAllTracks()
-    disableAnimate()
-    setupTargetConnections()
-    
-    print("✅ Copying: " .. target.Name)
-end
-
-local function stop()
-    if not copying then return end
-    
-    copying = false
-    hasTarget = false
-    
-    cleanupTargetConnections()
-    stopAllTracks()
-    enableAnimate()
-    
-    target = nil
-    targetChar = nil
-    targetHum = nil
-    targetAnimator = nil
-    targetRoot = nil
-    
-    print("❌ Stopped")
-end
-
--- ═══════════════════════════════════════════════════════════════════
--- INPUT
--- ═══════════════════════════════════════════════════════════════════
-
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.KeyCode == TOGGLE_KEY then
-        if copying then stop() else start() end
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- PLAYER LEFT
--- ═══════════════════════════════════════════════════════════════════
-
-Players.PlayerRemoving:Connect(function(player)
-    if player == target then
-        stop()
-    end
-end)
-
--- ═══════════════════════════════════════════════════════════════════
--- CHARACTER RESPAWN
--- ═══════════════════════════════════════════════════════════════════
-
-LP.CharacterAdded:Connect(function(newChar)
-    table.clear(tracks)
-    char, hum, animator, root = nil, nil, nil, nil
-    
-    local newHum = newChar:WaitForChild("Humanoid", 10)
-    local newRoot = newChar:WaitForChild("HumanoidRootPart", 10)
-    if not newHum or not newRoot then return end
-    
-    char = newChar
-    hum = newHum
-    root = newRoot
-    
-    animator = newHum:FindFirstChildOfClass("Animator")
-    if not animator then
-        animator = Instance.new("Animator")
-        animator.Parent = newHum
-    end
-    
+protect(LP.Character)
+LP.CharacterAdded:Connect(function(c)
     task.wait(0.2)
-    if copying and hasTarget then
-        cacheTarget()
-        disableAnimate()
-    end
+    protect(c)
 end)
-
--- ═══════════════════════════════════════════════════════════════════
--- INIT
--- ═══════════════════════════════════════════════════════════════════
-
-cacheLocal()
-
-print("════════════════════════════════")
-print("  Animation Copy - Press [G]")
-print("════════════════════════════════")
