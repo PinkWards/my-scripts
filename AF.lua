@@ -2,11 +2,11 @@ local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LP         = Players.LocalPlayer
 
-local conns  = {}
-local V3ZERO = Vector3.zero
-
+local conns     = {}
+local partLocks = setmetatable({}, {__mode = "k"})
 local ringParts = setmetatable({}, {__mode = "k"})
 
+local V3ZERO    = Vector3.zero
 local SPIN_KILL = 50
 local RING_ANG  = 20
 local RING_LIN  = 50
@@ -14,8 +14,8 @@ local TOUCH_ANG = 12
 
 local DANGEROUS = {}
 for _, cn in ipairs({
-    "BodyVelocity","BodyAngularVelocity","BodyForce","BodyPosition",
-    "BodyGyro","BodyThrust","RocketPropulsion",
+    "BodyVelocity","BodyAngularVelocity","BodyForce",
+    "BodyPosition","BodyGyro","BodyThrust","RocketPropulsion",
     "Torque","VectorForce","LinearVelocity","AlignPosition",
     "AlignOrientation","AngularVelocity",
 }) do DANGEROUS[cn] = true end
@@ -28,9 +28,57 @@ local function clearConns()
 end
 local function reg(c) conns[#conns + 1] = c return c end
 
+----------------------------------------------------------------
+-- CANCOLLIDE LOCK
+-- once locked, the part can NEVER collide with you
+-- even if network owner sets CanCollide = true 1000x/sec
+-- the property changed signal fires and sets it false instantly
+--
+-- this is faster than Stepped because its event-driven
+-- zero iteration, zero per-frame cost per locked part
+----------------------------------------------------------------
+local function lockPart(part)
+    if partLocks[part] then return end
+    pcall(function() part.CanCollide = false end)
+    local lockConn
+    lockConn = part:GetPropertyChangedSignal("CanCollide"):Connect(
+        function()
+            if part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    )
+    partLocks[part] = lockConn
+    reg(lockConn)
+end
+
+local function lockCharacter(plrChar)
+    if not plrChar then return end
+    for _, p in ipairs(plrChar:GetDescendants()) do
+        if p:IsA("BasePart") then
+            lockPart(p)
+        end
+    end
+    reg(plrChar.DescendantAdded:Connect(function(p)
+        if p:IsA("BasePart") then
+            lockPart(p)
+        end
+    end))
+end
+
+----------------------------------------------------------------
+-- RING DETECTION
+----------------------------------------------------------------
 local function isCharPart(part)
     local model = part:FindFirstAncestorWhichIsA("Model")
     return model and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function lockRing(part)
+    if not part or not part.Parent then return end
+    ringParts[part] = true
+    lockPart(part)
+    pcall(function() part.CanTouch = false end)
 end
 
 local function markRing(part)
@@ -41,14 +89,15 @@ local function markRing(part)
     local av = part.AssemblyAngularVelocity.Magnitude
     local lv = part.AssemblyLinearVelocity.Magnitude
 
-    if (av > RING_ANG and lv > RING_LIN) or av > RING_ANG * 3 then
-        ringParts[part] = true
+    if (av > RING_ANG and lv > RING_LIN)
+    or av > RING_ANG * 3 then
+        lockRing(part)
         pcall(function()
             local par = part.Parent
             if par and par ~= workspace then
                 for _, sib in ipairs(par:GetChildren()) do
                     if sib:IsA("BasePart") and not sib.Anchored then
-                        ringParts[sib] = true
+                        lockRing(sib)
                     end
                 end
             end
@@ -56,9 +105,13 @@ local function markRing(part)
     end
 end
 
+----------------------------------------------------------------
+-- MAIN PROTECTION
+----------------------------------------------------------------
 local function protect(char)
     if not char then return end
     clearConns()
+    partLocks = setmetatable({}, {__mode = "k"})
     ringParts = setmetatable({}, {__mode = "k"})
 
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
@@ -66,30 +119,24 @@ local function protect(char)
     if not hrp or not hum then return end
 
     -- ═══════════════════════════════════════
-    -- NO STATE BLOCKING AT ALL
-    --
-    -- IY trip does:
-    --   Humanoid.PlatformStand = true
-    --
-    -- what happens:
-    --   1. humanoid stops controlling character
-    --   2. character becomes pure physics object
-    --   3. gravity tips it over (ragdoll)
-    --   4. character lies on ground
-    --
-    -- old script blocked Ragdoll state
-    -- which prevented step 3
-    -- character froze standing up
-    --
-    -- we dont need state blocking because:
-    --   players cant collide with you (Stepped)
-    --   forces get destroyed (DescendantAdded)
-    --   rings get neutralized
-    --   nothing CAN ragdoll you except YOUR commands
+    -- LOCK ALL EXISTING PLAYERS
     -- ═══════════════════════════════════════
+    local function watchPlayer(plr)
+        if plr == LP then return end
+        if plr.Character then lockCharacter(plr.Character) end
+        reg(plr.CharacterAdded:Connect(function(c)
+            task.wait(0.1)
+            lockCharacter(c)
+        end))
+    end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        watchPlayer(plr)
+    end
+    reg(Players.PlayerAdded:Connect(watchPlayer))
 
     -- ═══════════════════════════════════════
-    -- FORCE / WELD GUARD (event-driven)
+    -- FORCE / WELD GUARD
     -- ═══════════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -111,7 +158,9 @@ local function protect(char)
                                 end)
                                 if ok and val
                                 and typeof(val) == "Instance"
-                                and val:IsDescendantOf(plr.Character) then
+                                and val:IsDescendantOf(
+                                    plr.Character
+                                ) then
                                     obj:Destroy()
                                     return
                                 end
@@ -145,7 +194,9 @@ local function protect(char)
                     local foreign = o0 and p1 or p0
                     for _, plr in ipairs(Players:GetPlayers()) do
                         if plr ~= LP and plr.Character
-                        and foreign:IsDescendantOf(plr.Character) then
+                        and foreign:IsDescendantOf(
+                            plr.Character
+                        ) then
                             obj:Destroy()
                             return
                         end
@@ -177,7 +228,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════════
-    -- RING INTERCEPTOR (event-driven)
+    -- RING INTERCEPTOR
     -- ═══════════════════════════════════════
     reg(workspace.DescendantAdded:Connect(function(obj)
         if not obj:IsA("BasePart") or obj.Anchored then return end
@@ -211,14 +262,14 @@ local function protect(char)
                 touchCD[bp] = true
                 task.delay(0.1, function() touchCD[bp] = nil end)
 
-                ringParts[hit] = true
+                lockRing(hit)
                 pcall(function()
                     local par = hit.Parent
                     if par and par ~= workspace then
                         for _, sib in ipairs(par:GetChildren()) do
                             if sib:IsA("BasePart")
                             and not sib.Anchored then
-                                ringParts[sib] = true
+                                lockRing(sib)
                             end
                         end
                     end
@@ -233,7 +284,7 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════════
-    -- INITIAL RING SCAN (once, background)
+    -- INITIAL RING SCAN
     -- ═══════════════════════════════════════
     task.spawn(function()
         for _, obj in ipairs(workspace:GetDescendants()) do
@@ -246,68 +297,14 @@ local function protect(char)
     end)
 
     -- ═══════════════════════════════════════
-    -- STEPPED — RUNS BEFORE PHYSICS
-    --
-    -- this is the ONLY per-frame work
-    -- everything else is event-driven
-    --
-    -- uses GetDescendants to catch ALL parts
-    -- including hat handles, tool handles,
-    -- accessory meshes, hair, etc
-    --
-    -- only processes players within 60 studs
+    -- STEPPED — ONLY SPIN KILL
+    -- no player iteration needed anymore
+    -- lockPart handles everything
     -- ═══════════════════════════════════════
     reg(RunService.Stepped:Connect(function()
         if not char.Parent or not hrp.Parent then return end
-
-        -- kill extreme spin
         if hrp.AssemblyAngularVelocity.Magnitude > SPIN_KILL then
             hrp.AssemblyAngularVelocity = V3ZERO
-        end
-
-        local myPos = hrp.Position
-
-        -- ═══════════════════════════════════
-        -- PLAYER PASS-THROUGH
-        --
-        -- GetDescendants catches EVERYTHING:
-        --   Head, Torso, Arms, Legs
-        --   HumanoidRootPart
-        --   Hat Handle (inside Accessory)
-        --   Hair MeshPart (inside Accessory)
-        --   Tool Handle (inside Tool)
-        --   Any part added by scripts
-        --
-        -- set CanCollide = false on ALL of them
-        -- physics engine sees false this frame
-        -- they literally do not exist to you
-        -- ═══════════════════════════════════
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= LP and plr.Character then
-                local pH = plr.Character:FindFirstChild(
-                    "HumanoidRootPart"
-                )
-                if pH then
-                    local dist = (pH.Position - myPos).Magnitude
-                    if dist < 60 then
-                        for _, p in ipairs(
-                            plr.Character:GetDescendants()
-                        ) do
-                            if p:IsA("BasePart") then
-                                p.CanCollide = false
-                            end
-                        end
-                    end
-                end
-            end
-        end
-
-        -- ring pass-through
-        for part in pairs(ringParts) do
-            if part.Parent then
-                part.CanCollide = false
-                part.CanTouch   = false
-            end
         end
     end))
 end
