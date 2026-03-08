@@ -11,7 +11,7 @@ if getgenv()._fk_cleanup then pcall(getgenv()._fk_cleanup) end
 local FACE_OFFSET   = -0.7
 local HEIGHT_OFFSET  = 1
 local THRUST_DIST   = 2.0
-local THRUST_FREQ   = 30
+local THRUST_FREQ   = 25
 local LERP_SPEED    = 40
 local TOGGLE_KEY    = Enum.KeyCode.Z
 
