@@ -8,16 +8,12 @@ local ANG_CAP   = 20
 local HORIZ_CAP = 150
 local UP_CAP    = 120
 local SCAN_RAD  = 25
-local OUR_DENSITY   = 100   -- makes us ~143x heavier than normal
-local THEIR_DENSITY = 0.01  -- makes them weightless
 
 local trackedPlayers = {}
 local conns          = {}
 
 -- ═══════════════════════════════════════════════
 -- LAYER 1: COLLISION GROUPS (engine level block)
--- even if attacker re-enables CanCollide,
--- collision groups override at physics engine level
 -- ═══════════════════════════════════════════════
 local cgWork = false
 pcall(function()
@@ -30,20 +26,16 @@ end)
 -- ═══════════════════════════════════════════════
 -- LAYER 2: NEUTRALIZE OTHER PLAYERS' PARTS
 -- CanCollide false + CanTouch false
--- Massless = true (zero mass contribution)
--- Near-zero density (can't push anything)
--- Zero friction + zero elasticity (no grip/bounce)
+-- Massless = true
 -- Collision group assignment
+-- NO density changes
 -- ═══════════════════════════════════════════════
-local THEIR_PHYS = PhysicalProperties.new(THEIR_DENSITY, 0, 0, 0, 0)
-
 local function neutralizePart(part)
     if not part:IsA("BasePart") then return end
     pcall(function()
         part.CanCollide = false
         part.CanTouch   = false
         part.Massless   = true
-        part.CustomPhysicalProperties = THEIR_PHYS
         if cgWork then part.CollisionGroup = "_af_them" end
     end)
 end
@@ -130,20 +122,12 @@ local function protect(char)
     overlapParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════
-    -- LAYER 3: FORTIFY OUR CHARACTER
-    -- high density = massive mass
-    -- F=ma → huge mass = tiny acceleration
-    -- collision forces literally cant move us
-    -- zero elasticity = no bounce
-    -- Humanoid auto-adjusts walk/jump forces
-    -- for mass so normal gameplay is unaffected
+    -- LAYER 3: ASSIGN OUR COLLISION GROUP
+    -- No density/mass changes — just collision group
     -- ═══════════════════════════════════
-    local OUR_PHYS = PhysicalProperties.new(OUR_DENSITY, 0.3, 0, 1, 0)
-
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         pcall(function()
-            p.CustomPhysicalProperties = OUR_PHYS
             if cgWork then p.CollisionGroup = "_af_me" end
         end)
     end
@@ -154,8 +138,7 @@ local function protect(char)
         task.defer(function() fortify(p) end)
     end))
 
-    -- re-enforce our properties every frame
-    -- in case something resets them
+    -- re-enforce our collision group every frame
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent then return end
         for _, p in ipairs(char:GetDescendants()) do
@@ -171,12 +154,15 @@ local function protect(char)
 
     -- ═══════════════════════════════════
     -- LAYER 4: VELOCITY CLAMPING
-    -- always active on all 3 frame events
-    -- caps horizontal + upward + angular
-    -- NEVER touches downward (falling works)
-    -- NEVER touches CFrame (TP tools work)
-    -- only triggers on spin (TP tools = no spin)
+    -- Replaces the density approach entirely
+    -- Aggressively clamps velocity every frame
+    -- on all 3 frame events
     -- ═══════════════════════════════════
+
+    -- Store last known good velocity for restoration
+    local lastGoodVel = V3ZERO
+    local lastGoodTime = 0
+
     local function clamp()
         if not char.Parent or not hrp.Parent then return end
 
@@ -191,9 +177,8 @@ local function protect(char)
             dirty = true
         end
 
-        -- only clamp linear velocity if we're also spinning
-        -- this way TP tools work (no spin = no clamp)
-        -- flings ALWAYS spin you
+        -- clamp linear velocity if we're also spinning
+        -- flings ALWAYS spin you, TP tools don't
         if angMag > ANG_CAP then
             local vx, vy, vz = vel.X, vel.Y, vel.Z
             local hMag = math.sqrt(vx * vx + vz * vz)
@@ -213,9 +198,15 @@ local function protect(char)
                 hrp.AssemblyLinearVelocity = Vector3.new(vx, vy, vz)
             end
         end
+
+        -- Track last good velocity (when not being flung)
+        if angMag <= ANG_CAP then
+            lastGoodVel = hrp.AssemblyLinearVelocity
+            lastGoodTime = tick()
+        end
     end
 
-    -- BindToRenderStep at FIRST priority (runs before everything)
+    -- BindToRenderStep at FIRST priority
     local bindName = "_af_" .. tostring(math.random(999999))
     RunService:BindToRenderStep(bindName, Enum.RenderPriority.First.Value, clamp)
     reg({Disconnect = function()
@@ -229,8 +220,7 @@ local function protect(char)
     -- LAYER 5: NEARBY PART SCAN
     -- freeze + neutralize any fast/spinning
     -- unanchored part near us
-    -- also assigns collision group so even if
-    -- it unfreezes it cant collide with us
+    -- NO density changes — just velocity zero + collision
     -- ═══════════════════════════════════
     local function scanNearby()
         if not char.Parent or not hrp.Parent then return end
@@ -269,7 +259,6 @@ local function protect(char)
                                 part.CanCollide = false
                                 part.CanTouch   = false
                                 part.Massless   = true
-                                part.CustomPhysicalProperties = THEIR_PHYS
                                 part.AssemblyLinearVelocity  = V3ZERO
                                 part.AssemblyAngularVelocity = V3ZERO
                                 if cgWork then
@@ -371,7 +360,6 @@ local function protect(char)
                     hit.CanCollide = false
                     hit.CanTouch   = false
                     hit.Massless   = true
-                    hit.CustomPhysicalProperties = THEIR_PHYS
                     hit.AssemblyLinearVelocity  = V3ZERO
                     hit.AssemblyAngularVelocity = V3ZERO
                     if cgWork then hit.CollisionGroup = "_af_them" end
