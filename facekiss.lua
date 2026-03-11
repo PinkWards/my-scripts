@@ -16,13 +16,14 @@ local LERP_SPEED    = 40
 local TOGGLE_KEY    = Enum.KeyCode.Z
 
 -- State
-local isActive     = false
-local targetHead   = nil
-local targetPlayer = nil
-local thrustClock  = 0
-local mainConn     = nil
-local noclipConn   = nil
-local conns        = {}
+local isActive        = false
+local targetHead      = nil
+local targetPlayer    = nil
+local thrustClock     = 0
+local mainConn        = nil
+local noclipConn      = nil
+local conns           = {}
+local savedCanCollide = {}          -- ← NEW: stores original CanCollide per part
 
 local function track(c) conns[#conns+1] = c return c end
 local function getHRP()
@@ -35,10 +36,22 @@ local function smoothAlpha(speed, dt)
 end
 
 -- ══════════════════════════════════════
--- Noclip
+-- Noclip  (FIXED)
 -- ══════════════════════════════════════
 local function startNoclip()
     if noclipConn then noclipConn:Disconnect() end
+
+    -- Save original CanCollide states ONCE before we start zeroing them
+    table.clear(savedCanCollide)
+    local char = LocalPlayer.Character
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                savedCanCollide[part] = part.CanCollide
+            end
+        end
+    end
+
     noclipConn = track(RunService.Stepped:Connect(function()
         local char = LocalPlayer.Character
         if not char then return end
@@ -55,19 +68,17 @@ local function stopNoclip()
         noclipConn:Disconnect()
         noclipConn = nil
     end
-    -- Restore collision
-    local char = LocalPlayer.Character
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = true
+
+    -- Restore each part to its ORIGINAL CanCollide value
+    for part, wasCollidable in pairs(savedCanCollide) do
+        if part and part.Parent then
+            part.CanCollide = wasCollidable
         end
     end
-    -- Let the humanoid handle torso/hrp collision properly
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum:BuildRigFromAttachments()
-    end
+    table.clear(savedCanCollide)
+
+    -- ★ BuildRigFromAttachments() REMOVED — it was creating
+    --   duplicate Motor6D joints every call, corrupting physics.
 end
 
 -- ══════════════════════════════════════
@@ -109,7 +120,7 @@ local function unlock(char)
 end
 
 -- ══════════════════════════════════════
--- Full Deactivate (used by toggle + auto-stop)
+-- Full Deactivate
 -- ══════════════════════════════════════
 local function deactivate()
     if not isActive then return end
@@ -127,15 +138,12 @@ end
 -- Target Validity Check
 -- ══════════════════════════════════════
 local function isTargetAlive()
-    -- Player left the game
     if not targetPlayer or not targetPlayer:IsDescendantOf(Players) then
         return false
     end
-    -- Player has no character
     if not targetPlayer.Character then
         return false
     end
-    -- Player is dead
     local hum = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then
         return false
@@ -164,7 +172,7 @@ local function findNearest()
 end
 
 -- ══════════════════════════════════════
--- Main Loop
+-- Main Loop  (velocity fix)
 -- ══════════════════════════════════════
 local function startLoop()
     thrustClock = 0
@@ -176,7 +184,6 @@ local function startLoop()
             return
         end
 
-        -- Auto-stop if target died or left
         if not isTargetAlive() then
             deactivate()
             return
@@ -185,7 +192,6 @@ local function startLoop()
         local hrp = getHRP()
         if not hrp then return end
 
-        -- Re-grab head ref if it got lost (respawn edge case)
         if not targetHead or not targetHead:IsDescendantOf(workspace) then
             targetHead = targetPlayer.Character:FindFirstChild("Head")
             if not targetHead then
@@ -196,7 +202,6 @@ local function startLoop()
 
         lock(LocalPlayer.Character)
 
-        -- Sine-wave thrust
         thrustClock = thrustClock + dt
         local t = math.sin(thrustClock * THRUST_FREQ) * 0.5 + 0.5
         local z = FACE_OFFSET - (t * THRUST_DIST)
@@ -206,8 +211,8 @@ local function startLoop()
             * CFrame.Angles(0, math.rad(180), 0)
 
         hrp.CFrame = hrp.CFrame:Lerp(goal, smoothAlpha(LERP_SPEED, dt))
-        hrp.Velocity    = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
+        hrp.AssemblyLinearVelocity  = Vector3.zero   -- ← modern property
+        hrp.AssemblyAngularVelocity = Vector3.zero   -- ← modern property
     end))
 end
 
@@ -230,7 +235,6 @@ local function toggle()
         lock(LocalPlayer.Character)
         startNoclip()
 
-        -- Instant snap to face
         local hrp = getHRP()
         if hrp then
             hrp.CFrame = targetHead.CFrame
@@ -244,7 +248,7 @@ local function toggle()
 end
 
 -- ══════════════════════════════════════
--- Auto-stop when target leaves server
+-- Auto-stop when target leaves
 -- ══════════════════════════════════════
 track(Players.PlayerRemoving:Connect(function(plr)
     if isActive and targetPlayer == plr then
