@@ -10,7 +10,7 @@ local humanoid = character:WaitForChild("Humanoid")
 local mouse = player:GetMouse()
 
 local flying = false
-local flySpeed = 700
+local flySpeed = 80
 local TOGGLE_KEY = Enum.KeyCode.Q
 
 local workspace = game:GetService("Workspace")
@@ -23,17 +23,24 @@ local KeyUpFunction = nil
 
 local currentAnim = nil
 
+-- Animation IDs
+local ANIM_FLY = 10714177846    -- Flying/moving animation
+local ANIM_IDLE = 10714347256   -- Hover idle animation
+
 -- Animation Functions
 local function PlayAnim(id, time, speed)
     pcall(function()
         if currentAnim then
             currentAnim:Stop(0.1)
+            currentAnim = nil
         end
 
-        player.Character.Animate.Disabled = true
-        local hum = player.Character.Humanoid
-        local animtrack = hum:GetPlayingAnimationTracks()
-        for _, track in pairs(animtrack) do
+        local char = player.Character
+        if not char then return end
+
+        char.Animate.Disabled = true
+        local hum = char.Humanoid
+        for _, track in pairs(hum:GetPlayingAnimationTracks()) do
             track:Stop()
         end
 
@@ -47,9 +54,8 @@ local function PlayAnim(id, time, speed)
         currentAnim = loadanim
 
         loadanim.Stopped:Connect(function()
-            player.Character.Animate.Disabled = false
-            for _, track in pairs(animtrack) do
-                track:Stop()
+            if char and char:FindFirstChild("Animate") then
+                char.Animate.Disabled = false
             end
         end)
     end)
@@ -60,9 +66,12 @@ local function StopAnim()
         currentAnim:Stop(0.1)
         currentAnim = nil
     end
-    player.Character.Animate.Disabled = false
-    local animtrack = player.Character.Humanoid:GetPlayingAnimationTracks()
-    for _, track in pairs(animtrack) do
+    local char = player.Character
+    if not char then return end
+    if char:FindFirstChild("Animate") then
+        char.Animate.Disabled = false
+    end
+    for _, track in pairs(char.Humanoid:GetPlayingAnimationTracks()) do
         track:Stop()
     end
 end
@@ -72,6 +81,11 @@ local function GetTorso()
     local char = player.Character
     if not char then return nil end
     return char:FindFirstChild("UpperTorso") or char:FindFirstChild("HumanoidRootPart")
+end
+
+-- Check if any movement key is held
+local function isMoving()
+    return ctrl.f ~= 0 or ctrl.b ~= 0 or ctrl.l ~= 0 or ctrl.r ~= 0
 end
 
 -- Toggle Flight
@@ -97,37 +111,40 @@ local function toggleFlight()
         bv.velocity = Vector3.new(0, 0.1, 0)
         bv.maxForce = Vector3.new(9e9, 9e9, 9e9)
 
-        PlayAnim(10714347256, 4, 0)
+        -- Start with idle hover animation
+        PlayAnim(ANIM_IDLE, 4, 0)
 
         KeyDownFunction = mouse.KeyDown:Connect(function(key)
             if key:lower() == "w" then
                 ctrl.f = 1
-                PlayAnim(10714177846, 4.65, 0)
             elseif key:lower() == "s" then
                 ctrl.b = -1
-                PlayAnim(10147823318, 4.11, 0)
             elseif key:lower() == "a" then
                 ctrl.l = -1
-                PlayAnim(10147823318, 3.55, 0)
             elseif key:lower() == "d" then
                 ctrl.r = 1
-                PlayAnim(10147823318, 4.81, 0)
+            end
+
+            -- Play fly animation when any direction is pressed
+            if isMoving() then
+                PlayAnim(ANIM_FLY, 4.65, 0)
             end
         end)
 
         KeyUpFunction = mouse.KeyUp:Connect(function(key)
             if key:lower() == "w" then
                 ctrl.f = 0
-                PlayAnim(10714347256, 4, 0)
             elseif key:lower() == "s" then
                 ctrl.b = 0
-                PlayAnim(10714347256, 4, 0)
             elseif key:lower() == "a" then
                 ctrl.l = 0
-                PlayAnim(10714347256, 4, 0)
             elseif key:lower() == "d" then
                 ctrl.r = 0
-                PlayAnim(10714347256, 4, 0)
+            end
+
+            -- Return to idle when no keys are held
+            if not isMoving() then
+                PlayAnim(ANIM_IDLE, 4, 0)
             end
         end)
 
@@ -141,7 +158,7 @@ local function toggleFlight()
                     if speed > flySpeed then
                         speed = flySpeed
                     end
-                elseif not (ctrl.l + ctrl.r ~= 0 or ctrl.f + ctrl.b ~= 0) and speed ~= 0 then
+                elseif speed ~= 0 then
                     speed = speed - flySpeed * 0.10
                     if speed < 0 then
                         speed = 0
