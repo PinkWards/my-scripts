@@ -328,10 +328,31 @@ local function applyAnim(data)
 	notify("💗 Animation", "✅ Applied: " .. (data.name or "Animation"), 3)
 end
 
--- ============ EMOTE PLAYING ============ --
+-- ============ EMOTE PLAYING (FREEZE FIX) ============ --
+local loadedTracks = {} -- Track all loaded animations to prevent buildup
+
+local function cleanupAllTracks()
+	for i = #loadedTracks, 1, -1 do
+		local track = loadedTracks[i]
+		if track then
+			pcall(function()
+				if track.IsPlaying then
+					track:Stop()
+				end
+				track:Destroy()
+			end)
+		end
+		table.remove(loadedTracks, i)
+	end
+	State.currentEmoteTrack = nil
+end
+
 local function stopCurrentEmote()
-	if State.currentEmoteTrack and typeof(State.currentEmoteTrack) == "Instance" then
-		pcall(function() State.currentEmoteTrack:Stop() end)
+	if State.currentEmoteTrack then
+		pcall(function()
+			State.currentEmoteTrack:Stop()
+			State.currentEmoteTrack:Destroy()
+		end)
 		State.currentEmoteTrack = nil
 	end
 end
@@ -342,20 +363,45 @@ local function playEmote(emoteId)
 
 	stopCurrentEmote()
 
+	-- If too many tracks loaded, clean ALL to prevent Animator freeze
+	if #loadedTracks >= 50 then
+		cleanupAllTracks()
+
+		-- Stop all playing tracks on the animator too
+		pcall(function()
+			local animator = hum:FindFirstChild("Animator")
+			if animator then
+				for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+					track:Stop()
+					track:Destroy()
+				end
+			end
+		end)
+
+		task.wait(0.1) -- Let animator recover
+	end
+
 	local anim = Instance.new("Animation")
 	anim.AnimationId = "rbxassetid://" .. emoteId
 
 	local success, track = pcall(function()
-		return hum.Animator:LoadAnimation(anim)
+		local animator = hum:FindFirstChild("Animator")
+		if not animator then return nil end
+		return animator:LoadAnimation(anim)
 	end)
+
+	-- Clean up the Animation instance immediately
+	anim:Destroy()
 
 	if success and track then
 		track.Priority = Enum.AnimationPriority.Action
 		track.Looped = true
 		track:Play()
 		State.currentEmoteTrack = track
+		table.insert(loadedTracks, track)
 		return true
 	end
+
 	return false
 end
 
@@ -742,6 +788,10 @@ end
 -- ============ CHARACTER HANDLING ============ --
 local function onCharacterAdded(char)
 	local hum = char:WaitForChild("Humanoid")
+
+	-- Reset all track data on new character
+	cleanupAllTracks()
+	loadedTracks = {}
 	State.currentEmoteTrack = nil
 
 	-- Auto-reapply animation on respawn
@@ -755,28 +805,10 @@ local function onCharacterAdded(char)
 
 	hum.Died:Connect(function()
 		State.favEnabled = false
+		cleanupAllTracks()
 		applyPinkTheme()
 	end)
 end
-
-if player.Character then onCharacterAdded(player.Character) end
-
-player.CharacterAdded:Connect(function(char)
-	State.favEnabled = false
-	State.wheelCache = nil
-
-	onCharacterAdded(char)
-
-	task.spawn(function()
-		task.wait(0.3)
-		while not getWheel() do task.wait(0.1) end
-		task.wait(0.3)
-		if createGUI() then
-			updatePageDisplay()
-			updateDisplay()
-		end
-	end)
-end)
 
 -- ============ GUI CREATION (Pink Theme) ============ --
 function createGUI()
