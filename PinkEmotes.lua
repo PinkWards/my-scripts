@@ -1,4 +1,4 @@
---[[ 💗 PinkWards Emote + Animation System - Updated & Optimized ]]
+--[[ PinkWards Emote + Animation System - Clean Native Style, Optimized for 4000+ items ]]
 
 if _G.EmotesGUIRunning then return end
 _G.EmotesGUIRunning = true
@@ -40,21 +40,35 @@ local State = {
 	autoReapplyEnabled = true,
 	favFileName = "FavoriteEmotes.json",
 	favAnimFileName = "FavoriteAnimations.json",
+	-- Performance: caches
+	favLookupEmote = {},
+	favLookupAnim = {},
+	normalListCache = nil,
+	normalListCacheVersion = -1,
+	normalListCacheMode = "",
+	searchDebounce = nil,
+	lastSearchTerm = "",
 }
 
 getgenv().lastAnim = getgenv().lastAnim or nil
 
--- ============ COLORS (Pink Theme) ============ --
+-- ============ COLORS (Native Roblox Dark Theme) ============ --
 local COLORS = {
-	PINK_LIGHT = Color3.fromHex("#FFEBF2"),
-	PINK_MEDIUM = Color3.fromHex("#FFC8DC"),
-	PINK_WHEEL = Color3.fromHex("#FFD9E8"),
-	PINK_HEART = Color3.fromHex("#FF6B9D"),
-	PINK_ANIM = Color3.fromHex("#C8A2C8"),
-	WHITE = Color3.fromRGB(255, 255, 255),
-	PLACEHOLDER = Color3.fromRGB(255, 210, 230),
-	GREEN_ON = Color3.fromRGB(100, 220, 130),
-	RED_OFF = Color3.fromRGB(220, 100, 100),
+	BG_DARK = Color3.fromRGB(30, 30, 30),
+	BG_MEDIUM = Color3.fromRGB(45, 45, 45),
+	BG_LIGHT = Color3.fromRGB(60, 60, 60),
+	BG_HOVER = Color3.fromRGB(80, 80, 80),
+	TEXT_PRIMARY = Color3.fromRGB(255, 255, 255),
+	TEXT_SECONDARY = Color3.fromRGB(180, 180, 180),
+	TEXT_DIM = Color3.fromRGB(120, 120, 120),
+	ACCENT = Color3.fromRGB(0, 162, 255),
+	ACCENT_DIM = Color3.fromRGB(0, 120, 200),
+	FAV_ACTIVE = Color3.fromRGB(255, 170, 50),
+	FAV_DOT = Color3.fromRGB(255, 170, 50),
+	GREEN_ON = Color3.fromRGB(0, 180, 80),
+	RED_OFF = Color3.fromRGB(180, 50, 50),
+	ANIM_MODE = Color3.fromRGB(140, 100, 200),
+	BORDER = Color3.fromRGB(70, 70, 70),
 }
 
 -- ============ UI ELEMENTS ============ --
@@ -63,13 +77,14 @@ local UI = {
 	PagesLabel = nil, SepLabel = nil, PageNumBox = nil,
 	Top = nil, Search = nil, FavBtn = nil, ModeBtn = nil,
 	AutoReapplyBtn = nil,
+	FavBtnLabel = nil, ModeBtnLabel = nil, AutoBtnLabel = nil,
 }
 
 -- ============ UTILITIES ============ --
 local function notify(title, content, duration)
 	pcall(function()
 		StarterGui:SetCore("SendNotification", {
-			Title = title or "💗 PinkWards",
+			Title = title or "PinkWards",
 			Text = content or "",
 			Duration = duration or 4
 		})
@@ -134,23 +149,23 @@ local function loadAutoReapplySetting()
 	end
 end
 
-local function extractId(url)
-	return string.match(url, "Asset&id=(%d+)")
-end
-
-local function getEmoteName(id)
-	local ok, info = pcall(function()
-		return MarketplaceService:GetProductInfo(tonumber(id))
-	end)
-	return ok and info and info.Name or "Emote_" .. id
+-- ============ FAST FAVORITE LOOKUP ============ --
+local function rebuildFavLookup()
+	State.favLookupEmote = {}
+	for _, v in ipairs(State.favEmotes) do
+		State.favLookupEmote[tostring(v.id)] = true
+	end
+	State.favLookupAnim = {}
+	for _, v in ipairs(State.favAnims) do
+		State.favLookupAnim[tostring(v.id)] = true
+	end
+	-- Invalidate normal list cache
+	State.normalListCacheVersion = -1
 end
 
 local function isInFav(id)
-	local list = State.mode == "animation" and State.favAnims or State.favEmotes
-	for _, v in ipairs(list) do
-		if tostring(v.id) == tostring(id) then return true end
-	end
-	return false
+	local lookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
+	return lookup[tostring(id)] == true
 end
 
 local function getBundled(id)
@@ -164,8 +179,34 @@ local function getBundled(id)
 	return nil
 end
 
--- ============ PINK THEME ============ --
-local function applyPinkTheme()
+-- ============ NORMAL LIST CACHE (avoids rebuilding every frame) ============ --
+local function getNormalList()
+	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
+	local version = State.favSetVersion
+
+	if State.normalListCache
+		and State.normalListCacheVersion == version
+		and State.normalListCacheMode == State.mode then
+		return State.normalListCache
+	end
+
+	local result = {}
+	local lookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
+
+	for i = 1, #list do
+		if not lookup[tostring(list[i].id)] then
+			result[#result + 1] = list[i]
+		end
+	end
+
+	State.normalListCache = result
+	State.normalListCacheVersion = version
+	State.normalListCacheMode = State.mode
+	return result
+end
+
+-- ============ NATIVE THEME ============ --
+local function applyNativeTheme()
 	local wheel = getWheel()
 	if not wheel then return end
 
@@ -175,17 +216,17 @@ local function applyPinkTheme()
 			local background = back:FindFirstChild("Background")
 			if background then
 				if background:IsA("Frame") then
-					background.BackgroundColor3 = COLORS.PINK_WHEEL
+					background.BackgroundColor3 = COLORS.BG_DARK
 					background.BackgroundTransparency = 0.05
 				end
 				local overlay = background:FindFirstChild("BackgroundCircleOverlay")
 				if overlay then
-					overlay.BackgroundColor3 = COLORS.PINK_LIGHT
+					overlay.BackgroundColor3 = COLORS.BG_MEDIUM
 					overlay.BackgroundTransparency = 0.1
 				end
 				for _, child in pairs(background:GetChildren()) do
 					if child:IsA("ImageLabel") then
-						child.ImageColor3 = COLORS.PINK_LIGHT
+						child.ImageColor3 = COLORS.BG_DARK
 						child.ImageTransparency = 0.05
 					end
 				end
@@ -193,42 +234,53 @@ local function applyPinkTheme()
 		end
 	end)
 
-	if UI.LeftBtn then UI.LeftBtn.ImageColor3 = COLORS.PINK_MEDIUM end
-	if UI.RightBtn then UI.RightBtn.ImageColor3 = COLORS.PINK_MEDIUM end
-	if UI.PagesLabel then UI.PagesLabel.TextColor3 = COLORS.WHITE end
-	if UI.SepLabel then UI.SepLabel.TextColor3 = COLORS.WHITE end
-	if UI.PageNumBox then UI.PageNumBox.TextColor3 = COLORS.WHITE end
+	if UI.LeftBtn then UI.LeftBtn.ImageColor3 = COLORS.TEXT_SECONDARY end
+	if UI.RightBtn then UI.RightBtn.ImageColor3 = COLORS.TEXT_SECONDARY end
+	if UI.PagesLabel then UI.PagesLabel.TextColor3 = COLORS.TEXT_SECONDARY end
+	if UI.SepLabel then UI.SepLabel.TextColor3 = COLORS.TEXT_DIM end
+	if UI.PageNumBox then UI.PageNumBox.TextColor3 = COLORS.TEXT_PRIMARY end
+
 	if UI.Top then
-		UI.Top.BackgroundColor3 = COLORS.PINK_MEDIUM
-		UI.Top.BackgroundTransparency = 0.15
+		UI.Top.BackgroundColor3 = COLORS.BG_MEDIUM
+		UI.Top.BackgroundTransparency = 0.1
 	end
+
 	if UI.FavBtn then
-		UI.FavBtn.BackgroundColor3 = State.favEnabled and COLORS.PINK_HEART or COLORS.PINK_MEDIUM
-		UI.FavBtn.BackgroundTransparency = 0.15
+		UI.FavBtn.BackgroundColor3 = State.favEnabled and COLORS.FAV_ACTIVE or COLORS.BG_LIGHT
+		UI.FavBtn.BackgroundTransparency = 0.1
 	end
+	if UI.FavBtnLabel then
+		UI.FavBtnLabel.Text = "FAV"
+		UI.FavBtnLabel.TextColor3 = State.favEnabled and COLORS.BG_DARK or COLORS.TEXT_SECONDARY
+	end
+
 	if UI.ModeBtn then
-		UI.ModeBtn.BackgroundColor3 = State.mode == "animation" and COLORS.PINK_ANIM or COLORS.PINK_MEDIUM
-		UI.ModeBtn.BackgroundTransparency = 0.15
+		UI.ModeBtn.BackgroundColor3 = State.mode == "animation" and COLORS.ANIM_MODE or COLORS.BG_LIGHT
+		UI.ModeBtn.BackgroundTransparency = 0.1
 	end
+	if UI.ModeBtnLabel then
+		UI.ModeBtnLabel.Text = State.mode == "animation" and "ANI" or "EMO"
+		UI.ModeBtnLabel.TextColor3 = COLORS.TEXT_PRIMARY
+	end
+
 	if UI.AutoReapplyBtn then
 		UI.AutoReapplyBtn.BackgroundColor3 = State.autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
-		UI.AutoReapplyBtn.BackgroundTransparency = 0.15
+		UI.AutoReapplyBtn.BackgroundTransparency = 0.1
+	end
+	if UI.AutoBtnLabel then
+		UI.AutoBtnLabel.Text = "RE"
+		UI.AutoBtnLabel.TextColor3 = COLORS.TEXT_PRIMARY
 	end
 end
 
 -- ============ PAGINATION ============ --
 local function calcPages()
 	local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
-	local normalCount = 0
-
-	for _, v in ipairs(list) do
-		if not isInFav(v.id) then normalCount = normalCount + 1 end
-	end
+	local normalList = getNormalList()
 
 	local pages = 0
 	if #favs > 0 then pages = pages + math.ceil(#favs / State.itemsPerPage) end
-	if normalCount > 0 then pages = pages + math.ceil(normalCount / State.itemsPerPage) end
+	if #normalList > 0 then pages = pages + math.ceil(#normalList / State.itemsPerPage) end
 	return math.max(pages, 1)
 end
 
@@ -242,7 +294,7 @@ end
 -- ============ ANIMATION SYSTEM ============ --
 local function applyAnim(data)
 	if not data then
-		notify("💗 Animation", "❌ No animation data", 3)
+		notify("Animation", "No animation data", 3)
 		return
 	end
 
@@ -251,18 +303,18 @@ local function applyAnim(data)
 	local animate = char:FindFirstChild("Animate")
 
 	if not animate then
-		notify("💗 Animation", "❌ Animate not found", 3)
+		notify("Animation", "Animate not found", 3)
 		return
 	end
 
 	if not hum then
-		notify("💗 Animation", "❌ Humanoid not found", 3)
+		notify("Animation", "Humanoid not found", 3)
 		return
 	end
 
 	local bundled = data.bundledItems or getBundled(data.id)
 	if not bundled then
-		notify("💗 Animation", "❌ No assets for: " .. (data.name or data.id), 3)
+		notify("Animation", "No assets for: " .. (data.name or data.id), 3)
 		return
 	end
 
@@ -325,12 +377,12 @@ local function applyAnim(data)
 		end
 	end
 
-	notify("💗 Animation", "✅ Applied: " .. (data.name or "Animation"), 3)
+	notify("Animation", "Applied: " .. (data.name or "Animation"), 3)
 end
 
--- ============ EMOTE PLAYING (LOADING CANCEL FIX) ============ --
+-- ============ EMOTE PLAYING (OPTIMIZED WITH CANCEL) ============ --
 local loadedTracks = {}
-local currentLoadId = 0 -- Each play attempt gets a unique ID
+local currentLoadId = 0
 
 local function cleanupAllTracks()
 	for i = #loadedTracks, 1, -1 do
@@ -341,8 +393,8 @@ local function cleanupAllTracks()
 				track:Destroy()
 			end)
 		end
-		table.remove(loadedTracks, i)
 	end
+	loadedTracks = {}
 	State.currentEmoteTrack = nil
 end
 
@@ -368,7 +420,6 @@ local function forceResetAnimator()
 end
 
 local function stopCurrentEmote()
-	-- Increment load ID so any pending load gets cancelled
 	currentLoadId = currentLoadId + 1
 
 	if State.currentEmoteTrack then
@@ -379,7 +430,6 @@ local function stopCurrentEmote()
 		State.currentEmoteTrack = nil
 	end
 
-	-- Clean up non-playing stale tracks
 	for i = #loadedTracks, 1, -1 do
 		local track = loadedTracks[i]
 		local isPlaying = false
@@ -400,11 +450,9 @@ local function playEmote(emoteId)
 
 	stopCurrentEmote()
 
-	-- Give this load attempt a unique ID
 	currentLoadId = currentLoadId + 1
 	local myLoadId = currentLoadId
 
-	-- Hard cleanup if too many tracks
 	if #loadedTracks >= 25 then
 		cleanupAllTracks()
 		forceResetAnimator()
@@ -416,7 +464,6 @@ local function playEmote(emoteId)
 	local animator = hum:FindFirstChild("Animator")
 	if not animator then return false end
 
-	-- Stop all action tracks before loading new one
 	pcall(function()
 		for _, track in pairs(animator:GetPlayingAnimationTracks()) do
 			if track.Priority == Enum.AnimationPriority.Action then
@@ -428,21 +475,15 @@ local function playEmote(emoteId)
 	local anim = Instance.new("Animation")
 	anim.AnimationId = "rbxassetid://" .. emoteId
 
-	-- Load animation (this is what hangs while downloading)
 	local ok, track = pcall(function()
 		return animator:LoadAnimation(anim)
 	end)
 
 	pcall(function() anim:Destroy() end)
 
-	-- CHECK: Did the user click something else while we were loading?
-	-- If currentLoadId changed, this load is stale — kill it
 	if myLoadId ~= currentLoadId then
 		if ok and track then
-			pcall(function()
-				track:Stop(0)
-				track:Destroy()
-			end)
+			pcall(function() track:Stop(0); track:Destroy() end)
 		end
 		return false
 	end
@@ -452,41 +493,28 @@ local function playEmote(emoteId)
 		return false
 	end
 
-	-- Verify animation has content
 	pcall(function()
 		track.Priority = Enum.AnimationPriority.Action
 		track.Looped = true
 	end)
 
-	-- CHECK AGAIN right before playing
 	if myLoadId ~= currentLoadId then
-		pcall(function()
-			track:Stop(0)
-			track:Destroy()
-		end)
+		pcall(function() track:Stop(0); track:Destroy() end)
 		return false
 	end
 
-	-- Play it
 	local playOk = pcall(function()
 		track:Play(0.1)
 	end)
 
 	if not playOk then
-		pcall(function()
-			track:Stop(0)
-			track:Destroy()
-		end)
+		pcall(function() track:Stop(0); track:Destroy() end)
 		forceResetAnimator()
 		return false
 	end
 
-	-- Final check after play started
 	if myLoadId ~= currentLoadId then
-		pcall(function()
-			track:Stop(0)
-			track:Destroy()
-		end)
+		pcall(function() track:Stop(0); track:Destroy() end)
 		return false
 	end
 
@@ -502,36 +530,54 @@ local function playEmote(emoteId)
 	return true
 end
 
--- ============ FAVORITE ICON ============ --
+-- ============ FAVORITE DOT INDICATOR ============ --
 local function updateFavIcon(img, id, isFav)
-	local icon = img:FindFirstChild("FavHeart")
+	local dot = img:FindFirstChild("FavDot")
 	if isFav then
-		if not icon then
-			icon = Instance.new("TextLabel")
-			icon.Name = "FavHeart"
-			icon.Size = UDim2.new(0.22, 0, 0.22, 0)
-			icon.Position = UDim2.new(0.76, 0, 0.02, 0)
-			icon.BackgroundTransparency = 1
-			icon.ZIndex = img.ZIndex + 10
-			icon.Text = "💗"
-			icon.TextScaled = true
-			icon.Font = Enum.Font.SourceSans
-			icon.Parent = img
+		if not dot then
+			dot = Instance.new("Frame")
+			dot.Name = "FavDot"
+			dot.Size = UDim2.new(0, 8, 0, 8)
+			dot.Position = UDim2.new(0.85, 0, 0.05, 0)
+			dot.BackgroundColor3 = COLORS.FAV_DOT
+			dot.BackgroundTransparency = 0
+			dot.BorderSizePixel = 0
+			dot.ZIndex = img.ZIndex + 10
+			dot.Parent = img
+
+			local dotCorner = Instance.new("UICorner")
+			dotCorner.CornerRadius = UDim.new(1, 0)
+			dotCorner.Parent = dot
 		end
-		icon.Visible = true
-	elseif icon then
-		icon.Visible = false
+		dot.Visible = true
+	elseif dot then
+		dot.Visible = false
 	end
 end
 
--- ============ DISPLAY UPDATE ============ --
-local function updateDisplay()
+-- ============ DISPLAY UPDATE (OPTIMIZED) ============ --
+local lastDisplayPage = -1
+local lastDisplayMode = ""
+local lastDisplayFavVer = -1
+
+local function updateDisplay(force)
+	-- Skip if nothing changed (unless forced)
+	if not force
+		and lastDisplayPage == State.currentPage
+		and lastDisplayMode == State.mode
+		and lastDisplayFavVer == State.favSetVersion then
+		return
+	end
+
+	lastDisplayPage = State.currentPage
+	lastDisplayMode = State.mode
+	lastDisplayFavVer = State.favSetVersion
+
 	local char, hum = getChar()
 	if not char or not hum or not hum.HumanoidDescription then return end
 
 	local desc = hum.HumanoidDescription
 	local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
 	local items = {}
 
 	local favPages = #favs > 0 and math.ceil(#favs / State.itemsPerPage) or 0
@@ -546,19 +592,16 @@ local function updateDisplay()
 				if State.mode == "animation" then
 					item.bundledItems = favs[i].bundledItems or getBundled(favs[i].id)
 				end
-				table.insert(items, item)
+				items[#items + 1] = item
 			end
 		end
 	else
-		local normalList = {}
-		for _, v in ipairs(list) do
-			if not isInFav(v.id) then table.insert(normalList, v) end
-		end
+		local normalList = getNormalList()
 		local adjPage = State.currentPage - favPages
 		local startIdx = (adjPage - 1) * State.itemsPerPage + 1
 		local endIdx = math.min(startIdx + State.itemsPerPage - 1, #normalList)
 		for i = startIdx, endIdx do
-			if normalList[i] then table.insert(items, normalList[i]) end
+			if normalList[i] then items[#items + 1] = normalList[i] end
 		end
 	end
 
@@ -566,7 +609,7 @@ local function updateDisplay()
 	local equipped = {}
 	for _, item in ipairs(items) do
 		emoteTable[item.name] = {item.id}
-		table.insert(equipped, item.name)
+		equipped[#equipped + 1] = item.name
 	end
 
 	desc:SetEmotes(emoteTable)
@@ -604,6 +647,8 @@ local function updateDisplay()
 							child.Image = ""
 							local idVal = child:FindFirstChild("AnimID")
 							if idVal then idVal:Destroy() end
+							local dot = child:FindFirstChild("FavDot")
+							if dot then dot.Visible = false end
 						end
 					end
 				end
@@ -618,6 +663,8 @@ local function updateDisplay()
 							idx = idx + 1
 						else
 							child.Image = ""
+							local dot = child:FindFirstChild("FavDot")
+							if dot then dot.Visible = false end
 						end
 					end
 				end
@@ -640,22 +687,23 @@ local function toggleFav(id, name, bundled)
 
 	if found then
 		table.remove(list, idx)
-		notify("💗 Favorites", "Removed: " .. name, 3)
+		notify("Favorites", "Removed: " .. name, 3)
 	else
-		local entry = {id = id, name = name .. " 💗"}
+		local entry = {id = id, name = name}
 		if State.mode == "animation" then
 			entry.bundledItems = bundled or getBundled(id)
 		end
 		table.insert(list, entry)
-		notify("💗 Favorites", "Added: " .. name, 3)
+		notify("Favorites", "Added: " .. name, 3)
 	end
 
 	local fileName = State.mode == "animation" and State.favAnimFileName or State.favFileName
 	saveFile(fileName, list)
+	rebuildFavLookup()
 	State.favSetVersion = State.favSetVersion + 1
 	State.totalPages = calcPages()
 	updatePageDisplay()
-	updateDisplay()
+	updateDisplay(true)
 end
 
 -- ============ WHEEL CLICK HANDLER ============ --
@@ -664,7 +712,6 @@ local function handleSector(index)
 	State.lastAction = tick()
 
 	local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
 	local favPages = #favs > 0 and math.ceil(#favs / State.itemsPerPage) or 0
 
 	local item
@@ -675,10 +722,7 @@ local function handleSector(index)
 			item.bundledItems = getBundled(item.id)
 		end
 	else
-		local normalList = {}
-		for _, v in ipairs(list) do
-			if not isInFav(v.id) then table.insert(normalList, v) end
-		end
+		local normalList = getNormalList()
 		local adjPage = State.currentPage - favPages
 		local startIdx = (adjPage - 1) * State.itemsPerPage
 		item = normalList[startIdx + index]
@@ -691,8 +735,6 @@ local function handleSector(index)
 	elseif State.mode == "animation" then
 		applyAnim(item)
 	else
-		-- IMPORTANT: Run in separate thread so LoadAnimation doesn't block input
-		-- This lets you click another emote while one is still loading
 		task.spawn(function()
 			playEmote(item.id)
 		end)
@@ -737,7 +779,7 @@ RunService.Heartbeat:Connect(function()
 	end)
 end)
 
--- ============ DATA FETCHING ============ --
+-- ============ DATA FETCHING (CHUNKED FOR PERFORMANCE) ============ --
 local function fetchEmotes()
 	if State.isLoading then return end
 	State.isLoading = true
@@ -747,15 +789,18 @@ local function fetchEmotes()
 	end)
 
 	if ok and result then
-		State.emotesData = {}
-		local list = result.data or result
-		for _, item in ipairs(list) do
+		local rawList = result.data or result
+		local data = {}
+		-- Pre-allocate table size hint by building in chunks
+		for i = 1, #rawList do
+			local item = rawList[i]
 			local id = tonumber(item.id)
 			if id and id > 0 then
-				table.insert(State.emotesData, {id = id, name = item.name or ("Emote_" .. id)})
+				data[#data + 1] = {id = id, name = item.name or ("Emote_" .. id)}
 			end
 		end
-		State.filteredEmotes = State.emotesData
+		State.emotesData = data
+		State.filteredEmotes = data
 	end
 
 	State.isLoading = false
@@ -770,27 +815,33 @@ local function fetchAnims()
 	end)
 
 	if ok and result then
-		State.animsData = {}
-		local list = result.data or result
-		for _, item in ipairs(list) do
+		local rawList = result.data or result
+		local data = {}
+		for i = 1, #rawList do
+			local item = rawList[i]
 			local id = tonumber(item.id)
 			if id and id > 0 then
-				table.insert(State.animsData, {
+				data[#data + 1] = {
 					id = id,
 					name = item.name or ("Anim_" .. id),
 					bundledItems = item.bundledItems
-				})
+				}
 			end
 		end
-		State.filteredAnims = State.animsData
+		State.animsData = data
+		State.filteredAnims = data
 	end
 
 	State.isLoading = false
 end
 
--- ============ SEARCH ============ --
+-- ============ SEARCH (DEBOUNCED + OPTIMIZED) ============ --
 local function searchItems(term)
 	term = term:lower()
+
+	if term == State.lastSearchTerm then return end
+	State.lastSearchTerm = term
+
 	local source = State.mode == "animation" and State.animsData or State.emotesData
 
 	if term == "" then
@@ -803,9 +854,20 @@ local function searchItems(term)
 		local result = {}
 		local isIdSearch = term:match("^%d+$")
 
-		for _, v in ipairs(source) do
-			if (isIdSearch and tostring(v.id) == term) or (not isIdSearch and v.name:lower():find(term)) then
-				table.insert(result, v)
+		-- For large datasets, limit scan with early termination for exact ID
+		if isIdSearch then
+			for i = 1, #source do
+				if tostring(source[i].id) == term then
+					result[#result + 1] = source[i]
+					break -- Exact ID match, only one result
+				end
+			end
+		else
+			-- Name search - use plain find for speed (no patterns)
+			for i = 1, #source do
+				if source[i].name:lower():find(term, 1, true) then
+					result[#result + 1] = source[i]
+				end
 			end
 		end
 
@@ -816,29 +878,32 @@ local function searchItems(term)
 		end
 	end
 
+	-- Invalidate normal list cache
+	State.normalListCacheVersion = -1
+
 	State.currentPage = 1
 	State.totalPages = calcPages()
 	updatePageDisplay()
-	updateDisplay()
+	updateDisplay(true)
 end
 
 -- ============ NAVIGATION ============ --
 local function prevPage()
 	State.currentPage = State.currentPage <= 1 and State.totalPages or State.currentPage - 1
 	updatePageDisplay()
-	updateDisplay()
+	updateDisplay(true)
 end
 
 local function nextPage()
 	State.currentPage = State.currentPage >= State.totalPages and 1 or State.currentPage + 1
 	updatePageDisplay()
-	updateDisplay()
+	updateDisplay(true)
 end
 
 local function goToPage(num)
 	State.currentPage = math.clamp(num, 1, State.totalPages)
 	updatePageDisplay()
-	updateDisplay()
+	updateDisplay(true)
 end
 
 -- ============ TOGGLES ============ --
@@ -850,6 +915,7 @@ local function toggleMode()
 	end
 
 	if UI.Search then UI.Search.Text = "" end
+	State.lastSearchTerm = ""
 
 	if State.mode == "animation" then
 		State.filteredAnims = State.animsData
@@ -857,31 +923,34 @@ local function toggleMode()
 		State.filteredEmotes = State.emotesData
 	end
 
+	-- Invalidate cache
+	State.normalListCacheVersion = -1
+
 	State.currentPage = 1
 	State.totalPages = calcPages()
 	updatePageDisplay()
-	updateDisplay()
-	applyPinkTheme()
+	updateDisplay(true)
+	applyNativeTheme()
 
-	notify("💗 Mode", State.mode == "animation" and "🎬 Animation Mode" or "💃 Emote Mode", 3)
+	notify("Mode", State.mode == "animation" and "Animation Mode" or "Emote Mode", 3)
 end
 
 local function toggleFavMode()
 	State.favEnabled = not State.favEnabled
-	applyPinkTheme()
-	notify("💗 Favorites", State.favEnabled and "Click to add hearts!" or "Favorite mode OFF", 3)
-	updateDisplay()
+	applyNativeTheme()
+	notify("Favorites", State.favEnabled and "Click items to favorite" or "Favorite mode OFF", 3)
+	updateDisplay(true)
 end
 
 local function toggleAutoReapply()
 	State.autoReapplyEnabled = not State.autoReapplyEnabled
 	saveAutoReapplySetting()
-	applyPinkTheme()
+	applyNativeTheme()
 
 	if State.autoReapplyEnabled then
-		notify("💗 Auto-Reapply", "🔄 ON - Animations restore on respawn", 3)
+		notify("Auto-Reapply", "ON - Animations restore on respawn", 3)
 	else
-		notify("💗 Auto-Reapply", "⏹️ OFF - Animations won't restore on respawn", 3)
+		notify("Auto-Reapply", "OFF - Animations won't restore on respawn", 3)
 	end
 end
 
@@ -889,8 +958,7 @@ end
 local function onCharacterAdded(char)
 	local hum = char:WaitForChild("Humanoid")
 
-	-- Full reset
-	currentLoadId = currentLoadId + 1 -- Cancel any pending loads
+	currentLoadId = currentLoadId + 1
 	cleanupAllTracks()
 	loadedTracks = {}
 	State.currentEmoteTrack = nil
@@ -898,26 +966,59 @@ local function onCharacterAdded(char)
 	if State.autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
 		task.wait(0.5)
 		applyAnim(getgenv().lastAnim)
-		notify("💗 Auto-Reload", "🔄 Animation restored!", 3)
-	elseif not State.autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
-		notify("💗 Auto-Reload", "⏹️ Skipped (Auto-Reapply OFF)", 3)
+		notify("Auto-Reload", "Animation restored", 3)
 	end
 
 	hum.Died:Connect(function()
 		State.favEnabled = false
-		currentLoadId = currentLoadId + 1 -- Cancel any pending loads
+		currentLoadId = currentLoadId + 1
 		cleanupAllTracks()
 		loadedTracks = {}
-		applyPinkTheme()
+		applyNativeTheme()
 	end)
 end
 
--- ============ GUI CREATION (Pink Theme) ============ --
+-- ============ GUI CREATION (Native Roblox Style) ============ --
+local function makeTextButton(name, parent, pos, size, text, bgColor)
+	local btn = Instance.new("ImageButton")
+	btn.Name = name
+	btn.Parent = parent
+	btn.BackgroundColor3 = bgColor or COLORS.BG_LIGHT
+	btn.BackgroundTransparency = 0.1
+	btn.BorderSizePixel = 0
+	btn.Position = pos
+	btn.Size = size
+	btn.Image = ""
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = btn
+
+	local label = Instance.new("TextLabel")
+	label.Name = "Label"
+	label.Parent = btn
+	label.BackgroundTransparency = 1
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.Font = Enum.Font.GothamBold
+	label.Text = text
+	label.TextColor3 = COLORS.TEXT_PRIMARY
+	label.TextScaled = true
+	label.ZIndex = btn.ZIndex + 1
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingLeft = UDim.new(0, 2)
+	padding.PaddingRight = UDim.new(0, 2)
+	padding.PaddingTop = UDim.new(0, 2)
+	padding.PaddingBottom = UDim.new(0, 2)
+	padding.Parent = label
+
+	return btn, label
+end
+
 function createGUI()
 	local wheel = getWheel()
 	if not wheel then return false end
 
-	-- Clean up old UI
 	for _, name in ipairs({"Under", "Top", "Favorite", "ModeToggle", "AutoReapplyToggle"}) do
 		local existing = wheel:FindFirstChild(name)
 		if existing then existing:Destroy() end
@@ -945,7 +1046,7 @@ function createGUI()
 	UI.LeftBtn.BackgroundTransparency = 1
 	UI.LeftBtn.Size = UDim2.new(0.17, 0, 0.94, 0)
 	UI.LeftBtn.Image = "rbxassetid://93111945058621"
-	UI.LeftBtn.ImageColor3 = COLORS.PINK_MEDIUM
+	UI.LeftBtn.ImageColor3 = COLORS.TEXT_SECONDARY
 
 	UI.PageNumBox = Instance.new("TextBox")
 	UI.PageNumBox.Name = "PageNum"
@@ -955,7 +1056,7 @@ function createGUI()
 	UI.PageNumBox.Size = UDim2.new(0.16, 0, 0.81, 0)
 	UI.PageNumBox.Font = Enum.Font.GothamBold
 	UI.PageNumBox.Text = "1"
-	UI.PageNumBox.TextColor3 = COLORS.WHITE
+	UI.PageNumBox.TextColor3 = COLORS.TEXT_PRIMARY
 	UI.PageNumBox.TextScaled = true
 
 	UI.SepLabel = Instance.new("TextLabel")
@@ -965,8 +1066,8 @@ function createGUI()
 	UI.SepLabel.BackgroundTransparency = 1
 	UI.SepLabel.Size = UDim2.new(0.34, 0, 0.94, 0)
 	UI.SepLabel.Font = Enum.Font.GothamBold
-	UI.SepLabel.Text = " --- "
-	UI.SepLabel.TextColor3 = COLORS.WHITE
+	UI.SepLabel.Text = "/"
+	UI.SepLabel.TextColor3 = COLORS.TEXT_DIM
 	UI.SepLabel.TextScaled = true
 
 	UI.PagesLabel = Instance.new("TextLabel")
@@ -977,7 +1078,7 @@ function createGUI()
 	UI.PagesLabel.Size = UDim2.new(0.16, 0, 0.81, 0)
 	UI.PagesLabel.Font = Enum.Font.GothamBold
 	UI.PagesLabel.Text = "1"
-	UI.PagesLabel.TextColor3 = COLORS.WHITE
+	UI.PagesLabel.TextColor3 = COLORS.TEXT_SECONDARY
 	UI.PagesLabel.TextScaled = true
 
 	UI.RightBtn = Instance.new("ImageButton")
@@ -987,21 +1088,26 @@ function createGUI()
 	UI.RightBtn.BackgroundTransparency = 1
 	UI.RightBtn.Size = UDim2.new(0.17, 0, 0.94, 0)
 	UI.RightBtn.Image = "rbxassetid://107938916240738"
-	UI.RightBtn.ImageColor3 = COLORS.PINK_MEDIUM
+	UI.RightBtn.ImageColor3 = COLORS.TEXT_SECONDARY
 
 	-- Top search bar
 	UI.Top = Instance.new("Frame")
 	UI.Top.Name = "Top"
 	UI.Top.Parent = wheel
-	UI.Top.BackgroundColor3 = COLORS.PINK_MEDIUM
-	UI.Top.BackgroundTransparency = 0.15
+	UI.Top.BackgroundColor3 = COLORS.BG_MEDIUM
+	UI.Top.BackgroundTransparency = 0.1
 	UI.Top.BorderSizePixel = 0
 	UI.Top.Position = UDim2.new(0.13, 0, -0.11, 0)
 	UI.Top.Size = UDim2.new(0.74, 0, 0.095, 0)
 
 	local topCorner = Instance.new("UICorner")
-	topCorner.CornerRadius = UDim.new(0, 20)
+	topCorner.CornerRadius = UDim.new(0, 8)
 	topCorner.Parent = UI.Top
+
+	local topStroke = Instance.new("UIStroke")
+	topStroke.Color = COLORS.BORDER
+	topStroke.Thickness = 1
+	topStroke.Parent = UI.Top
 
 	local topLayout = Instance.new("UIListLayout")
 	topLayout.Parent = UI.Top
@@ -1014,84 +1120,39 @@ function createGUI()
 	UI.Search.Parent = UI.Top
 	UI.Search.BackgroundTransparency = 1
 	UI.Search.Size = UDim2.new(0.87, 0, 0.82, 0)
-	UI.Search.Font = Enum.Font.GothamBold
-	UI.Search.PlaceholderText = "Search/ID"
-	UI.Search.PlaceholderColor3 = COLORS.PLACEHOLDER
+	UI.Search.Font = Enum.Font.Gotham
+	UI.Search.PlaceholderText = "Search by name or ID..."
+	UI.Search.PlaceholderColor3 = COLORS.TEXT_DIM
 	UI.Search.Text = ""
-	UI.Search.TextColor3 = COLORS.WHITE
+	UI.Search.TextColor3 = COLORS.TEXT_PRIMARY
 	UI.Search.TextScaled = true
 
-	-- Favorite button (left side)
-	UI.FavBtn = Instance.new("ImageButton")
-	UI.FavBtn.Name = "Favorite"
-	UI.FavBtn.Parent = wheel
-	UI.FavBtn.BackgroundColor3 = COLORS.PINK_MEDIUM
-	UI.FavBtn.BackgroundTransparency = 0.15
-	UI.FavBtn.BorderSizePixel = 0
-	UI.FavBtn.Position = UDim2.new(0.019, 0, -0.108, 0)
-	UI.FavBtn.Size = UDim2.new(0.0875, 0, 0.0875, 0)
-	UI.FavBtn.Image = ""
+	-- Favorite button
+	UI.FavBtn, UI.FavBtnLabel = makeTextButton(
+		"Favorite", wheel,
+		UDim2.new(0.019, 0, -0.108, 0),
+		UDim2.new(0.0875, 0, 0.0875, 0),
+		"FAV",
+		COLORS.BG_LIGHT
+	)
 
-	local favCorner = Instance.new("UICorner")
-	favCorner.CornerRadius = UDim.new(0, 10)
-	favCorner.Parent = UI.FavBtn
+	-- Mode toggle button
+	UI.ModeBtn, UI.ModeBtnLabel = makeTextButton(
+		"ModeToggle", wheel,
+		UDim2.new(0.889, 0, -0.108, 0),
+		UDim2.new(0.0875, 0, 0.0875, 0),
+		"EMO",
+		COLORS.BG_LIGHT
+	)
 
-	local favText = Instance.new("TextLabel")
-	favText.Parent = UI.FavBtn
-	favText.BackgroundTransparency = 1
-	favText.Size = UDim2.new(1, 0, 1, 0)
-	favText.Font = Enum.Font.SourceSans
-	favText.Text = "💗"
-	favText.TextScaled = true
-	favText.ZIndex = UI.FavBtn.ZIndex + 1
-
-	-- Mode toggle button (right side)
-	UI.ModeBtn = Instance.new("ImageButton")
-	UI.ModeBtn.Name = "ModeToggle"
-	UI.ModeBtn.Parent = wheel
-	UI.ModeBtn.BackgroundColor3 = COLORS.PINK_MEDIUM
-	UI.ModeBtn.BackgroundTransparency = 0.15
-	UI.ModeBtn.BorderSizePixel = 0
-	UI.ModeBtn.Position = UDim2.new(0.889, 0, -0.108, 0)
-	UI.ModeBtn.Size = UDim2.new(0.0875, 0, 0.0875, 0)
-	UI.ModeBtn.Image = ""
-
-	local modeCorner = Instance.new("UICorner")
-	modeCorner.CornerRadius = UDim.new(0, 10)
-	modeCorner.Parent = UI.ModeBtn
-
-	local modeText = Instance.new("TextLabel")
-	modeText.Parent = UI.ModeBtn
-	modeText.BackgroundTransparency = 1
-	modeText.Size = UDim2.new(1, 0, 1, 0)
-	modeText.Font = Enum.Font.SourceSans
-	modeText.Text = "🎬"
-	modeText.TextScaled = true
-	modeText.ZIndex = UI.ModeBtn.ZIndex + 1
-
-	-- Auto-Reapply button (above mode button)
-	UI.AutoReapplyBtn = Instance.new("ImageButton")
-	UI.AutoReapplyBtn.Name = "AutoReapplyToggle"
-	UI.AutoReapplyBtn.Parent = wheel
-	UI.AutoReapplyBtn.BackgroundColor3 = State.autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
-	UI.AutoReapplyBtn.BackgroundTransparency = 0.15
-	UI.AutoReapplyBtn.BorderSizePixel = 0
-	UI.AutoReapplyBtn.Position = UDim2.new(0.889, 0, -0.215, 0)
-	UI.AutoReapplyBtn.Size = UDim2.new(0.0875, 0, 0.0875, 0)
-	UI.AutoReapplyBtn.Image = ""
-
-	local autoCorner = Instance.new("UICorner")
-	autoCorner.CornerRadius = UDim.new(0, 10)
-	autoCorner.Parent = UI.AutoReapplyBtn
-
-	local autoText = Instance.new("TextLabel")
-	autoText.Parent = UI.AutoReapplyBtn
-	autoText.BackgroundTransparency = 1
-	autoText.Size = UDim2.new(1, 0, 1, 0)
-	autoText.Font = Enum.Font.SourceSans
-	autoText.Text = "🔄"
-	autoText.TextScaled = true
-	autoText.ZIndex = UI.AutoReapplyBtn.ZIndex + 1
+	-- Auto-Reapply button
+	UI.AutoReapplyBtn, UI.AutoBtnLabel = makeTextButton(
+		"AutoReapplyToggle", wheel,
+		UDim2.new(0.889, 0, -0.215, 0),
+		UDim2.new(0.0875, 0, 0.0875, 0),
+		"RE",
+		State.autoReapplyEnabled and COLORS.GREEN_ON or COLORS.RED_OFF
+	)
 
 	-- Connect events
 	UI.LeftBtn.MouseButton1Click:Connect(prevPage)
@@ -1102,15 +1163,23 @@ function createGUI()
 		if num then goToPage(num) else UI.PageNumBox.Text = tostring(State.currentPage) end
 	end)
 
+	-- Debounced search
+	local searchDebounceThread = nil
 	UI.Search:GetPropertyChangedSignal("Text"):Connect(function()
-		searchItems(UI.Search.Text)
+		if searchDebounceThread then
+			pcall(function() task.cancel(searchDebounceThread) end)
+		end
+		searchDebounceThread = task.delay(0.3, function()
+			searchItems(UI.Search.Text)
+			searchDebounceThread = nil
+		end)
 	end)
 
 	UI.FavBtn.MouseButton1Click:Connect(toggleFavMode)
 	UI.ModeBtn.MouseButton1Click:Connect(toggleMode)
 	UI.AutoReapplyBtn.MouseButton1Click:Connect(toggleAutoReapply)
 
-	applyPinkTheme()
+	applyNativeTheme()
 	State.guiCreated = true
 
 	return true
@@ -1120,16 +1189,16 @@ end
 local frameCount = 0
 RunService.RenderStepped:Connect(function()
 	frameCount = frameCount + 1
-	if frameCount >= 30 then
+	if frameCount >= 60 then -- Check every ~1 second instead of every ~0.5s
 		frameCount = 0
 		if not State.guiCreated then
 			local wheel = getWheel()
 			if wheel and createGUI() then
 				updatePageDisplay()
-				updateDisplay()
+				updateDisplay(true)
 			end
 		else
-			applyPinkTheme()
+			applyNativeTheme()
 		end
 	end
 end)
@@ -1141,20 +1210,27 @@ task.spawn(function()
 	if createGUI() then
 		State.favEmotes = loadFile(State.favFileName)
 		State.favAnims = loadFile(State.favAnimFileName)
+		rebuildFavLookup()
 		loadLastAnim()
 		loadAutoReapplySetting()
-		applyPinkTheme()
+		applyNativeTheme()
 
 		fetchEmotes()
 		fetchAnims()
 
 		State.totalPages = calcPages()
 		updatePageDisplay()
-		updateDisplay()
+		updateDisplay(true)
 
-		notify("💗 PinkWards", "Loaded! Press '.' to open", 5)
+		notify("PinkWards", "Loaded! Press '.' to open", 5)
 	end
 end)
+
+-- Character added handler
+player.CharacterAdded:Connect(onCharacterAdded)
+if player.Character then
+	task.spawn(function() onCharacterAdded(player.Character) end)
+end
 
 -- Keep emotes menu enabled
 StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
@@ -1175,7 +1251,7 @@ task.spawn(function()
 				end
 			end
 		end)
-		task.wait(1)
+		task.wait(2) -- Check less frequently
 	end
 end)
 
@@ -1196,32 +1272,38 @@ if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
 		end
 
 		local btn = Instance.new("TextButton")
-		btn.Size = UDim2.new(0, 55, 0, 55)
-		btn.Position = UDim2.new(0, 10, 0.5, -27)
-		btn.BackgroundColor3 = COLORS.PINK_MEDIUM
-		btn.BackgroundTransparency = 0.15
-		btn.Text = "💗"
-		btn.TextSize = 28
-		btn.TextColor3 = COLORS.WHITE
+		btn.Size = UDim2.new(0, 50, 0, 50)
+		btn.Position = UDim2.new(0, 10, 0.5, -25)
+		btn.BackgroundColor3 = COLORS.BG_MEDIUM
+		btn.BackgroundTransparency = 0.1
+		btn.Text = "E"
+		btn.Font = Enum.Font.GothamBold
+		btn.TextSize = 22
+		btn.TextColor3 = COLORS.TEXT_PRIMARY
 		btn.Parent = gui
 
 		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 12)
+		corner.CornerRadius = UDim.new(0, 8)
 		corner.Parent = btn
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = COLORS.BORDER
+		stroke.Thickness = 1
+		stroke.Parent = btn
 
 		btn.MouseButton1Click:Connect(function()
 			pcall(function() GuiService:SetEmotesMenuOpen(true) end)
 		end)
 	end)
 
-	notify("💗 Mobile", "Tap the heart to open!", 10)
+	notify("Mobile", "Tap 'E' button to open emotes", 10)
 end
 
 print("=========================================")
-print("   💗 PinkWards Emote + Animation System")
+print("   PinkWards Emote + Animation System")
 print("   Press '.' to open")
-print("   🎬 = Toggle Animation Mode")
-print("   💗 = Favorite Mode")
-print("   🔄 = Toggle Auto-Reapply on Death")
-print("   ✅ Settings save between sessions!")
+print("   [EMO/ANI] = Toggle Mode")
+print("   [FAV] = Favorite Mode")
+print("   [RE] = Toggle Auto-Reapply")
+print("   Settings save between sessions")
 print("=========================================")
