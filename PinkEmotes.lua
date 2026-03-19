@@ -328,17 +328,16 @@ local function applyAnim(data)
 	notify("💗 Animation", "✅ Applied: " .. (data.name or "Animation"), 3)
 end
 
--- ============ EMOTE PLAYING (FREEZE FIX) ============ --
-local loadedTracks = {} -- Track all loaded animations to prevent buildup
+-- ============ EMOTE PLAYING (LOADING CANCEL FIX) ============ --
+local loadedTracks = {}
+local currentLoadId = 0 -- Each play attempt gets a unique ID
 
 local function cleanupAllTracks()
 	for i = #loadedTracks, 1, -1 do
 		local track = loadedTracks[i]
 		if track then
 			pcall(function()
-				if track.IsPlaying then
-					track:Stop()
-				end
+				track:Stop(0)
 				track:Destroy()
 			end)
 		end
@@ -347,62 +346,160 @@ local function cleanupAllTracks()
 	State.currentEmoteTrack = nil
 end
 
+local function forceResetAnimator()
+	local _, hum = getChar()
+	if not hum then return end
+
+	pcall(function()
+		local animator = hum:FindFirstChild("Animator")
+		if animator then
+			for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+				track:Stop(0)
+				track:Destroy()
+			end
+		end
+	end)
+
+	pcall(function()
+		hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+		task.wait(0.05)
+		hum:ChangeState(Enum.HumanoidStateType.Running)
+	end)
+end
+
 local function stopCurrentEmote()
+	-- Increment load ID so any pending load gets cancelled
+	currentLoadId = currentLoadId + 1
+
 	if State.currentEmoteTrack then
 		pcall(function()
-			State.currentEmoteTrack:Stop()
+			State.currentEmoteTrack:Stop(0)
 			State.currentEmoteTrack:Destroy()
 		end)
 		State.currentEmoteTrack = nil
 	end
+
+	-- Clean up non-playing stale tracks
+	for i = #loadedTracks, 1, -1 do
+		local track = loadedTracks[i]
+		local isPlaying = false
+		pcall(function() isPlaying = track.IsPlaying end)
+		if not isPlaying then
+			pcall(function()
+				track:Stop(0)
+				track:Destroy()
+			end)
+			table.remove(loadedTracks, i)
+		end
+	end
 end
 
 local function playEmote(emoteId)
-	local _, hum = getChar()
+	local char, hum = getChar()
 	if not hum then return false end
 
 	stopCurrentEmote()
 
-	-- If too many tracks loaded, clean ALL to prevent Animator freeze
-	if #loadedTracks >= 50 then
+	-- Give this load attempt a unique ID
+	currentLoadId = currentLoadId + 1
+	local myLoadId = currentLoadId
+
+	-- Hard cleanup if too many tracks
+	if #loadedTracks >= 25 then
 		cleanupAllTracks()
-
-		-- Stop all playing tracks on the animator too
-		pcall(function()
-			local animator = hum:FindFirstChild("Animator")
-			if animator then
-				for _, track in pairs(animator:GetPlayingAnimationTracks()) do
-					track:Stop()
-					track:Destroy()
-				end
-			end
-		end)
-
-		task.wait(0.1) -- Let animator recover
+		forceResetAnimator()
+		task.wait(0.1)
+		char, hum = getChar()
+		if not hum then return false end
 	end
+
+	local animator = hum:FindFirstChild("Animator")
+	if not animator then return false end
+
+	-- Stop all action tracks before loading new one
+	pcall(function()
+		for _, track in pairs(animator:GetPlayingAnimationTracks()) do
+			if track.Priority == Enum.AnimationPriority.Action then
+				track:Stop(0)
+			end
+		end
+	end)
 
 	local anim = Instance.new("Animation")
 	anim.AnimationId = "rbxassetid://" .. emoteId
 
-	local success, track = pcall(function()
-		local animator = hum:FindFirstChild("Animator")
-		if not animator then return nil end
+	-- Load animation (this is what hangs while downloading)
+	local ok, track = pcall(function()
 		return animator:LoadAnimation(anim)
 	end)
 
-	-- Clean up the Animation instance immediately
-	anim:Destroy()
+	pcall(function() anim:Destroy() end)
 
-	if success and track then
-		track.Priority = Enum.AnimationPriority.Action
-		track.Looped = true
-		track:Play()
-		State.currentEmoteTrack = track
-		table.insert(loadedTracks, track)
-		return true
+	-- CHECK: Did the user click something else while we were loading?
+	-- If currentLoadId changed, this load is stale — kill it
+	if myLoadId ~= currentLoadId then
+		if ok and track then
+			pcall(function()
+				track:Stop(0)
+				track:Destroy()
+			end)
+		end
+		return false
 	end
 
-	return false
+	if not ok or not track then
+		forceResetAnimator()
+		return false
+	end
+
+	-- Verify animation has content
+	pcall(function()
+		track.Priority = Enum.AnimationPriority.Action
+		track.Looped = true
+	end)
+
+	-- CHECK AGAIN right before playing
+	if myLoadId ~= currentLoadId then
+		pcall(function()
+			track:Stop(0)
+			track:Destroy()
+		end)
+		return false
+	end
+
+	-- Play it
+	local playOk = pcall(function()
+		track:Play(0.1)
+	end)
+
+	if not playOk then
+		pcall(function()
+			track:Stop(0)
+			track:Destroy()
+		end)
+		forceResetAnimator()
+		return false
+	end
+
+	-- Final check after play started
+	if myLoadId ~= currentLoadId then
+		pcall(function()
+			track:Stop(0)
+			track:Destroy()
+		end)
+		return false
+	end
+
+	State.currentEmoteTrack = track
+	table.insert(loadedTracks, track)
+
+	track.Stopped:Connect(function()
+		if State.currentEmoteTrack == track then
+			State.currentEmoteTrack = nil
+		end
+	end)
+
+	return true
 end
 
 -- ============ FAVORITE ICON ============ --
@@ -563,9 +660,8 @@ end
 
 -- ============ WHEEL CLICK HANDLER ============ --
 local function handleSector(index)
-	if tick() - State.lastAction < 0.25 then return end
+	if tick() - State.lastAction < 0.35 then return end
 	State.lastAction = tick()
-	task.wait(0.05)
 
 	local favs = State.mode == "animation" and State.favAnims or State.favEmotes
 	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
@@ -595,7 +691,11 @@ local function handleSector(index)
 	elseif State.mode == "animation" then
 		applyAnim(item)
 	else
-		playEmote(item.id)
+		-- IMPORTANT: Run in separate thread so LoadAnimation doesn't block input
+		-- This lets you click another emote while one is still loading
+		task.spawn(function()
+			playEmote(item.id)
+		end)
 	end
 end
 
@@ -789,12 +889,12 @@ end
 local function onCharacterAdded(char)
 	local hum = char:WaitForChild("Humanoid")
 
-	-- Reset all track data on new character
+	-- Full reset
+	currentLoadId = currentLoadId + 1 -- Cancel any pending loads
 	cleanupAllTracks()
 	loadedTracks = {}
 	State.currentEmoteTrack = nil
 
-	-- Auto-reapply animation on respawn
 	if State.autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
 		task.wait(0.5)
 		applyAnim(getgenv().lastAnim)
@@ -805,7 +905,9 @@ local function onCharacterAdded(char)
 
 	hum.Died:Connect(function()
 		State.favEnabled = false
+		currentLoadId = currentLoadId + 1 -- Cancel any pending loads
 		cleanupAllTracks()
+		loadedTracks = {}
 		applyPinkTheme()
 	end)
 end
