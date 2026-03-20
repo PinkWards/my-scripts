@@ -40,7 +40,6 @@ local State = {
 	autoReapplyEnabled = true,
 	favFileName = "FavoriteEmotes.json",
 	favAnimFileName = "FavoriteAnimations.json",
-	-- Performance: caches
 	favLookupEmote = {},
 	favLookupAnim = {},
 	normalListCache = nil,
@@ -48,6 +47,10 @@ local State = {
 	normalListCacheMode = "",
 	searchDebounce = nil,
 	lastSearchTerm = "",
+	needsDisplayRefresh = false,
+	lastDisplayPage = -1,
+	lastDisplayMode = "",
+	lastDisplayFavVer = -1,
 }
 
 getgenv().lastAnim = getgenv().lastAnim or nil
@@ -159,7 +162,6 @@ local function rebuildFavLookup()
 	for _, v in ipairs(State.favAnims) do
 		State.favLookupAnim[tostring(v.id)] = true
 	end
-	-- Invalidate normal list cache
 	State.normalListCacheVersion = -1
 end
 
@@ -179,7 +181,7 @@ local function getBundled(id)
 	return nil
 end
 
--- ============ NORMAL LIST CACHE (avoids rebuilding every frame) ============ --
+-- ============ NORMAL LIST CACHE ============ --
 local function getNormalList()
 	local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
 	local version = State.favSetVersion
@@ -380,7 +382,7 @@ local function applyAnim(data)
 	notify("Animation", "Applied: " .. (data.name or "Animation"), 3)
 end
 
--- ============ EMOTE PLAYING (OPTIMIZED WITH CANCEL) ============ --
+-- ============ EMOTE PLAYING ============ --
 local loadedTracks = {}
 local currentLoadId = 0
 
@@ -556,27 +558,33 @@ local function updateFavIcon(img, id, isFav)
 end
 
 -- ============ DISPLAY UPDATE (OPTIMIZED) ============ --
-local lastDisplayPage = -1
-local lastDisplayMode = ""
-local lastDisplayFavVer = -1
-
 local function updateDisplay(force)
-	-- Skip if nothing changed (unless forced)
 	if not force
-		and lastDisplayPage == State.currentPage
-		and lastDisplayMode == State.mode
-		and lastDisplayFavVer == State.favSetVersion then
+		and State.lastDisplayPage == State.currentPage
+		and State.lastDisplayMode == State.mode
+		and State.lastDisplayFavVer == State.favSetVersion then
 		return
 	end
 
-	lastDisplayPage = State.currentPage
-	lastDisplayMode = State.mode
-	lastDisplayFavVer = State.favSetVersion
-
 	local char, hum = getChar()
-	if not char or not hum or not hum.HumanoidDescription then return end
+	if not char or not hum then return end
 
-	local desc = hum.HumanoidDescription
+	-- Wait for HumanoidDescription to exist
+	local desc = hum:FindFirstChildOfClass("HumanoidDescription")
+	if not desc then
+		-- Try waiting briefly
+		for i = 1, 10 do
+			task.wait(0.1)
+			desc = hum:FindFirstChildOfClass("HumanoidDescription")
+			if desc then break end
+		end
+		if not desc then return end
+	end
+
+	State.lastDisplayPage = State.currentPage
+	State.lastDisplayMode = State.mode
+	State.lastDisplayFavVer = State.favSetVersion
+
 	local favs = State.mode == "animation" and State.favAnims or State.favEmotes
 	local items = {}
 
@@ -612,10 +620,12 @@ local function updateDisplay(force)
 		equipped[#equipped + 1] = item.name
 	end
 
-	desc:SetEmotes(emoteTable)
-	desc:SetEquippedEmotes(equipped)
+	pcall(function()
+		desc:SetEmotes(emoteTable)
+		desc:SetEquippedEmotes(equipped)
+	end)
 
-	task.delay(0.1, function()
+	task.delay(0.15, function()
 		local wheel = getWheel()
 		if not wheel then return end
 
@@ -779,7 +789,7 @@ RunService.Heartbeat:Connect(function()
 	end)
 end)
 
--- ============ DATA FETCHING (CHUNKED FOR PERFORMANCE) ============ --
+-- ============ DATA FETCHING ============ --
 local function fetchEmotes()
 	if State.isLoading then return end
 	State.isLoading = true
@@ -791,7 +801,6 @@ local function fetchEmotes()
 	if ok and result then
 		local rawList = result.data or result
 		local data = {}
-		-- Pre-allocate table size hint by building in chunks
 		for i = 1, #rawList do
 			local item = rawList[i]
 			local id = tonumber(item.id)
@@ -835,7 +844,7 @@ local function fetchAnims()
 	State.isLoading = false
 end
 
--- ============ SEARCH (DEBOUNCED + OPTIMIZED) ============ --
+-- ============ SEARCH (DEBOUNCED) ============ --
 local function searchItems(term)
 	term = term:lower()
 
@@ -854,16 +863,14 @@ local function searchItems(term)
 		local result = {}
 		local isIdSearch = term:match("^%d+$")
 
-		-- For large datasets, limit scan with early termination for exact ID
 		if isIdSearch then
 			for i = 1, #source do
 				if tostring(source[i].id) == term then
 					result[#result + 1] = source[i]
-					break -- Exact ID match, only one result
+					break
 				end
 			end
 		else
-			-- Name search - use plain find for speed (no patterns)
 			for i = 1, #source do
 				if source[i].name:lower():find(term, 1, true) then
 					result[#result + 1] = source[i]
@@ -878,7 +885,6 @@ local function searchItems(term)
 		end
 	end
 
-	-- Invalidate normal list cache
 	State.normalListCacheVersion = -1
 
 	State.currentPage = 1
@@ -923,7 +929,6 @@ local function toggleMode()
 		State.filteredEmotes = State.emotesData
 	end
 
-	-- Invalidate cache
 	State.normalListCacheVersion = -1
 
 	State.currentPage = 1
@@ -950,24 +955,82 @@ local function toggleAutoReapply()
 	if State.autoReapplyEnabled then
 		notify("Auto-Reapply", "ON - Animations restore on respawn", 3)
 	else
-		notify("Auto-Reapply", "OFF - Animations won't restore on respawn", 3)
+		notify("Auto-Reapply", "OFF - Animations won't restore", 3)
 	end
 end
 
--- ============ CHARACTER HANDLING ============ --
-local function onCharacterAdded(char)
-	local hum = char:WaitForChild("Humanoid")
+-- ============ FORCE REFRESH (called after respawn) ============ --
+local function forceFullRefresh()
+	-- Invalidate all caches so display rebuilds completely
+	State.lastDisplayPage = -1
+	State.lastDisplayMode = ""
+	State.lastDisplayFavVer = -1
+	State.normalListCacheVersion = -1
+	State.wheelCache = nil
+	State.lastWheelCheck = 0
 
+	State.totalPages = calcPages()
+	updatePageDisplay()
+	updateDisplay(true)
+	applyNativeTheme()
+end
+
+-- ============ CHARACTER HANDLING (FIXED - restores script emotes) ============ --
+local function onCharacterAdded(char)
+	local hum = char:WaitForChild("Humanoid", 15)
+	if not hum then return end
+
+	-- Wait for HumanoidDescription to be ready
+	local desc = hum:FindFirstChildOfClass("HumanoidDescription")
+	if not desc then
+		for i = 1, 30 do
+			task.wait(0.1)
+			desc = hum:FindFirstChildOfClass("HumanoidDescription")
+			if desc then break end
+		end
+	end
+
+	-- Reset emote tracks
 	currentLoadId = currentLoadId + 1
 	cleanupAllTracks()
 	loadedTracks = {}
 	State.currentEmoteTrack = nil
 
+	-- Auto-reapply animation if enabled
 	if State.autoReapplyEnabled and getgenv().lastAnim and getgenv().lastAnim.id then
 		task.wait(0.5)
 		applyAnim(getgenv().lastAnim)
 		notify("Auto-Reload", "Animation restored", 3)
 	end
+
+	-- CRITICAL: Re-inject script emotes into the wheel after respawn
+	-- Wait a moment for Roblox to finish setting up default emotes
+	task.wait(0.8)
+	forceFullRefresh()
+
+	-- Also check if GUI elements got destroyed and recreate
+	local wheel = getWheel()
+	if wheel and not wheel:FindFirstChild("Under") then
+		State.guiCreated = false
+		State.wheelCache = nil
+		State.lastWheelCheck = 0
+		task.wait(0.3)
+
+		local newWheel = getWheel()
+		if newWheel then
+			createGUI()
+			forceFullRefresh()
+		end
+	end
+
+	-- Monitor for Roblox overwriting our emotes (happens shortly after spawn)
+	task.spawn(function()
+		for i = 1, 10 do
+			task.wait(0.5)
+			if player.Character ~= char then return end
+			forceFullRefresh()
+		end
+	end)
 
 	hum.Died:Connect(function()
 		State.favEnabled = false
@@ -978,7 +1041,7 @@ local function onCharacterAdded(char)
 	end)
 end
 
--- ============ GUI CREATION (Native Roblox Style) ============ --
+-- ============ GUI CREATION ============ --
 local function makeTextButton(name, parent, pos, size, text, bgColor)
 	local btn = Instance.new("ImageButton")
 	btn.Name = name
@@ -993,6 +1056,12 @@ local function makeTextButton(name, parent, pos, size, text, bgColor)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 6)
 	corner.Parent = btn
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = COLORS.BORDER
+	stroke.Thickness = 1
+	stroke.Transparency = 0.5
+	stroke.Parent = btn
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Label"
@@ -1185,20 +1254,32 @@ function createGUI()
 	return true
 end
 
--- ============ MAIN LOOPS ============ --
+-- ============ MAIN RENDER LOOP ============ --
 local frameCount = 0
 RunService.RenderStepped:Connect(function()
 	frameCount = frameCount + 1
-	if frameCount >= 60 then -- Check every ~1 second instead of every ~0.5s
+	if frameCount >= 60 then
 		frameCount = 0
-		if not State.guiCreated then
-			local wheel = getWheel()
-			if wheel and createGUI() then
-				updatePageDisplay()
-				updateDisplay(true)
+
+		local wheel = getWheel()
+		if not wheel then
+			State.guiCreated = false
+			return
+		end
+
+		if not State.guiCreated or not wheel:FindFirstChild("Under") then
+			State.guiCreated = false
+			if createGUI() then
+				forceFullRefresh()
 			end
 		else
 			applyNativeTheme()
+		end
+
+		-- Check if display needs refresh (e.g. after respawn Roblox overwrote emotes)
+		if State.needsDisplayRefresh then
+			State.needsDisplayRefresh = false
+			forceFullRefresh()
 		end
 	end
 end)
@@ -1226,7 +1307,7 @@ task.spawn(function()
 	end
 end)
 
--- Character added handler
+-- Character handler
 player.CharacterAdded:Connect(onCharacterAdded)
 if player.Character then
 	task.spawn(function() onCharacterAdded(player.Character) end)
@@ -1246,12 +1327,12 @@ task.spawn(function()
 			else
 				local wheel = getWheel()
 				if wheel and not wheel:FindFirstChild("Under") then
-					createGUI()
-					updatePageDisplay()
+					State.guiCreated = false
+					State.wheelCache = nil
 				end
 			end
 		end)
-		task.wait(2) -- Check less frequently
+		task.wait(2)
 	end
 end)
 
