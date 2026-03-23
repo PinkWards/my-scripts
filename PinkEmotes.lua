@@ -507,62 +507,159 @@ local function applyAnim(data)
         track:Stop()
     end
 
-    local appliedCount = 0
+    local totalApplied = 0
+    local totalFailed = 0
 
-    for _, assetIds in pairs(bundled) do
+    for key, assetIds in pairs(bundled) do
         for _, assetId in pairs(assetIds) do
-            spawn(function()
+            task.spawn(function()
                 local ok, objs = pcall(function()
-                    return game:GetObjects("rbxassetid://" .. assetId)
+                    return game:GetObjects("rbxassetid://" .. tostring(assetId))
                 end)
 
+                if not ok or not objs or #objs == 0 then
+                    -- Try InsertService as fallback
+                    ok, objs = pcall(function()
+                        local model = game:GetService("InsertService"):LoadAsset(tonumber(assetId))
+                        return {model}
+                    end)
+                end
+
                 if ok and objs and #objs > 0 then
-                    local function searchAnims(parent, path)
-                        for _, child in pairs(parent:GetChildren()) do
-                            if child:IsA("Animation") then
-                                local parts = (path .. "." .. child.Name):split(".")
-                                if #parts >= 2 then
-                                    local cat = parts[#parts - 1]
-                                    local name = parts[#parts]
-                                    local folder = animate:FindFirstChild(cat)
-                                    if folder then
-                                        local slot = folder:FindFirstChild(name)
-                                        if slot then
-                                            slot.AnimationId = child.AnimationId
-                                            appliedCount = appliedCount + 1
-                                            task.wait(0.1)
-                                            local a = Instance.new("Animation")
-                                            a.AnimationId = child.AnimationId
-                                            local animator = hum:FindFirstChild("Animator")
-                                            if animator then
-                                                local t = animator:LoadAnimation(a)
-                                                t.Priority = Enum.AnimationPriority.Action
-                                                t:Play()
-                                                task.wait(0.1)
-                                                t:Stop()
+                    local applied = false
+
+                    for _, obj in pairs(objs) do
+                        -- Method 1: Search recursively for Animation instances
+                        local function searchAndApply(parent)
+                            for _, child in pairs(parent:GetChildren()) do
+                                if child:IsA("Animation") then
+                                    -- Try to find matching slot in Animate
+                                    local animName = child.Name
+                                    local parentName = child.Parent and child.Parent.Name or ""
+
+                                    -- Direct folder match
+                                    for _, folder in pairs(animate:GetChildren()) do
+                                        if folder:IsA("StringValue") or folder:IsA("Folder") or folder:IsA("Instance") then
+                                            -- Check if parent name matches folder
+                                            if parentName == folder.Name then
+                                                local slot = folder:FindFirstChild(animName)
+                                                if slot and (slot:IsA("Animation") or slot:IsA("StringValue")) then
+                                                    if slot:IsA("Animation") then
+                                                        slot.AnimationId = child.AnimationId
+                                                    else
+                                                        slot.Value = child.AnimationId
+                                                    end
+                                                    applied = true
+                                                    totalApplied = totalApplied + 1
+                                                end
+                                            end
+
+                                            -- Also try child name matching any slot
+                                            for _, slot in pairs(folder:GetChildren()) do
+                                                if slot.Name == animName then
+                                                    if slot:IsA("Animation") then
+                                                        slot.AnimationId = child.AnimationId
+                                                    elseif slot:IsA("StringValue") then
+                                                        slot.Value = child.AnimationId
+                                                    end
+                                                    applied = true
+                                                    totalApplied = totalApplied + 1
+                                                end
                                             end
                                         end
                                     end
                                 end
-                            elseif #child:GetChildren() > 0 then
-                                searchAnims(child, path .. "." .. child.Name)
+
+                                if #child:GetChildren() > 0 then
+                                    searchAndApply(child)
+                                end
                             end
                         end
-                    end
 
-                    for _, obj in pairs(objs) do
-                        searchAnims(obj, obj.Name)
-                        obj.Parent = workspace
-                        task.delay(1, function()
-                            if obj and obj.Parent then obj:Destroy() end
+                        -- Method 2: If the object itself IS a KeyframeSequence or Animation
+                        if obj:IsA("Animation") then
+                            -- Try matching by name to animate folders
+                            for _, folder in pairs(animate:GetChildren()) do
+                                for _, slot in pairs(folder:GetChildren()) do
+                                    if slot:IsA("Animation") then
+                                        slot.AnimationId = obj.AnimationId
+                                        applied = true
+                                        totalApplied = totalApplied + 1
+                                        break
+                                    elseif slot:IsA("StringValue") then
+                                        slot.Value = obj.AnimationId
+                                        applied = true
+                                        totalApplied = totalApplied + 1
+                                        break
+                                    end
+                                end
+                                if applied then break end
+                            end
+                        end
+
+                        -- Method 3: Object is a model/folder containing animations
+                        if obj:IsA("Model") or obj:IsA("Folder") or obj:IsA("Instance") then
+                            searchAndApply(obj)
+
+                            -- If nothing matched by name, try brute force by structure
+                            if not applied then
+                                for _, folder in pairs(obj:GetChildren()) do
+                                    local matchFolder = animate:FindFirstChild(folder.Name)
+                                    if matchFolder then
+                                        for _, anim in pairs(folder:GetChildren()) do
+                                            if anim:IsA("Animation") or (anim:IsA("StringValue") and anim.Value ~= "") then
+                                                local matchSlot = matchFolder:FindFirstChild(anim.Name)
+                                                if matchSlot then
+                                                    local animId = anim:IsA("Animation") and anim.AnimationId or anim.Value
+                                                    if matchSlot:IsA("Animation") then
+                                                        matchSlot.AnimationId = animId
+                                                    elseif matchSlot:IsA("StringValue") then
+                                                        matchSlot.Value = animId
+                                                    end
+                                                    applied = true
+                                                    totalApplied = totalApplied + 1
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+
+                        -- Cleanup
+                        pcall(function()
+                            obj.Parent = nil
+                            task.delay(2, function()
+                                if obj then
+                                    pcall(function() obj:Destroy() end)
+                                end
+                            end)
                         end)
                     end
+
+                    if not applied then
+                        totalFailed = totalFailed + 1
+                    end
                 else
-                    notify("Animation", "Failed to load asset: " .. tostring(assetId), 3)
+                    totalFailed = totalFailed + 1
                 end
             end)
         end
     end
+
+    -- Wait a moment then trigger animations to refresh
+    task.delay(1, function()
+        if player.Character ~= char then return end
+        local h = char:FindFirstChild("Humanoid")
+        if not h then return end
+
+        -- Force animation refresh by jumping briefly
+        pcall(function()
+            h:ChangeState(Enum.HumanoidStateType.Landed)
+            task.wait(0.1)
+            h:ChangeState(Enum.HumanoidStateType.Running)
+        end)
+    end)
 
     notify("Animation", "Applied: " .. tostring(data.name or "Animation"), 3)
 end
