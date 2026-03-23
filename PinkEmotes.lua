@@ -51,9 +51,7 @@ local State = {
     lastDisplayPage = -1,
     lastDisplayMode = "",
     lastDisplayFavVer = -1,
-    
-    randomEnabled = true,
-    randomMode = "All",
+
     currentOperationToken = 0,
     imageUpdateToken = 0,
     hudEditorActive = false,
@@ -68,8 +66,6 @@ local State = {
         NavVisible = true,
         HUDPositions = {},
         SelectedTheme = "Default",
-        RandomEnabled = true,
-        RandomMode = "All",
         EmotePage = 1,
         AnimationPage = 1,
     }
@@ -82,7 +78,7 @@ local ConfigPath = "PinkWards/Config.json"
 
 local function SaveConfig()
     if not isfolder then return end
-    if not isfolder("PinkWards") then 
+    if not isfolder("PinkWards") then
         pcall(function() makefolder("PinkWards") end)
     end
     pcall(function()
@@ -101,8 +97,6 @@ local function LoadConfig()
             end
         end
     end
-    State.randomEnabled = State.config.RandomEnabled
-    State.randomMode = State.config.RandomMode
 end
 
 -- ============ THEME SYSTEM ============ --
@@ -134,7 +128,7 @@ local DefaultTheme = {
 
 local function SaveThemes()
     if not isfolder then return end
-    if not isfolder("PinkWards") then 
+    if not isfolder("PinkWards") then
         pcall(function() makefolder("PinkWards") end)
     end
     local toSave = { Themes = {}, Selected = currentThemeName }
@@ -215,7 +209,7 @@ end
 
 local function saveFile(name, data)
     if writefile then
-        if not isfolder("PinkWards") then 
+        if not isfolder("PinkWards") then
             pcall(function() makefolder("PinkWards") end)
         end
         pcall(function() writefile("PinkWards/" .. name, HttpService:JSONEncode(data)) end)
@@ -223,11 +217,36 @@ local function saveFile(name, data)
 end
 
 local function loadFile(name)
-    if readfile and isfile and isfile("PinkWards/" .. name) then
-        local ok, res = pcall(function()
-            return HttpService:JSONDecode(readfile("PinkWards/" .. name))
-        end)
-        return ok and res or {}
+    -- Try PinkWards/ subfolder first, then root workspace
+    local paths = {"PinkWards/" .. name, name}
+    for _, path in ipairs(paths) do
+        if readfile and isfile then
+            local exists = false
+            pcall(function() exists = isfile(path) end)
+            if exists then
+                local ok, res = pcall(function()
+                    return HttpService:JSONDecode(readfile(path))
+                end)
+                if ok and res and type(res) == "table" then
+                    -- Handle wrapped format like {data: [...]}
+                    if res.data and type(res.data) == "table" then
+                        return res.data
+                    end
+                    -- Handle {favorites: [...]} or {emotes: [...]} or {animations: [...]}
+                    if res.favorites and type(res.favorites) == "table" then
+                        return res.favorites
+                    end
+                    if res.emotes and type(res.emotes) == "table" then
+                        return res.emotes
+                    end
+                    if res.animations and type(res.animations) == "table" then
+                        return res.animations
+                    end
+                    -- It's already an array or direct table
+                    return res
+                end
+            end
+        end
     end
     return {}
 end
@@ -299,27 +318,6 @@ local function getNormalList()
     State.normalListCacheVersion = version
     State.normalListCacheMode = State.mode
     return result
-end
-
--- ============ RANDOM SLOT ============ --
-local function shouldRandomSlotBeShown()
-    if not State.randomEnabled then return false end
-    if State.searchDebounce and State.lastSearchTerm ~= "" then return false end
-    return true
-end
-
-local function getRandomSourceList()
-    if not State.randomEnabled then return {} end
-    if State.randomMode == "Favorites" then
-        return State.mode == "animation" and State.favAnims or State.favEmotes
-    end
-    return State.mode == "animation" and State.filteredAnims or State.filteredEmotes
-end
-
-local function pickRandomItem()
-    local list = getRandomSourceList()
-    if #list == 0 then return nil end
-    return list[math.random(1, #list)]
 end
 
 -- ============ ANIMATION SYSTEM ============ --
@@ -526,11 +524,11 @@ local function applyAnim(data)
                                         if slot then
                                             slot.AnimationId = child.AnimationId
                                             task.wait(0.1)
-                                            local anim = Instance.new("Animation")
-                                            anim.AnimationId = child.AnimationId
+                                            local a = Instance.new("Animation")
+                                            a.AnimationId = child.AnimationId
                                             local animator = hum:FindFirstChild("Animator")
                                             if animator then
-                                                local t = animator:LoadAnimation(anim)
+                                                local t = animator:LoadAnimation(a)
                                                 t.Priority = Enum.AnimationPriority.Action
                                                 t:Play()
                                                 task.wait(0.1)
@@ -582,7 +580,7 @@ local function updateFavIcon(img, id, isFav)
     end
 end
 
--- ============ DISPLAY UPDATE (OPTIMIZED WITH RANDOM SLOT) ============ --
+-- ============ DISPLAY UPDATE ============ --
 local function updateDisplay(force)
     if not force
         and State.lastDisplayPage == State.currentPage
@@ -610,9 +608,7 @@ local function updateDisplay(force)
 
     local favs = State.mode == "animation" and State.favAnims or State.favEmotes
     local items = {}
-    local randomSlotActive = shouldRandomSlotBeShown()
-    
-    local itemsPerPage = randomSlotActive and (State.itemsPerPage - 1) or State.itemsPerPage
+    local itemsPerPage = State.itemsPerPage
     local favPages = #favs > 0 and math.ceil(#favs / itemsPerPage) or 0
     local inFavPages = State.currentPage <= favPages
 
@@ -640,12 +636,7 @@ local function updateDisplay(force)
 
     local emoteTable = {}
     local equipped = {}
-    
-    if randomSlotActive then
-        emoteTable["🎲 Random"] = {0}
-        equipped[#equipped + 1] = "🎲 Random"
-    end
-    
+
     for _, item in ipairs(items) do
         emoteTable[item.name] = {item.id}
         equipped[#equipped + 1] = item.name
@@ -658,10 +649,10 @@ local function updateDisplay(force)
 
     local token = State.currentOperationToken + 1
     State.currentOperationToken = token
-    
+
     task.delay(0.15, function()
         if token ~= State.currentOperationToken then return end
-        
+
         local wheel = getWheel()
         if not wheel then return end
 
@@ -671,34 +662,21 @@ local function updateDisplay(force)
             local btns = front:FindFirstChild("EmotesButtons")
             if not btns then return end
 
-            local slotIndex = 1
             local buttonList = {}
             for _, child in pairs(btns:GetChildren()) do
                 if child:IsA("ImageLabel") then
                     buttonList[#buttonList + 1] = child
                 end
             end
-            
+
             table.sort(buttonList, function(a, b)
                 return tonumber(a.Name) < tonumber(b.Name)
             end)
 
-            if randomSlotActive then
-                local randomSlot = buttonList[1]
-                if randomSlot then
-                    randomSlot.Image = "rbxassetid://109283577128136"
-                    randomSlot.ImageColor3 = Color3.fromRGB(188, 188, 188)
-                    local star = randomSlot:FindFirstChild("FavStar")
-                    if star then star.Visible = false end
-                end
-                slotIndex = 2
-            end
-
-            for i = slotIndex, #buttonList do
+            for i = 1, #buttonList do
                 local child = buttonList[i]
-                local itemIdx = i - (randomSlotActive and 1 or 0)
-                if itemIdx <= #items then
-                    local item = items[itemIdx]
+                if i <= #items then
+                    local item = items[i]
                     if State.mode == "animation" then
                         child.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.id .. "&w=420&h=420"
                         local idVal = child:FindFirstChild("AnimID")
@@ -730,8 +708,7 @@ end
 local function calcPages()
     local favs = State.mode == "animation" and State.favAnims or State.favEmotes
     local normalList = getNormalList()
-    local randomSlotActive = shouldRandomSlotBeShown()
-    local itemsPerPage = randomSlotActive and (State.itemsPerPage - 1) or State.itemsPerPage
+    local itemsPerPage = State.itemsPerPage
 
     local pages = 0
     if #favs > 0 then pages = pages + math.ceil(#favs / itemsPerPage) end
@@ -746,49 +723,21 @@ local function updatePageDisplay()
     end
 end
 
--- ============ WHEEL CLICK HANDLER WITH RANDOM SUPPORT ============ --
+-- ============ WHEEL CLICK HANDLER ============ --
 local function handleSector(index)
     if tick() - State.lastAction < 0.35 then return end
     State.lastAction = tick()
 
-    local randomSlotActive = shouldRandomSlotBeShown()
-    
-    if randomSlotActive and index == 1 then
-        local randomItem = pickRandomItem()
-        if not randomItem then
-            notify("Random", "No items available", 3)
-            return
-        end
-        
-        if State.favEnabled then
-            if State.mode == "animation" then
-                toggleFav(randomItem.id, randomItem.name, randomItem.bundledItems)
-            else
-                toggleFav(randomItem.id, randomItem.name, nil)
-            end
-        else
-            if State.mode == "animation" then
-                applyAnim(randomItem)
-            else
-                task.spawn(function()
-                    playEmote(randomItem.id)
-                end)
-            end
-        end
-        return
-    end
-
-    local adjustedIndex = randomSlotActive and index - 1 or index
-    if adjustedIndex < 1 then return end
+    if index < 1 then return end
 
     local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-    local itemsPerPage = randomSlotActive and (State.itemsPerPage - 1) or State.itemsPerPage
+    local itemsPerPage = State.itemsPerPage
     local favPages = #favs > 0 and math.ceil(#favs / itemsPerPage) or 0
 
     local item
     if State.currentPage <= favPages and #favs > 0 then
         local startIdx = (State.currentPage - 1) * itemsPerPage
-        item = favs[startIdx + adjustedIndex]
+        item = favs[startIdx + index]
         if item and State.mode == "animation" and not item.bundledItems then
             item.bundledItems = getBundled(item.id)
         end
@@ -796,7 +745,7 @@ local function handleSector(index)
         local normalList = getNormalList()
         local adjPage = State.currentPage - favPages
         local startIdx = (adjPage - 1) * itemsPerPage
-        item = normalList[startIdx + adjustedIndex]
+        item = normalList[startIdx + index]
     end
 
     if not item then return end
@@ -819,7 +768,7 @@ local function bindWheelHotkeys()
     local keyToIndex = {
         [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3, [Enum.KeyCode.Four] = 4,
         [Enum.KeyCode.Five] = 5, [Enum.KeyCode.Six] = 6, [Enum.KeyCode.Seven] = 7, [Enum.KeyCode.Eight] = 8,
-        [Enum.KeyCode.KeypadOne] = 1, [Enum.KeyCode.KeypadTwo] = 2, [Enum.KeyCode.KeypadThree] = 3, 
+        [Enum.KeyCode.KeypadOne] = 1, [Enum.KeyCode.KeypadTwo] = 2, [Enum.KeyCode.KeypadThree] = 3,
         [Enum.KeyCode.KeypadFour] = 4, [Enum.KeyCode.KeypadFive] = 5, [Enum.KeyCode.KeypadSix] = 6,
         [Enum.KeyCode.KeypadSeven] = 7, [Enum.KeyCode.KeypadEight] = 8
     }
@@ -827,15 +776,15 @@ local function bindWheelHotkeys()
     local function onHotkey(actionName, inputState, inputObject)
         if inputState ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Pass end
         if State.hudEditorActive then return Enum.ContextActionResult.Pass end
-        
+
         local index = keyToIndex[inputObject.KeyCode]
         if not index then return Enum.ContextActionResult.Pass end
-        
+
         local wheel = getWheel()
-        if not wheel or (not wheel.Visible and tick() - State.lastWheelVisible > 0.15) then 
-            return Enum.ContextActionResult.Pass 
+        if not wheel or (not wheel.Visible and tick() - State.lastWheelVisible > 0.15) then
+            return Enum.ContextActionResult.Pass
         end
-        
+
         handleSector(index)
         return Enum.ContextActionResult.Sink
     end
@@ -854,7 +803,7 @@ local function bindWheelHotkeys()
 end
 
 -- ============ FAVORITES ============ --
-local function toggleFav(id, name, bundled)
+function toggleFav(id, name, bundled)
     local list = State.mode == "animation" and State.favAnims or State.favEmotes
     local found, idx = false, 0
 
@@ -956,7 +905,7 @@ end
 -- ============ TOGGLES ============ --
 local function toggleMode()
     State.mode = State.mode == "emote" and "animation" or "emote"
-    
+
     if State.mode == "animation" and #State.animsData == 0 then
         task.spawn(function()
             local ok, result = pcall(function()
@@ -1009,16 +958,6 @@ local function toggleFavMode()
     updateDisplay(true)
 end
 
-local function toggleRandomMode()
-    State.randomEnabled = not State.randomEnabled
-    State.config.RandomEnabled = State.randomEnabled
-    SaveConfig()
-    State.totalPages = calcPages()
-    updatePageDisplay()
-    updateDisplay(true)
-    notify("Random Slot", State.randomEnabled and "Random slot ON" or "Random slot OFF", 3)
-end
-
 local function toggleAutoReapply()
     State.autoReapplyEnabled = not State.autoReapplyEnabled
     saveFile("AutoReapplySetting.json", {enabled = State.autoReapplyEnabled})
@@ -1027,12 +966,12 @@ local function toggleAutoReapply()
 end
 
 -- ============ THEME APPLICATION ============ --
-local function applyNativeTheme()
+function applyNativeTheme()
     local wheel = getWheel()
     if not wheel then return end
 
     local theme = Themes[currentThemeName] or DefaultTheme
-    
+
     pcall(function()
         local back = wheel:FindFirstChild("Back")
         if back then
@@ -1077,13 +1016,6 @@ local function applyNativeTheme()
         UI.ModeBtnLabel.TextColor3 = TableToColor(theme.ImageColor)
     end
 
-    if UI.RandomBtn then
-        UI.RandomBtn.BackgroundColor3 = State.randomEnabled and GetIconColor("Favorite") or TableToColor(theme.Background)
-    end
-    if UI.RandomBtnLabel then
-        UI.RandomBtnLabel.TextColor3 = TableToColor(theme.ImageColor)
-    end
-
     if UI.AutoReapplyBtn then
         UI.AutoReapplyBtn.BackgroundColor3 = State.autoReapplyEnabled and GetIconColor("Auto") or TableToColor(theme.Background)
     end
@@ -1102,8 +1034,7 @@ local HUD = {
         Top = UDim2.new(0.13, 0, -0.11, 0),
         FavBtn = UDim2.new(0.019, 0, -0.108, 0),
         ModeBtn = UDim2.new(0.889, 0, -0.108, 0),
-        RandomBtn = UDim2.new(0.889, 0, -0.215, 0),
-        AutoBtn = UDim2.new(0.889, 0, -0.322, 0),
+        AutoBtn = UDim2.new(0.889, 0, -0.215, 0),
     }
 }
 
@@ -1113,7 +1044,6 @@ local function getMovableElements()
     if UI.Under then elems["Under"] = UI.Under end
     if UI.FavBtn then elems["FavBtn"] = UI.FavBtn end
     if UI.ModeBtn then elems["ModeBtn"] = UI.ModeBtn end
-    if UI.RandomBtn then elems["RandomBtn"] = UI.RandomBtn end
     if UI.AutoReapplyBtn then elems["AutoBtn"] = UI.AutoReapplyBtn end
     return elems
 end
@@ -1131,7 +1061,7 @@ local function calculateSnap(element, newPos, currentName, allMovable)
     local sX, sY = absX, absY
     local didX, didY = false, false
     local guideX, guideY
-    
+
     for oName, oEl in pairs(allMovable) do
         if oName ~= currentName then
             local oX = oEl.AbsolutePosition.X
@@ -1152,7 +1082,7 @@ local function calculateSnap(element, newPos, currentName, allMovable)
             end
         end
     end
-    
+
     local fsx = (sX - pp.X) / ps.X
     local fsy = (sY - pp.Y) / ps.Y
     return UDim2.new(fsx, newPos.X.Offset, fsy, newPos.Y.Offset), guideX, guideY
@@ -1168,7 +1098,7 @@ local function setupElementDragging(name, element, allMovable, snapGuideV, snapG
 
     local dragging = false
     local dragStart, startPos
-    
+
     local dragHandle = Instance.new("ImageButton")
     dragHandle.Name = "DragHandle"
     dragHandle.Parent = element
@@ -1246,7 +1176,7 @@ local function enterHUDEditor()
     controlBar.AnchorPoint = Vector2.new(1, 0)
     controlBar.Position = UDim2.new(1, -10, 0, 10)
     controlBar.Size = UDim2.fromOffset(100, 42)
-    
+
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Horizontal
     layout.Padding = UDim.new(0, 8)
@@ -1342,9 +1272,9 @@ local function importSettings()
     popup.AnchorPoint = Vector2.new(0.5, 0.5)
     popup.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     popup.Parent = CoreGui
-    
+
     Instance.new("UICorner", popup).CornerRadius = UDim.new(0, 12)
-    
+
     local title = Instance.new("TextLabel", popup)
     title.Size = UDim2.new(1, 0, 0, 35)
     title.BackgroundTransparency = 1
@@ -1352,7 +1282,7 @@ local function importSettings()
     title.TextColor3 = Color3.new(1, 1, 1)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 14
-    
+
     local input = Instance.new("TextBox", popup)
     input.Position = UDim2.new(0.05, 0, 0.15, 0)
     input.Size = UDim2.new(0.9, 0, 0.5, 0)
@@ -1362,7 +1292,7 @@ local function importSettings()
     input.MultiLine = true
     input.TextWrapped = true
     Instance.new("UICorner", input).CornerRadius = UDim.new(0, 8)
-    
+
     local importBtn = Instance.new("TextButton", popup)
     importBtn.Position = UDim2.new(0.05, 0, 0.75, 0)
     importBtn.Size = UDim2.new(0.4, 0, 0.12, 0)
@@ -1370,7 +1300,7 @@ local function importSettings()
     importBtn.Text = "Import"
     importBtn.TextColor3 = Color3.new(1, 1, 1)
     Instance.new("UICorner", importBtn).CornerRadius = UDim.new(0, 8)
-    
+
     local cancelBtn = Instance.new("TextButton", popup)
     cancelBtn.Position = UDim2.new(0.55, 0, 0.75, 0)
     cancelBtn.Size = UDim2.new(0.4, 0, 0.12, 0)
@@ -1378,7 +1308,7 @@ local function importSettings()
     cancelBtn.Text = "Cancel"
     cancelBtn.TextColor3 = Color3.new(1, 1, 1)
     Instance.new("UICorner", cancelBtn).CornerRadius = UDim.new(0, 8)
-    
+
     importBtn.MouseButton1Click:Connect(function()
         local ok, data = pcall(function()
             return HttpService:JSONDecode(input.Text)
@@ -1397,8 +1327,6 @@ local function importSettings()
                     State.config[k] = v
                 end
                 SaveConfig()
-                State.randomEnabled = State.config.RandomEnabled
-                State.randomMode = State.config.RandomMode
             end
             if data.Favorites then
                 if data.Favorites.Emotes then
@@ -1421,7 +1349,7 @@ local function importSettings()
         end
         popup:Destroy()
     end)
-    
+
     cancelBtn.MouseButton1Click:Connect(function()
         popup:Destroy()
     end)
@@ -1577,7 +1505,7 @@ function createGUI()
     UI.Search.TextColor3 = Color3.fromRGB(255, 255, 255)
     UI.Search.TextScaled = true
 
-    -- Buttons
+    -- Buttons (no more RandomBtn)
     UI.FavBtn, UI.FavBtnLabel = makeTextButton(
         "Favorite", wheel,
         State.config.HUDPositions.FavBtn and UDim2.new(unpack(State.config.HUDPositions.FavBtn)) or HUD.DefaultPositions.FavBtn,
@@ -1590,13 +1518,6 @@ function createGUI()
         State.config.HUDPositions.ModeBtn and UDim2.new(unpack(State.config.HUDPositions.ModeBtn)) or HUD.DefaultPositions.ModeBtn,
         UDim2.new(0.0875, 0, 0.0875, 0),
         "EMO"
-    )
-
-    UI.RandomBtn, UI.RandomBtnLabel = makeTextButton(
-        "RandomToggle", wheel,
-        State.config.HUDPositions.RandomBtn and UDim2.new(unpack(State.config.HUDPositions.RandomBtn)) or HUD.DefaultPositions.RandomBtn,
-        UDim2.new(0.0875, 0, 0.0875, 0),
-        "RND"
     )
 
     UI.AutoReapplyBtn, UI.AutoBtnLabel = makeTextButton(
@@ -1628,14 +1549,13 @@ function createGUI()
 
     UI.FavBtn.MouseButton1Click:Connect(toggleFavMode)
     UI.ModeBtn.MouseButton1Click:Connect(toggleMode)
-    UI.RandomBtn.MouseButton1Click:Connect(toggleRandomMode)
     UI.AutoReapplyBtn.MouseButton1Click:Connect(toggleAutoReapply)
 
     applyNativeTheme()
     State.guiCreated = true
-    
+
     bindWheelHotkeys()
-    
+
     return true
 end
 
@@ -1797,15 +1717,43 @@ end)
 task.spawn(function()
     LoadConfig()
     LoadThemes()
-    
+
     while not getWheel() do task.wait(0.1) end
 
     if createGUI() then
-        State.favEmotes = loadFile(State.favFileName)
-        State.favAnims = loadFile(State.favAnimFileName)
+        -- Load favorites with validation
+        local rawEmoteFavs = loadFile(State.favFileName)
+        local rawAnimFavs = loadFile(State.favAnimFileName)
+
+        -- Validate and clean favorite entries
+        State.favEmotes = {}
+        if type(rawEmoteFavs) == "table" then
+            for _, v in ipairs(rawEmoteFavs) do
+                if type(v) == "table" and v.id then
+                    State.favEmotes[#State.favEmotes + 1] = {
+                        id = v.id,
+                        name = v.name or ("Emote_" .. tostring(v.id))
+                    }
+                end
+            end
+        end
+
+        State.favAnims = {}
+        if type(rawAnimFavs) == "table" then
+            for _, v in ipairs(rawAnimFavs) do
+                if type(v) == "table" and v.id then
+                    State.favAnims[#State.favAnims + 1] = {
+                        id = v.id,
+                        name = v.name or ("Anim_" .. tostring(v.id)),
+                        bundledItems = v.bundledItems
+                    }
+                end
+            end
+        end
+
         rebuildFavLookup()
         loadLastAnim()
-        
+
         fetchEmotes()
         fetchAnims()
 
@@ -1813,7 +1761,8 @@ task.spawn(function()
         updatePageDisplay()
         updateDisplay(true)
 
-        notify("PinkWards", "Loaded! Press '.' to open | RND = Random Slot", 5)
+        local favCount = #State.favEmotes + #State.favAnims
+        notify("PinkWards", "Loaded! Press '.' to open | Favs: " .. #State.favEmotes .. " emotes, " .. #State.favAnims .. " anims", 5)
     end
 end)
 
