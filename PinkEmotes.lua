@@ -29,7 +29,8 @@ local State = {
     favEmotes = {},
     favAnims = {},
     favEnabled = false,
-    isLoading = false,
+    isLoadingEmotes = false,
+    isLoadingAnims = false,
     currentEmoteTrack = nil,
     lastWheelVisible = 0,
     lastAction = 0,
@@ -37,9 +38,9 @@ local State = {
     guiCreated = false,
     wheelCache = nil,
     lastWheelCheck = 0,
-    autoReapplyEnabled = true,
+    autoReapplyEnabled = false,
     favFileName = "FavoriteEmotes.json",
-    favAnimFileName = "FavoriteAnimations.json",
+    favAnimFileName = "FavoriteAnimation.json",
     favLookupEmote = {},
     favLookupAnim = {},
     normalListCache = nil,
@@ -68,6 +69,7 @@ local State = {
         SelectedTheme = "Default",
         EmotePage = 1,
         AnimationPage = 1,
+        AutoReapplyEnabled = false,
     }
 }
 
@@ -96,6 +98,12 @@ local function LoadConfig()
                 State.config[k] = v
             end
         end
+    end
+    -- Restore auto-reapply from config
+    if State.config.AutoReapplyEnabled ~= nil then
+        State.autoReapplyEnabled = State.config.AutoReapplyEnabled
+    else
+        State.autoReapplyEnabled = false
     end
 end
 
@@ -217,7 +225,6 @@ local function saveFile(name, data)
 end
 
 local function loadFile(name)
-    -- Try PinkWards/ subfolder first, then root workspace
     local paths = {"PinkWards/" .. name, name}
     for _, path in ipairs(paths) do
         if readfile and isfile then
@@ -228,11 +235,9 @@ local function loadFile(name)
                     return HttpService:JSONDecode(readfile(path))
                 end)
                 if ok and res and type(res) == "table" then
-                    -- Handle wrapped format like {data: [...]}
                     if res.data and type(res.data) == "table" then
                         return res.data
                     end
-                    -- Handle {favorites: [...]} or {emotes: [...]} or {animations: [...]}
                     if res.favorites and type(res.favorites) == "table" then
                         return res.favorites
                     end
@@ -242,7 +247,6 @@ local function loadFile(name)
                     if res.animations and type(res.animations) == "table" then
                         return res.animations
                     end
-                    -- It's already an array or direct table
                     return res
                 end
             end
@@ -492,7 +496,7 @@ local function applyAnim(data)
 
     local bundled = data.bundledItems or getBundled(data.id)
     if not bundled then
-        notify("Animation", "No assets for: " .. (data.name or data.id), 3)
+        notify("Animation", "No assets for: " .. tostring(data.name or data.id), 3)
         return
     end
 
@@ -502,6 +506,8 @@ local function applyAnim(data)
     for _, track in pairs(hum:GetPlayingAnimationTracks()) do
         track:Stop()
     end
+
+    local appliedCount = 0
 
     for _, assetIds in pairs(bundled) do
         for _, assetId in pairs(assetIds) do
@@ -523,6 +529,7 @@ local function applyAnim(data)
                                         local slot = folder:FindFirstChild(name)
                                         if slot then
                                             slot.AnimationId = child.AnimationId
+                                            appliedCount = appliedCount + 1
                                             task.wait(0.1)
                                             local a = Instance.new("Animation")
                                             a.AnimationId = child.AnimationId
@@ -550,12 +557,14 @@ local function applyAnim(data)
                             if obj and obj.Parent then obj:Destroy() end
                         end)
                     end
+                else
+                    notify("Animation", "Failed to load asset: " .. tostring(assetId), 3)
                 end
             end)
         end
     end
 
-    notify("Animation", "Applied: " .. (data.name or "Animation"), 3)
+    notify("Animation", "Applied: " .. tostring(data.name or "Animation"), 3)
 end
 
 -- ============ FAVORITE STAR OVERLAY ============ --
@@ -907,6 +916,7 @@ local function toggleMode()
     State.mode = State.mode == "emote" and "animation" or "emote"
 
     if State.mode == "animation" and #State.animsData == 0 then
+        notify("Animation", "Loading animations...", 3)
         task.spawn(function()
             local ok, result = pcall(function()
                 return HttpService:JSONDecode(game:HttpGet(ANIM_URL))
@@ -927,6 +937,13 @@ local function toggleMode()
                 end
                 State.animsData = data
                 State.filteredAnims = data
+                State.normalListCacheVersion = -1
+                State.totalPages = calcPages()
+                updatePageDisplay()
+                updateDisplay(true)
+                notify("Animation", "Loaded " .. #data .. " animations", 3)
+            else
+                notify("Animation", "Failed to load animations!", 3)
             end
         end)
     end
@@ -960,7 +977,8 @@ end
 
 local function toggleAutoReapply()
     State.autoReapplyEnabled = not State.autoReapplyEnabled
-    saveFile("AutoReapplySetting.json", {enabled = State.autoReapplyEnabled})
+    State.config.AutoReapplyEnabled = State.autoReapplyEnabled
+    SaveConfig()
     applyNativeTheme()
     notify("Auto-Reapply", State.autoReapplyEnabled and "ON - Animations restore on respawn" or "OFF", 3)
 end
@@ -1014,6 +1032,7 @@ function applyNativeTheme()
     end
     if UI.ModeBtnLabel then
         UI.ModeBtnLabel.TextColor3 = TableToColor(theme.ImageColor)
+        UI.ModeBtnLabel.Text = State.mode == "animation" and "ANI" or "EMO"
     end
 
     if UI.AutoReapplyBtn then
@@ -1326,6 +1345,7 @@ local function importSettings()
                 for k, v in pairs(data.Config) do
                     State.config[k] = v
                 end
+                State.autoReapplyEnabled = State.config.AutoReapplyEnabled or false
                 SaveConfig()
             end
             if data.Favorites then
@@ -1505,7 +1525,7 @@ function createGUI()
     UI.Search.TextColor3 = Color3.fromRGB(255, 255, 255)
     UI.Search.TextScaled = true
 
-    -- Buttons (no more RandomBtn)
+    -- Buttons
     UI.FavBtn, UI.FavBtnLabel = makeTextButton(
         "Favorite", wheel,
         State.config.HUDPositions.FavBtn and UDim2.new(unpack(State.config.HUDPositions.FavBtn)) or HUD.DefaultPositions.FavBtn,
@@ -1561,8 +1581,8 @@ end
 
 -- ============ DATA FETCHING ============ --
 local function fetchEmotes()
-    if State.isLoading then return end
-    State.isLoading = true
+    if State.isLoadingEmotes then return end
+    State.isLoadingEmotes = true
 
     local ok, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet(EMOTE_URL))
@@ -1580,14 +1600,17 @@ local function fetchEmotes()
         end
         State.emotesData = data
         State.filteredEmotes = data
+        notify("Emotes", "Loaded " .. #data .. " emotes", 3)
+    else
+        notify("Emotes", "Failed to load emotes!", 3)
     end
 
-    State.isLoading = false
+    State.isLoadingEmotes = false
 end
 
 local function fetchAnims()
-    if State.isLoading then return end
-    State.isLoading = true
+    if State.isLoadingAnims then return end
+    State.isLoadingAnims = true
 
     local ok, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet(ANIM_URL))
@@ -1609,9 +1632,12 @@ local function fetchAnims()
         end
         State.animsData = data
         State.filteredAnims = data
+        notify("Animations", "Loaded " .. #data .. " animations", 3)
+    else
+        notify("Animations", "Failed to load animations!", 3)
     end
 
-    State.isLoading = false
+    State.isLoadingAnims = false
 end
 
 -- ============ CHARACTER HANDLING ============ --
@@ -1725,7 +1751,6 @@ task.spawn(function()
         local rawEmoteFavs = loadFile(State.favFileName)
         local rawAnimFavs = loadFile(State.favAnimFileName)
 
-        -- Validate and clean favorite entries
         State.favEmotes = {}
         if type(rawEmoteFavs) == "table" then
             for _, v in ipairs(rawEmoteFavs) do
@@ -1754,15 +1779,19 @@ task.spawn(function()
         rebuildFavLookup()
         loadLastAnim()
 
+        -- Fetch emotes and animations separately
         fetchEmotes()
         fetchAnims()
+
+        -- Wait a moment for data to be ready then refresh
+        task.wait(0.5)
 
         State.totalPages = calcPages()
         updatePageDisplay()
         updateDisplay(true)
+        applyNativeTheme()
 
-        local favCount = #State.favEmotes + #State.favAnims
-        notify("PinkWards", "Loaded! Press '.' to open | Favs: " .. #State.favEmotes .. " emotes, " .. #State.favAnims .. " anims", 5)
+        notify("PinkWards", "Loaded! Favs: " .. #State.favEmotes .. " emotes, " .. #State.favAnims .. " anims | RE: " .. (State.autoReapplyEnabled and "ON" or "OFF"), 5)
     end
 end)
 
