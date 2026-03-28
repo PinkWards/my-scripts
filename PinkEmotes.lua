@@ -309,12 +309,125 @@ local function playEmote(emoteId)
     return true
 end
 
+-- ============ FREEZE / UNFREEZE (from working script) ============ --
+
+local function freezeCharacter()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = true end
+    task.spawn(function()
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and not part.Anchored then
+                part.Anchored = true
+            end
+        end
+    end)
+end
+
+local function unfreezeCharacter()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = false end
+    task.spawn(function()
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.Anchored then
+                part.Anchored = false
+            end
+        end
+    end)
+end
+
+local function stopAllTracks()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    pcall(function()
+        for _, track in ipairs(hum:GetPlayingAnimationTracks()) do
+            track:Stop(0)
+        end
+    end)
+end
+
 -- ============ ANIMATION APPLICATION SYSTEM ============ --
 
 local ANIM_SLOT_NAMES = {"idle", "walk", "run", "jump", "climb", "fall", "swim", "swimidle"}
 
 local validSlotLookup = {}
 for _, name in ipairs(ANIM_SLOT_NAMES) do validSlotLookup[name:lower()] = name end
+
+local originalAnimData = nil
+
+local function captureOriginalAnims()
+    local char = player.Character
+    if not char then return end
+    local animate = char:FindFirstChild("Animate")
+    if not animate then return end
+    if originalAnimData then return end
+
+    originalAnimData = {}
+    for _, child in pairs(animate:GetChildren()) do
+        local slotName = validSlotLookup[child.Name:lower()]
+        if slotName then
+            originalAnimData[slotName] = {}
+            for _, anim in pairs(child:GetChildren()) do
+                if anim:IsA("Animation") then
+                    local weight = 1
+                    local wObj = anim:FindFirstChild("Weight")
+                    if wObj and wObj:IsA("NumberValue") then weight = wObj.Value end
+                    table.insert(originalAnimData[slotName], {
+                        id = anim.AnimationId,
+                        name = anim.Name,
+                        weight = weight
+                    })
+                end
+            end
+        end
+    end
+end
+
+local function revertSlot(slotName)
+    local char = player.Character
+    if not char then return false end
+    local animate = char:FindFirstChild("Animate")
+    if not animate then return false end
+    if not originalAnimData or not originalAnimData[slotName] then return false end
+
+    local folder = nil
+    for _, child in pairs(animate:GetChildren()) do
+        if child.Name:lower() == slotName:lower() then
+            folder = child
+            break
+        end
+    end
+    if not folder then return false end
+
+    local existingAnims = {}
+    for _, child in pairs(folder:GetChildren()) do
+        if child:IsA("Animation") then
+            table.insert(existingAnims, child)
+        end
+    end
+
+    local origAnims = originalAnimData[slotName]
+    for i, aData in ipairs(origAnims) do
+        if i <= #existingAnims then
+            existingAnims[i].AnimationId = aData.id
+            local wObj = existingAnims[i]:FindFirstChild("Weight")
+            if wObj and wObj:IsA("NumberValue") then
+                wObj.Value = aData.weight
+            end
+        end
+    end
+
+    for i = #origAnims + 1, #existingAnims do
+        pcall(function() existingAnims[i]:Destroy() end)
+    end
+
+    return true
+end
 
 local function loadAssetObjects(assetId)
     local ok, objs = pcall(function()
@@ -365,112 +478,98 @@ local function extractAnimDataFromObject(obj)
     return result
 end
 
-local function applyExtractedAnims(animate, animData, targetSlot)
-    local totalApplied = 0
+local function setSlotAnimations(animate, slotName, anims)
+    local folder = nil
+    for _, child in pairs(animate:GetChildren()) do
+        if child.Name:lower() == slotName:lower() then
+            folder = child
+            break
+        end
+    end
+    if not folder then return 0 end
 
-    for slotName, anims in pairs(animData) do
-        if targetSlot and slotName:lower() ~= targetSlot:lower() then
-            -- skip
-        elseif #anims > 0 then
-            local folder = nil
-            for _, child in pairs(animate:GetChildren()) do
-                if child.Name:lower() == slotName:lower() then
-                    folder = child
-                    break
-                end
-            end
-
-            if folder then
-                local existingAnims = {}
-                for _, child in pairs(folder:GetChildren()) do
-                    if child:IsA("Animation") then
-                        table.insert(existingAnims, child)
-                    end
-                end
-
-                for i, aData in ipairs(anims) do
-                    if i <= #existingAnims then
-                        existingAnims[i].AnimationId = aData.id
-                        local wObj = existingAnims[i]:FindFirstChild("Weight")
-                        if wObj and wObj:IsA("NumberValue") then
-                            wObj.Value = aData.weight
-                        elseif aData.weight ~= 1 then
-                            local w = Instance.new("NumberValue")
-                            w.Name = "Weight"
-                            w.Value = aData.weight
-                            w.Parent = existingAnims[i]
-                        end
-                    else
-                        local newAnim = Instance.new("Animation")
-                        newAnim.Name = aData.name
-                        newAnim.AnimationId = aData.id
-                        if aData.weight ~= 1 then
-                            local w = Instance.new("NumberValue")
-                            w.Name = "Weight"
-                            w.Value = aData.weight
-                            w.Parent = newAnim
-                        end
-                        newAnim.Parent = folder
-                    end
-                    totalApplied = totalApplied + 1
-                end
-            end
+    local existingAnims = {}
+    for _, child in pairs(folder:GetChildren()) do
+        if child:IsA("Animation") then
+            table.insert(existingAnims, child)
         end
     end
 
-    return totalApplied
+    local applied = 0
+    for i, aData in ipairs(anims) do
+        if i <= #existingAnims then
+            existingAnims[i].AnimationId = aData.id
+            local wObj = existingAnims[i]:FindFirstChild("Weight")
+            if wObj and wObj:IsA("NumberValue") then
+                wObj.Value = aData.weight
+            elseif aData.weight ~= 1 then
+                local w = Instance.new("NumberValue")
+                w.Name = "Weight"
+                w.Value = aData.weight
+                w.Parent = existingAnims[i]
+            end
+        else
+            local newAnim = Instance.new("Animation")
+            newAnim.Name = aData.name
+            newAnim.AnimationId = aData.id
+            if aData.weight ~= 1 then
+                local w = Instance.new("NumberValue")
+                w.Name = "Weight"
+                w.Value = aData.weight
+                w.Parent = newAnim
+            end
+            newAnim.Parent = folder
+        end
+        applied = applied + 1
+    end
+
+    return applied
 end
 
-local function restartAnimateScript()
+-- This matches the working script's exact pattern
+local function applySlotWithFreeze(animate, slotName, anims)
     local char = player.Character
-    if not char then return end
-    local animate = char:FindFirstChild("Animate")
-    local hum = char:FindFirstChild("Humanoid")
-    if not animate or not hum then return end
+    if not char then return 0 end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return 0 end
 
-    pcall(function()
-        if animate:IsA("LocalScript") then
-            animate.Disabled = true
-        end
-    end)
+    freezeCharacter()
+    wait(0.1)
 
-    task.wait(0.05)
-    pcall(function()
-        local animator = hum:FindFirstChildOfClass("Animator")
-        if animator then
-            for _, track in pairs(animator:GetPlayingAnimationTracks()) do
-                pcall(function() track:Stop(0); track:Destroy() end)
-            end
-        end
-    end)
+    stopAllTracks()
 
-    for _, child in pairs(animate:GetChildren()) do
-        if not child:IsA("LocalScript") then
-            pcall(function()
-                local dummy = Instance.new("BoolValue")
-                dummy.Name = "_triggerReload"
-                dummy.Parent = child
-                RunService.Heartbeat:Wait()
-                pcall(function() dummy:Destroy() end)
-            end)
-        end
+    local applied = setSlotAnimations(animate, slotName, anims)
+
+    hum:ChangeState(Enum.HumanoidStateType.Freefall)
+
+    wait(0.1)
+    unfreezeCharacter()
+
+    return applied
+end
+
+local function applyAllSlotsWithFreeze(animate, allAnimData)
+    local char = player.Character
+    if not char then return 0 end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return 0 end
+
+    freezeCharacter()
+    wait(0.1)
+
+    stopAllTracks()
+
+    local totalApplied = 0
+    for slotName, anims in pairs(allAnimData) do
+        totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims)
     end
 
-    task.wait(0.15)
-    pcall(function()
-        if animate:IsA("LocalScript") then
-            animate.Disabled = false
-        end
-    end)
+    hum:ChangeState(Enum.HumanoidStateType.Freefall)
 
-    task.wait(0.25)
-    pcall(function()
-        if hum and hum.Parent then
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-            task.wait(0.05)
-            hum:ChangeState(Enum.HumanoidStateType.Running)
-        end
-    end)
+    wait(0.1)
+    unfreezeCharacter()
+
+    return totalApplied
 end
 
 local function applyAnim(data)
@@ -484,6 +583,8 @@ local function applyAnim(data)
         local hum = char:FindFirstChild("Humanoid")
         local animate = char:FindFirstChild("Animate")
         if not animate or not hum then State.applyingAnim = false; return end
+
+        captureOriginalAnims()
 
         local bundled = data.bundledItems or getBundled(data.id)
         if not bundled then State.applyingAnim = false; return end
@@ -512,15 +613,14 @@ local function applyAnim(data)
             end
         end
 
-        local totalApplied = applyExtractedAnims(animate, allAnimData)
-        restartAnimateScript()
+        local totalApplied = applyAllSlotsWithFreeze(animate, allAnimData)
 
         notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " slots)", 3)
         State.applyingAnim = false
     end)
 end
 
-local function applySlotFromBundle(slotName, bundleData, skipRestart)
+local function applySlotFromBundle(slotName, bundleData, skipFreeze)
     if not bundleData then return false end
     local char = player.Character
     if not char then return false end
@@ -528,10 +628,12 @@ local function applySlotFromBundle(slotName, bundleData, skipRestart)
     local hum = char:FindFirstChild("Humanoid")
     if not animate or not hum then return false end
 
+    captureOriginalAnims()
+
     local bundled = bundleData.bundledItems or getBundled(bundleData.id)
     if not bundled then return false end
 
-    local allAnimData = {}
+    local targetAnims = nil
 
     for key, assetIds in pairs(bundled) do
         for _, assetId in pairs(assetIds) do
@@ -541,8 +643,8 @@ local function applySlotFromBundle(slotName, bundleData, skipRestart)
                     local extracted = extractAnimDataFromObject(obj)
                     for sn, anims in pairs(extracted) do
                         if sn:lower() == slotName:lower() then
-                            if not allAnimData[sn] or #allAnimData[sn] == 0 then
-                                allAnimData[sn] = anims
+                            if not targetAnims or #targetAnims == 0 then
+                                targetAnims = anims
                             end
                         end
                     end
@@ -552,21 +654,24 @@ local function applySlotFromBundle(slotName, bundleData, skipRestart)
         end
     end
 
-    local applied = applyExtractedAnims(animate, allAnimData, slotName)
+    if not targetAnims or #targetAnims == 0 then return false end
+
+    local applied
+    if skipFreeze then
+        applied = setSlotAnimations(animate, slotName, targetAnims)
+    else
+        applied = applySlotWithFreeze(animate, slotName, targetAnims)
+    end
 
     if applied > 0 then
         State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}
         SaveConfig()
-        if not skipRestart then
-            restartAnimateScript()
-        end
         return true
     end
 
     return false
 end
 
--- NEW: Apply all saved custom slots at once
 local function applyAllCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then
         notify("Custom Anim", "No custom slots configured", 3)
@@ -585,16 +690,16 @@ local function applyAllCustomSlots()
         local hum = char:FindFirstChild("Humanoid")
         if not animate or not hum then State.applyingAnim = false; return end
 
+        captureOriginalAnims()
+
         notify("Custom Anim", "Applying all custom slots...", 2)
 
-        local totalApplied = 0
-        local slotCount = 0
+        local allAnimData = {}
 
         for slotName, info in pairs(State.config.CustomAnimSlots) do
             if type(info) == "table" and info.id then
                 local bundled = getBundled(info.id)
                 if not bundled then
-                    -- Try to find from animsData
                     for _, a in ipairs(State.animsData) do
                         if tostring(a.id) == tostring(info.id) and a.bundledItems then
                             bundled = a.bundledItems
@@ -604,8 +709,6 @@ local function applyAllCustomSlots()
                 end
 
                 if bundled then
-                    local allAnimData = {}
-
                     for key, assetIds in pairs(bundled) do
                         for _, assetId in pairs(assetIds) do
                             local objs = loadAssetObjects(assetId)
@@ -624,27 +727,20 @@ local function applyAllCustomSlots()
                             end
                         end
                     end
-
-                    local applied = applyExtractedAnims(animate, allAnimData, slotName)
-                    if applied > 0 then
-                        totalApplied = totalApplied + applied
-                        slotCount = slotCount + 1
-                    end
                 end
             end
         end
 
-        -- Single restart after all slots applied
-        if totalApplied > 0 then
-            restartAnimateScript()
-        end
+        local totalApplied = applyAllSlotsWithFreeze(animate, allAnimData)
+
+        local slotCount = 0
+        for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
 
         notify("Custom Anim", "Applied " .. slotCount .. " slots (" .. totalApplied .. " anims)", 3)
         State.applyingAnim = false
     end)
 end
 
--- Reapply on respawn (used by auto-reapply)
 local function reapplyCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then return end
 
@@ -654,7 +750,10 @@ local function reapplyCustomSlots()
     local hum = char:FindFirstChild("Humanoid")
     if not animate or not hum then return end
 
-    local anyApplied = false
+    originalAnimData = nil
+    captureOriginalAnims()
+
+    local allAnimData = {}
 
     for slotName, info in pairs(State.config.CustomAnimSlots) do
         if type(info) == "table" and info.id then
@@ -669,15 +768,76 @@ local function reapplyCustomSlots()
             end
 
             if bundled then
-                local ok = applySlotFromBundle(slotName, {id = info.id, name = info.name, bundledItems = bundled}, true)
-                if ok then anyApplied = true end
+                for key, assetIds in pairs(bundled) do
+                    for _, assetId in pairs(assetIds) do
+                        local objs = loadAssetObjects(assetId)
+                        if objs then
+                            for _, obj in pairs(objs) do
+                                local extracted = extractAnimDataFromObject(obj)
+                                for sn, anims in pairs(extracted) do
+                                    if sn:lower() == slotName:lower() then
+                                        if not allAnimData[sn] or #allAnimData[sn] == 0 then
+                                            allAnimData[sn] = anims
+                                        end
+                                    end
+                                end
+                                pcall(function() obj:Destroy() end)
+                            end
+                        end
+                    end
+                end
             end
         end
     end
 
-    if anyApplied then
-        restartAnimateScript()
+    if next(allAnimData) then
+        applyAllSlotsWithFreeze(animate, allAnimData)
     end
+end
+
+local function revertSlotWithFreeze(slotName)
+    local char = player.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+
+    freezeCharacter()
+    wait(0.1)
+
+    stopAllTracks()
+
+    local reverted = revertSlot(slotName)
+
+    hum:ChangeState(Enum.HumanoidStateType.Freefall)
+
+    wait(0.1)
+    unfreezeCharacter()
+
+    return reverted
+end
+
+local function revertAllSlotsWithFreeze()
+    local char = player.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+
+    freezeCharacter()
+    wait(0.1)
+
+    stopAllTracks()
+
+    local anyReverted = false
+    for _, slotName in ipairs(ANIM_SLOT_NAMES) do
+        if revertSlot(slotName) then anyReverted = true end
+    end
+
+    hum:ChangeState(Enum.HumanoidStateType.Freefall)
+
+    wait(0.1)
+    unfreezeCharacter()
+
+    return anyReverted
 end
 
 local function updateFavIcon(img, id, isFav)
@@ -969,24 +1129,20 @@ local function toggleFavMode()
     applyNativeTheme(); updateDisplay(true)
 end
 
--- UPDATED: Auto-reapply now immediately applies custom slots when turned ON
 local function toggleAutoReapply()
     State.autoReapplyEnabled = not State.autoReapplyEnabled
     State.config.AutoReapplyEnabled = State.autoReapplyEnabled
     SaveConfig(); applyNativeTheme()
     notify("Auto-Reapply", State.autoReapplyEnabled and "ON" or "OFF", 3)
 
-    -- When turned ON, immediately apply saved custom slots + last animation
     if State.autoReapplyEnabled then
         task.spawn(function()
             local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
             local hasLastAnim = getgenv().lastAnim and getgenv().lastAnim.id
 
             if hasLastAnim and not hasCustomSlots then
-                -- Only last full animation bundle saved
                 applyAnim(getgenv().lastAnim)
             elseif hasCustomSlots then
-                -- Apply custom slots (they take priority over full bundle)
                 applyAllCustomSlots()
             end
         end)
@@ -1191,7 +1347,7 @@ local function openCustomAnimEditor()
 
     local main = Instance.new("Frame", screenGui)
     main.BackgroundColor3 = Color3.fromRGB(30, 30, 30); main.BorderSizePixel = 0
-    main.Size = UDim2.fromOffset(340, 440); main.Position = UDim2.fromScale(0.5, 0.5)
+    main.Size = UDim2.fromOffset(380, 480); main.Position = UDim2.fromScale(0.5, 0.5)
     main.AnchorPoint = Vector2.new(0.5, 0.5); main.ZIndex = 50; main.ClipsDescendants = true
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
     local ms = Instance.new("UIStroke", main); ms.Color = Color3.fromRGB(70, 70, 70); ms.Thickness = 1
@@ -1213,22 +1369,21 @@ local function openCustomAnimEditor()
     closeBtn.Text = "X"; closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200); closeBtn.TextSize = 16; closeBtn.ZIndex = 52
     closeBtn.MouseButton1Click:Connect(closeCustomAnimEditor)
 
-    -- Draggable
-    local dragging, dragStart, startPos = false, nil, nil
+    local edDragging, edDragStart, edStartPos = false, nil, nil
     local dragConns = {}
     titleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true; dragStart = input.Position; startPos = main.Position
+            edDragging = true; edDragStart = input.Position; edStartPos = main.Position
         end
     end)
     table.insert(dragConns, UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        if edDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - edDragStart
+            main.Position = UDim2.new(edStartPos.X.Scale, edStartPos.X.Offset + delta.X, edStartPos.Y.Scale, edStartPos.Y.Offset + delta.Y)
         end
     end))
     table.insert(dragConns, UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then edDragging = false end
     end))
 
     screenGui.Destroying:Connect(function()
@@ -1239,7 +1394,6 @@ local function openCustomAnimEditor()
     contentArea.BackgroundTransparency = 1; contentArea.Position = UDim2.fromOffset(0, 38)
     contentArea.Size = UDim2.new(1, 0, 1, -38); contentArea.ZIndex = 51; contentArea.ClipsDescendants = true
 
-    -- Slot list page
     local slotPage = Instance.new("Frame", contentArea)
     slotPage.Name = "SlotPage"; slotPage.BackgroundTransparency = 1
     slotPage.Size = UDim2.fromScale(1, 1); slotPage.ZIndex = 52; slotPage.Visible = true
@@ -1253,10 +1407,9 @@ local function openCustomAnimEditor()
 
     local ll = Instance.new("UIListLayout", scrollFrame)
     ll.Padding = UDim.new(0, 4); ll.SortOrder = Enum.SortOrder.LayoutOrder
-    local pad = Instance.new("UIPadding", scrollFrame)
-    pad.PaddingLeft = UDim.new(0, 8); pad.PaddingRight = UDim.new(0, 8); pad.PaddingTop = UDim.new(0, 4)
+    local padUI = Instance.new("UIPadding", scrollFrame)
+    padUI.PaddingLeft = UDim.new(0, 8); padUI.PaddingRight = UDim.new(0, 8); padUI.PaddingTop = UDim.new(0, 4)
 
-    -- Picker page
     local pickerPage = Instance.new("Frame", contentArea)
     pickerPage.Name = "PickerPage"; pickerPage.BackgroundTransparency = 1
     pickerPage.Size = UDim2.fromScale(1, 1); pickerPage.ZIndex = 52; pickerPage.Visible = false
@@ -1335,13 +1488,13 @@ local function openCustomAnimEditor()
         end
 
         local BATCH_SIZE = 10
-        local idx = 1
+        local batchIdx = 1
 
         local function createBatch()
             if myToken ~= pickerBuildToken then return end
-            local batchEnd = math.min(idx + BATCH_SIZE - 1, #matches)
+            local batchEnd = math.min(batchIdx + BATCH_SIZE - 1, #matches)
 
-            for i = idx, batchEnd do
+            for i = batchIdx, batchEnd do
                 if myToken ~= pickerBuildToken then return end
                 local item = matches[i]
 
@@ -1397,8 +1550,8 @@ local function openCustomAnimEditor()
                 end)
             end
 
-            idx = batchEnd + 1
-            if idx <= #matches then
+            batchIdx = batchEnd + 1
+            if batchIdx <= #matches then
                 task.defer(createBatch)
             end
         end
@@ -1426,7 +1579,7 @@ local function openCustomAnimEditor()
         pickerPage.Visible = true
     end
 
-    -- Build slot rows
+    -- Build slot rows with individual REMOVE buttons
     for idx, slotName in ipairs(ANIM_SLOT_NAMES) do
         local row = Instance.new("Frame", scrollFrame)
         row.Name = "Row_" .. slotName; row.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
@@ -1435,7 +1588,7 @@ local function openCustomAnimEditor()
 
         local slotLabel = Instance.new("TextLabel", row)
         slotLabel.BackgroundTransparency = 1; slotLabel.Position = UDim2.fromOffset(8, 0)
-        slotLabel.Size = UDim2.new(0.22, 0, 1, 0); slotLabel.Font = Enum.Font.GothamBold
+        slotLabel.Size = UDim2.new(0.18, 0, 1, 0); slotLabel.Font = Enum.Font.GothamBold
         slotLabel.Text = slotName; slotLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
         slotLabel.TextSize = 12; slotLabel.TextXAlignment = Enum.TextXAlignment.Left; slotLabel.ZIndex = 55
 
@@ -1445,14 +1598,46 @@ local function openCustomAnimEditor()
 
         local currentLabel = Instance.new("TextLabel", row)
         currentLabel.Name = "CurrentLabel"; currentLabel.BackgroundTransparency = 1
-        currentLabel.Position = UDim2.new(0.24, 0, 0, 0); currentLabel.Size = UDim2.new(0.44, 0, 1, 0)
+        currentLabel.Position = UDim2.new(0.20, 0, 0, 0); currentLabel.Size = UDim2.new(0.36, 0, 1, 0)
         currentLabel.Font = Enum.Font.Gotham; currentLabel.Text = currentName
         currentLabel.TextColor3 = Color3.fromRGB(150, 150, 150); currentLabel.TextSize = 10
         currentLabel.TextTruncate = Enum.TextTruncate.AtEnd; currentLabel.TextXAlignment = Enum.TextXAlignment.Left; currentLabel.ZIndex = 55
 
+        -- Per-slot REMOVE button
+        local removeBtn = Instance.new("TextButton", row)
+        removeBtn.Name = "RemoveBtn"
+        removeBtn.BackgroundColor3 = Color3.fromRGB(160, 50, 50)
+        removeBtn.Position = UDim2.new(0.57, 0, 0.1, 0); removeBtn.Size = UDim2.new(0.18, -2, 0.8, 0)
+        removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"
+        removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255); removeBtn.TextSize = 12
+        removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55
+        Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0, 4)
+
+        removeBtn.MouseButton1Click:Connect(function()
+            if State.applyingAnim then
+                notify("Custom Anim", "Wait for current operation to finish", 3)
+                return
+            end
+
+            State.config.CustomAnimSlots[slotName] = nil
+            SaveConfig()
+
+            captureOriginalAnims()
+            local reverted = revertSlotWithFreeze(slotName)
+
+            if reverted then
+                notify("Custom Anim", "Removed & reverted: " .. slotName, 3)
+            else
+                notify("Custom Anim", "Removed: " .. slotName .. " (revert on respawn)", 3)
+            end
+
+            currentLabel.Text = "None"
+        end)
+
+        -- Pick button
         local selectBtn = Instance.new("TextButton", row)
         selectBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 220)
-        selectBtn.Position = UDim2.new(0.7, 0, 0.1, 0); selectBtn.Size = UDim2.new(0.28, -4, 0.8, 0)
+        selectBtn.Position = UDim2.new(0.76, 0, 0.1, 0); selectBtn.Size = UDim2.new(0.22, -4, 0.8, 0)
         selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"
         selectBtn.TextColor3 = Color3.fromRGB(255, 255, 255); selectBtn.TextSize = 11
         selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55
@@ -1463,7 +1648,7 @@ local function openCustomAnimEditor()
         end)
     end
 
-    -- ===== BOTTOM BUTTONS BAR ===== --
+    -- Bottom buttons
     local bottomBar = Instance.new("Frame", slotPage)
     bottomBar.BackgroundTransparency = 1; bottomBar.BorderSizePixel = 0
     bottomBar.Size = UDim2.new(1, 0, 0, 36); bottomBar.Position = UDim2.new(0, 0, 1, -38)
@@ -1475,7 +1660,6 @@ local function openCustomAnimEditor()
     bottomLayout.VerticalAlignment = Enum.VerticalAlignment.Center
     bottomLayout.Padding = UDim.new(0, 10)
 
-    -- NEW: Apply All button (green)
     local applyAllBtn = Instance.new("TextButton", bottomBar)
     applyAllBtn.Name = "ApplyAllBtn"; applyAllBtn.LayoutOrder = 1
     applyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
@@ -1491,9 +1675,8 @@ local function openCustomAnimEditor()
             return
         end
 
-        -- Check if any slots are configured
         local hasSlots = false
-        for slotName, info in pairs(State.config.CustomAnimSlots) do
+        for _, info in pairs(State.config.CustomAnimSlots) do
             if type(info) == "table" and info.id then hasSlots = true; break end
         end
 
@@ -1507,11 +1690,7 @@ local function openCustomAnimEditor()
 
         task.spawn(function()
             applyAllCustomSlots()
-
-            -- Wait for apply to finish
             while State.applyingAnim do task.wait(0.1) end
-
-            -- Restore button
             if applyAllBtn and applyAllBtn.Parent then
                 applyAllBtn.Text = "Apply All"
                 applyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 60)
@@ -1519,7 +1698,6 @@ local function openCustomAnimEditor()
         end)
     end)
 
-    -- Clear All button (red)
     local clearAllBtn = Instance.new("TextButton", bottomBar)
     clearAllBtn.Name = "ClearAllBtn"; clearAllBtn.LayoutOrder = 2
     clearAllBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -1530,14 +1708,23 @@ local function openCustomAnimEditor()
     Instance.new("UICorner", clearAllBtn).CornerRadius = UDim.new(0, 6)
 
     clearAllBtn.MouseButton1Click:Connect(function()
+        if State.applyingAnim then
+            notify("Custom Anim", "Wait for current operation to finish", 3)
+            return
+        end
+
         State.config.CustomAnimSlots = {}; SaveConfig()
+
+        captureOriginalAnims()
+        revertAllSlotsWithFreeze()
+
         for _, child in pairs(scrollFrame:GetChildren()) do
             if child:IsA("Frame") then
                 local cl = child:FindFirstChild("CurrentLabel")
                 if cl then cl.Text = "None" end
             end
         end
-        notify("Custom Anim", "All custom slots cleared", 3)
+        notify("Custom Anim", "All custom slots cleared & reverted", 3)
     end)
 end
 
@@ -1731,18 +1918,19 @@ local function onCharacterAdded(char)
 
     currentLoadId = currentLoadId + 1; cleanupAllTracks(); loadedTracks = {}; State.currentEmoteTrack = nil
     State.applyingAnim = false
+    originalAnimData = nil
 
-    -- Auto-reapply on respawn: applies both last anim bundle AND custom slots
     if State.autoReapplyEnabled then
         task.wait(1)
+
+        captureOriginalAnims()
+
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
         local hasLastAnim = getgenv().lastAnim and getgenv().lastAnim.id
 
         if hasCustomSlots then
-            -- Custom slots take priority - apply them
             reapplyCustomSlots()
         elseif hasLastAnim then
-            -- Fall back to last full animation bundle
             applyAnim(getgenv().lastAnim)
         end
     end
