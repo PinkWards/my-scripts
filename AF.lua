@@ -14,11 +14,11 @@ local trackedPlayers   = {}
 local trackedCharConns = {}
 local conns            = {}
 
--- Cache: BasePart → player who owns it (for O(1) lookup)
-local partOwner = {}
+-- ★ FIX 1: O(1) lookup cache instead of nested player loops
+local partToPlayer = {}
 
 -- ═══════════════════════════════════════════════
--- COLLISION GROUPS (unchanged)
+-- COLLISION GROUPS
 -- ═══════════════════════════════════════════════
 local cgWork = false
 pcall(function()
@@ -55,25 +55,6 @@ end
 local function killPartVelocity(part)
     safeSet(part, "AssemblyLinearVelocity", V3ZERO)
     safeSet(part, "AssemblyAngularVelocity", V3ZERO)
-end
-
--- ═══════════════════════════════════════════════
--- PART OWNERSHIP CACHE
--- Register/unregister parts for O(1) "is this a player part?" checks
--- ═══════════════════════════════════════════════
-local function registerPart(part, plr)
-    if part:IsA("BasePart") then
-        partOwner[part] = plr
-    end
-end
-
-local function unregisterChar(char)
-    if not char then return end
-    for _, p in ipairs(char:GetDescendants()) do
-        if p:IsA("BasePart") then
-            partOwner[p] = nil
-        end
-    end
 end
 
 -- ═══════════════════════════════════════════════
@@ -115,21 +96,22 @@ local function trackChar(ch, plr)
 
     for _, p in ipairs(ch:GetDescendants()) do
         killPart(p)
-        registerPart(p, plr)
+        -- ★ FIX 1: register in cache
+        if p:IsA("BasePart") then partToPlayer[p] = plr end
         hookPartProperties(p, charConns)
     end
 
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
         killPart(p)
-        registerPart(p, plr)
+        if p:IsA("BasePart") then partToPlayer[p] = plr end
         task.defer(function() killPart(p) end)
+        task.delay(0.1, function() killPart(p) end)
         hookPartProperties(p, charConns)
     end)
 
+    -- ★ FIX 1: clean cache when parts leave
     charConns[#charConns + 1] = ch.DescendantRemoving:Connect(function(p)
-        if p:IsA("BasePart") then
-            partOwner[p] = nil
-        end
+        if p:IsA("BasePart") then partToPlayer[p] = nil end
     end)
 end
 
@@ -147,7 +129,12 @@ for _, plr in ipairs(Players:GetPlayers()) do trackPlayer(plr) end
 Players.PlayerAdded:Connect(trackPlayer)
 Players.PlayerRemoving:Connect(function(plr)
     trackedPlayers[plr] = nil
-    if plr.Character then unregisterChar(plr.Character) end
+    -- ★ FIX 1: clean cache
+    if plr.Character then
+        for _, p in ipairs(plr.Character:GetDescendants()) do
+            if p:IsA("BasePart") then partToPlayer[p] = nil end
+        end
+    end
     if trackedCharConns[plr] then
         for _, c in ipairs(trackedCharConns[plr]) do
             pcall(function() c:Disconnect() end)
@@ -156,10 +143,10 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
--- Periodic re-enforce: REDUCED FREQUENCY, skip if too many parts
+-- ★ FIX 2: re-enforce less often (was 0.3s, now 1s — still safe)
 task.spawn(function()
     while true do
-        task.wait(1)  -- was 0.3, once per second is plenty
+        task.wait(1)
         for plr in pairs(trackedPlayers) do
             local ch = plr.Character
             if ch then
@@ -223,8 +210,8 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING — ONE event only (Heartbeat)
-    -- with an additional RenderStepped for visual smoothness
+    -- VELOCITY CLAMPING
+    -- ★ FIX 3: 2 events instead of 3 (Stepped was redundant)
     -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
@@ -245,9 +232,11 @@ local function protect(char)
         end
 
         if vy > UP_CAP then
-            vy = UP_CAP; dirty = true
+            vy = UP_CAP
+            dirty = true
         elseif vy < -DOWN_CAP then
-            vy = -DOWN_CAP; dirty = true
+            vy = -DOWN_CAP
+            dirty = true
         end
 
         if dirty then
@@ -255,24 +244,22 @@ local function protect(char)
         end
     end
 
-    -- Two events instead of three (Stepped removed — redundant)
     reg(RunService.RenderStepped:Connect(clampVelocity))
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN — THROTTLED
-    -- Only runs every N frames, higher thresholds for world debris
-    -- Uses O(1) partOwner cache instead of nested player loop
+    -- NEARBY PART SCAN
+    -- ★ FIX 4: runs every 3rd frame + O(1) player lookup
+    -- ★ FIX 5: higher thresholds for world debris so normal
+    --          disaster physics don't trigger constant writes
     -- ═══════════════════════════════════
-    local scanCounter = 0
-    local SCAN_INTERVAL = 3  -- run every 3rd frame instead of every frame
-
+    local scanTick = 0
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
 
-        scanCounter += 1
-        if scanCounter < SCAN_INTERVAL then return end
-        scanCounter = 0
+        scanTick += 1
+        if scanTick < 3 then return end  -- ★ every 3rd frame
+        scanTick = 0
 
         local ok, nearby = pcall(function()
             return workspace:GetPartBoundsInRadius(
@@ -284,9 +271,10 @@ local function protect(char)
 
         for _, part in ipairs(nearby) do
             if not part.Anchored and not part:IsDescendantOf(char) then
-                -- O(1) lookup instead of looping all players
-                if partOwner[part] then
-                    -- It's a player part
+
+                -- ★ FIX 1: O(1) lookup replaces nested loop
+                if partToPlayer[part] then
+                    -- PLAYER PART — full neutralize
                     killPart(part)
                     pcall(function()
                         if part.AssemblyAngularVelocity.Magnitude > 10
@@ -295,12 +283,14 @@ local function protect(char)
                         end
                     end)
                 else
-                    -- World debris — HIGHER thresholds so normal
-                    -- disaster physics don't trigger constant writes
+                    -- WORLD DEBRIS
+                    -- ★ FIX 5: raised thresholds (was 5/20)
+                    -- normal disaster debris won't trigger this
+                    -- only weaponized/fling-speed parts get caught
                     pcall(function()
                         local av = part.AssemblyAngularVelocity.Magnitude
                         local lv = part.AssemblyLinearVelocity.Magnitude
-                        if av > 30 or lv > 120 then
+                        if av > 25 or lv > 100 then
                             killPart(part)
                             killPartVelocity(part)
                         end
@@ -311,7 +301,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD (unchanged)
+    -- FORCE / WELD GUARD (unchanged — not a lag source)
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -328,6 +318,7 @@ local function protect(char)
                     end
                 end)
             end
+
             checkExternal()
             task.defer(checkExternal)
             task.delay(0.1, checkExternal)
@@ -353,6 +344,7 @@ local function protect(char)
                     end
                 end)
             end
+
             checkJoint()
             task.defer(checkJoint)
             task.delay(0.1, checkJoint)
@@ -360,12 +352,13 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- SEAT GUARD (unchanged)
+    -- SEAT GUARD (uses O(1) cache now)
     -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
-        if partOwner[seat] then
+        -- ★ FIX 1: O(1) check
+        if partToPlayer[seat] then
             hum.Sit = false
             return
         end
@@ -378,9 +371,11 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD — WITH DEBOUNCE PER PART
+    -- TOUCH GUARD
+    -- ★ FIX 6: debounce per part so hundreds of
+    --          debris touches don't all fire separately
     -- ═══════════════════════════════════
-    local touchCooldown = {}
+    local touchCD = {}
 
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
@@ -388,12 +383,10 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) or hit.Anchored then return end
 
-            -- Debounce: skip if we handled this part recently
-            if touchCooldown[hit] then return end
-            touchCooldown[hit] = true
-            task.delay(0.1, function()
-                touchCooldown[hit] = nil
-            end)
+            -- ★ skip if this part was already handled recently
+            if touchCD[hit] then return end
+            touchCD[hit] = true
+            task.delay(0.15, function() touchCD[hit] = nil end)
 
             pcall(function()
                 local av = hit.AssemblyAngularVelocity.Magnitude
