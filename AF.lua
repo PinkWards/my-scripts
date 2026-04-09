@@ -4,18 +4,18 @@ local PhysicsService = game:GetService("PhysicsService")
 local LP             = Players.LocalPlayer
 
 local V3ZERO    = Vector3.zero
-local ANG_CAP   = 8  -- Stricter angular control
-local HORIZ_CAP = 100  -- Tighter horizontal control
-local UP_CAP    = 80
-local DOWN_CAP  = 150
-local SCAN_RAD  = 35  -- Larger detection radius
+local ANG_CAP   = 15
+local HORIZ_CAP = 130
+local UP_CAP    = 100
+local DOWN_CAP  = 180
+local SCAN_RAD  = 30
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
 local conns            = {}
 
 -- ═══════════════════════════════════════════════
--- COLLISION GROUPS (ENHANCED)
+-- COLLISION GROUPS
 -- ═══════════════════════════════════════════════
 local cgWork = false
 pcall(function()
@@ -29,86 +29,81 @@ end)
 -- ═══════════════════════════════════════════════
 -- DANGEROUS FORCE CLASS NAMES
 -- ═══════════════════════════════════════════════
-local DANGEROUS = {
-    BodyVelocity = true, BodyAngularVelocity = true, BodyForce = true,
-    BodyPosition = true, BodyGyro = true, BodyThrust = true, 
-    RocketPropulsion = true, Torque = true, VectorForce = true, 
-    LinearVelocity = true, AlignPosition = true, AlignOrientation = true, 
-    AngularVelocity = true
-}
+local DANGEROUS = {}
+for _, cn in ipairs({
+    "BodyVelocity", "BodyAngularVelocity", "BodyForce",
+    "BodyPosition", "BodyGyro", "BodyThrust", "RocketPropulsion",
+    "Torque", "VectorForce", "LinearVelocity", "AlignPosition",
+    "AlignOrientation", "AngularVelocity",
+}) do DANGEROUS[cn] = true end
 
 -- ═══════════════════════════════════════════════
--- UTILITY (MAXIMIZED)
+-- UTILITY
 -- ═══════════════════════════════════════════════
-local processedParts = setmetatable({}, {__mode = "k"}) -- Weak table for auto-cleanup
-
-local function safeSet(part, props)
-    for prop, val in pairs(props) do
-        if part[prop] ~= val then
-            part[prop] = val
-        end
-    end
+local function safeSet(part, prop, val)
+    pcall(function() part[prop] = val end)
 end
 
 local function killPart(part)
-    if not part:IsA("BasePart") or processedParts[part] then return end
-    processedParts[part] = true
-    
-    -- Batch property setting for performance
-    safeSet(part, {
-        CanCollide = false,
-        CanTouch = false,
-        CanQuery = false,
-        Massless = true,
-        CollisionGroup = cgWork and "_af_them" or part.CollisionGroup
-    })
+    if not part:IsA("BasePart") then return end
+    safeSet(part, "CanCollide", false)
+    safeSet(part, "CanTouch", false)
+    safeSet(part, "Massless", true)
+    if cgWork then safeSet(part, "CollisionGroup", "_af_them") end
 end
 
 local function killPartVelocity(part)
-    if part.AssemblyLinearVelocity ~= V3ZERO or part.AssemblyAngularVelocity ~= V3ZERO then
-        safeSet(part, {
-            AssemblyLinearVelocity = V3ZERO,
-            AssemblyAngularVelocity = V3ZERO
-        })
-    end
+    safeSet(part, "AssemblyLinearVelocity", V3ZERO)
+    safeSet(part, "AssemblyAngularVelocity", V3ZERO)
 end
 
 -- ═══════════════════════════════════════════════
--- NEUTRALIZE OTHER PLAYERS (MAXIMUM POWER)
+-- NEUTRALIZE OTHER PLAYERS
 -- ═══════════════════════════════════════════════
+local function hookPartProperties(part, connTable)
+    if not part:IsA("BasePart") then return end
+
+    local function enforce()
+        safeSet(part, "CanCollide", false)
+        safeSet(part, "CanTouch", false)
+    end
+
+    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
+    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanTouch"):Connect(enforce)
+
+    if cgWork then
+        connTable[#connTable + 1] = part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
+            pcall(function()
+                if part.CollisionGroup ~= "_af_them" then
+                    part.CollisionGroup = "_af_them"
+                end
+            end)
+        end)
+    end
+end
+
 local function trackChar(ch, plr)
     if not ch then return end
 
     if trackedCharConns[plr] then
         for _, c in ipairs(trackedCharConns[plr]) do
-            c:Disconnect()
+            pcall(function() c:Disconnect() end)
         end
     end
 
     local charConns = {}
     trackedCharConns[plr] = charConns
 
-    -- Immediate neutralization
-    local descendants = ch:GetDescendants()
-    for i = 1, #descendants do
-        local part = descendants[i]
-        if part:IsA("BasePart") then
-            killPart(part)
-            killPartVelocity(part)
-        end
+    for _, p in ipairs(ch:GetDescendants()) do
+        killPart(p)
+        hookPartProperties(p, charConns)
     end
 
-    -- Continuous enforcement on new parts
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
-        if p:IsA("BasePart") then
-            killPart(p)
-            killPartVelocity(p)
-            -- Double-tap to ensure it sticks
-            task.defer(function()
-                killPart(p)
-                killPartVelocity(p)
-            end)
-        end
+        killPart(p)
+        task.defer(function() killPart(p) end)
+        task.delay(0.1, function() killPart(p) end)
+        hookPartProperties(p, charConns)
     end)
 end
 
@@ -128,29 +123,21 @@ Players.PlayerRemoving:Connect(function(plr)
     trackedPlayers[plr] = nil
     if trackedCharConns[plr] then
         for _, c in ipairs(trackedCharConns[plr]) do
-            c:Disconnect()
+            pcall(function() c:Disconnect() end)
         end
         trackedCharConns[plr] = nil
     end
 end)
 
--- Aggressive periodic re-enforcement
+-- Periodic re-enforce
 task.spawn(function()
     while true do
-        task.wait(0.2) -- Faster re-enforcement
+        task.wait(0.3)
         for plr in pairs(trackedPlayers) do
             local ch = plr.Character
             if ch then
-                local descendants = ch:GetDescendants()
-                for i = 1, #descendants do
-                    local part = descendants[i]
-                    if part:IsA("BasePart") then
-                        killPart(part)
-                        -- Kill velocity if they're moving fast
-                        if part.AssemblyLinearVelocity.Magnitude > 50 then
-                            killPartVelocity(part)
-                        end
-                    end
+                for _, p in ipairs(ch:GetDescendants()) do
+                    killPart(p)
                 end
             end
         end
@@ -158,11 +145,11 @@ task.spawn(function()
 end)
 
 -- ═══════════════════════════════════════════════
--- CHARACTER PROTECTION (ULTRA MODE)
+-- CHARACTER PROTECTION
 -- ═══════════════════════════════════════════════
 local function clearConns()
     for i = #conns, 1, -1 do
-        conns[i]:Disconnect()
+        pcall(function() conns[i]:Disconnect() end)
         conns[i] = nil
     end
 end
@@ -171,7 +158,6 @@ local function reg(c) conns[#conns + 1] = c return c end
 local function protect(char)
     if not char then return end
     clearConns()
-    processedParts = setmetatable({}, {__mode = "k"})
 
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
     local hum = char:WaitForChild("Humanoid", 5)
@@ -182,71 +168,47 @@ local function protect(char)
     overlapParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════
-    -- OUR COLLISION GROUP (ENFORCED)
+    -- OUR COLLISION GROUP
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
-        if cgWork then 
-            safeSet(p, {
-                CollisionGroup = "_af_me",
-                CanCollide = true,  -- Keep our parts solid to each other
-                Massless = false
-            })
-        end
+        if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
     end
 
-    local descendants = char:GetDescendants()
-    for i = 1, #descendants do 
-        fortify(descendants[i]) 
-    end
-    
-    reg(char.DescendantAdded:Connect(fortify))
+    for _, p in ipairs(char:GetDescendants()) do fortify(p) end
+    reg(char.DescendantAdded:Connect(function(p)
+        fortify(p)
+        task.defer(function() fortify(p) end)
+    end))
 
-    -- Lock collision group aggressively
-    if cgWork then
-        for i = 1, #descendants do
-            local p = descendants[i]
-            if p:IsA("BasePart") then
-                reg(p:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-                    if p.CollisionGroup ~= "_af_me" then
-                        p.CollisionGroup = "_af_me"
-                    end
-                end))
-                
-                -- Prevent collision disabling
-                reg(p:GetPropertyChangedSignal("CanCollide"):Connect(function()
-                    if p.Name ~= "HumanoidRootPart" and not p.CanCollide then
-                        p.CanCollide = true
-                    end
-                end))
-            end
-        end
-        
-        reg(char.DescendantAdded:Connect(function(p)
-            if p:IsA("BasePart") then
-                reg(p:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-                    if p.CollisionGroup ~= "_af_me" then
-                        p.CollisionGroup = "_af_me"
-                    end
-                end))
-            end
+    local function hookOwnPart(p)
+        if not p:IsA("BasePart") or not cgWork then return end
+        reg(p:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
+            pcall(function()
+                if p.CollisionGroup ~= "_af_me" then
+                    p.CollisionGroup = "_af_me"
+                end
+            end)
         end))
     end
 
+    for _, p in ipairs(char:GetDescendants()) do hookOwnPart(p) end
+    reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
+
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING (ULTRA STRICT)
+    -- VELOCITY CLAMPING
+    -- KEY FIX: angular and linear are clamped INDEPENDENTLY
+    -- Runs on ALL three RunService events
     -- ═══════════════════════════════════
-    local lastVelCheck = 0
-    
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
-        -- Always neutralize angular velocity immediately
-        local angVel = hrp.AssemblyAngularVelocity
-        if angVel.Magnitude > ANG_CAP then
+        -- Always kill excessive angular velocity
+        if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
+        -- Always clamp linear velocity regardless of spin
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
@@ -271,31 +233,25 @@ local function protect(char)
         end
     end
 
-    -- Double enforcement for maximum protection
-    reg(RunService.Heartbeat:Connect(clampVelocity))
     reg(RunService.Stepped:Connect(clampVelocity))
+    reg(RunService.RenderStepped:Connect(clampVelocity))
+    reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN (MAXIMUM AGGRESSION)
+    -- NEARBY PART SCAN — EVERY FRAME
     -- ═══════════════════════════════════
-    local lastScan = 0
-    local SCAN_INTERVAL = 0.05 -- Faster scanning
-    
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
-        
-        local now = tick()
-        if now - lastScan < SCAN_INTERVAL then return end
-        lastScan = now
 
         local ok, nearby = pcall(function()
-            return workspace:GetPartBoundsInRadius(hrp.Position, SCAN_RAD, overlapParams)
+            return workspace:GetPartBoundsInRadius(
+                hrp.Position, SCAN_RAD, overlapParams
+            )
         end)
 
         if not ok or not nearby then return end
 
-        for i = 1, #nearby do
-            local part = nearby[i]
+        for _, part in ipairs(nearby) do
             if not part.Anchored and not part:IsDescendantOf(char) then
                 local isPlayer = false
                 for plr in pairs(trackedPlayers) do
@@ -306,141 +262,136 @@ local function protect(char)
                 end
 
                 if isPlayer then
-                    -- Aggressive player part neutralization
                     killPart(part)
-                    killPartVelocity(part)
+                    pcall(function()
+                        if part.AssemblyAngularVelocity.Magnitude > 10
+                        or part.AssemblyLinearVelocity.Magnitude > 200 then
+                            killPartVelocity(part)
+                        end
+                    end)
                 else
-                    -- Workspace parts - only kill if dangerous
-                    local av = part.AssemblyAngularVelocity.Magnitude
-                    local lv = part.AssemblyLinearVelocity.Magnitude
-                    if av > 3 or lv > 15 then
-                        killPart(part)
-                        killPartVelocity(part)
-                    end
+                    pcall(function()
+                        local av = part.AssemblyAngularVelocity.Magnitude
+                        local lv = part.AssemblyLinearVelocity.Magnitude
+                        if av > 5 or lv > 20 then
+                            killPart(part)
+                            killPartVelocity(part)
+                        end
+                    end)
                 end
             end
         end
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD (INSTANT DESTROY)
+    -- FORCE / WELD GUARD — immediate + deferred + delayed
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
-            obj:Destroy()
+            local function checkExternal()
+                pcall(function()
+                    if not obj.Parent then return end
+                    for _, prop in ipairs({"Attachment0", "Attachment1", "Part0", "Part1"}) do
+                        local ok2, val = pcall(function() return obj[prop] end)
+                        if ok2 and val and typeof(val) == "Instance"
+                        and not val:IsDescendantOf(char) then
+                            obj:Destroy()
+                            return
+                        end
+                    end
+                end)
+            end
+
+            checkExternal()
+            task.defer(checkExternal)
+            task.delay(0.1, checkExternal)
             return
         end
 
-        if obj:IsA("JointInstance") or obj:IsA("WeldConstraint") or obj:IsA("Constraint") then
-            task.defer(function()
-                if not obj.Parent then return end
-                local p0, p1
-                if obj:IsA("Constraint") then
-                    p0 = obj.Attachment0 and obj.Attachment0.Parent
-                    p1 = obj.Attachment1 and obj.Attachment1.Parent
-                else
-                    p0, p1 = obj.Part0, obj.Part1
-                end
-                if p0 and p1 and (p0:IsDescendantOf(char) ~= p1:IsDescendantOf(char)) then
-                    obj:Destroy()
-                end
-            end)
+        if obj:IsA("JointInstance")
+        or obj:IsA("WeldConstraint")
+        or obj:IsA("Constraint") then
+            local function checkJoint()
+                pcall(function()
+                    if not obj.Parent then return end
+                    local p0, p1
+                    if obj:IsA("Constraint") then
+                        p0 = obj.Attachment0 and obj.Attachment0.Parent
+                        p1 = obj.Attachment1 and obj.Attachment1.Parent
+                    else
+                        p0, p1 = obj.Part0, obj.Part1
+                    end
+                    if p0 and p1
+                    and (p0:IsDescendantOf(char) ~= p1:IsDescendantOf(char)) then
+                        obj:Destroy()
+                    end
+                end)
+            end
+
+            checkJoint()
+            task.defer(checkJoint)
+            task.delay(0.1, checkJoint)
         end
     end))
 
     -- ═══════════════════════════════════
-    -- SEAT GUARD (INSTANT REJECT)
+    -- SEAT GUARD
     -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
-        
-        -- Reject any seat from other players
         for plr in pairs(trackedPlayers) do
             if plr.Character and seat:IsDescendantOf(plr.Character) then
                 hum.Sit = false
                 return
             end
         end
-        
-        -- Reject dangerous moving seats
         if not seat.Anchored and not seat:IsDescendantOf(char) then
-            if seat.AssemblyAngularVelocity.Magnitude > 5 or seat.AssemblyLinearVelocity.Magnitude > 30 then
+            if seat.AssemblyAngularVelocity.Magnitude > 8
+            or seat.AssemblyLinearVelocity.Magnitude > 40 then
                 hum.Sit = false
             end
         end
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD (AGGRESSIVE)
+    -- TOUCH GUARD — no cooldown
     -- ═══════════════════════════════════
-    local touchCooldowns = setmetatable({}, {__mode = "k"})
-    local TOUCH_COOLDOWN = 0.05
-    
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
         reg(bp.Touched:Connect(function(hit)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) or hit.Anchored then return end
-            
-            local now = tick()
-            if touchCooldowns[hit] and now - touchCooldowns[hit] < TOUCH_COOLDOWN then
-                return
-            end
-            touchCooldowns[hit] = now
 
-            -- Check if it's a player part
-            local isPlayerPart = false
-            for plr in pairs(trackedPlayers) do
-                if plr.Character and hit:IsDescendantOf(plr.Character) then
-                    isPlayerPart = true
-                    break
-                end
-            end
-
-            if isPlayerPart then
-                -- Instantly neutralize player parts on touch
-                killPart(hit)
-                killPartVelocity(hit)
-                task.defer(clampVelocity)
-            else
-                -- Only neutralize workspace parts if dangerous
+            pcall(function()
                 local av = hit.AssemblyAngularVelocity.Magnitude
                 local lv = hit.AssemblyLinearVelocity.Magnitude
-                if av > 3 or lv > 15 then
+                if av > 5 or lv > 20 then
                     killPart(hit)
                     killPartVelocity(hit)
-                    task.defer(clampVelocity)
                 end
-            end
+            end)
+
+            -- Immediately re-clamp ourselves after any suspicious touch
+            task.defer(clampVelocity)
         end))
     end
 
-    for i = 1, #descendants do hookTouch(descendants[i]) end
+    for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
     reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════
-    -- PLATFORMSTAND GUARD (INSTANT BLOCK)
+    -- PLATFORMSTAND GUARD
     -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
-            hum.PlatformStand = false
+            task.defer(function()
+                if hum.Parent then
+                    hum.PlatformStand = false
+                end
+            end)
         end
     end))
-    
-    -- Additional state guards
-    reg(hum:GetPropertyChangedSignal("Sit"):Connect(function()
-        if hum.Sit and not hum.SeatPart then
-            hum.Sit = false
-        end
-    end))
-
-    -- ═══════════════════════════════════
-    -- NETWORK OWNERSHIP PROTECTION
-    -- ═══════════════════════════════════
-    pcall(function()
-        hrp:SetNetworkOwner(LP)
-    end)
 end
 
 protect(LP.Character)
