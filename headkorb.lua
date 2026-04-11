@@ -1,4 +1,5 @@
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 local HEADLESS_MESH_ID = "rbxassetid://1095708"
@@ -8,6 +9,7 @@ local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
 local activeConnections = {}
+local heartbeatConns = {} -- table instead of single var to avoid overwrite
 local applied = false
 
 local function cleanupConnections()
@@ -18,11 +20,23 @@ local function cleanupConnections()
         end
         activeConnections[i] = nil
     end
+    for i = #heartbeatConns, 1, -1 do
+        local conn = heartbeatConns[i]
+        if conn and conn.Connected then
+            conn:Disconnect()
+        end
+        heartbeatConns[i] = nil
+    end
     applied = false
 end
 
 local function track(conn)
     activeConnections[#activeConnections + 1] = conn
+    return conn
+end
+
+local function trackHeartbeat(conn)
+    heartbeatConns[#heartbeatConns + 1] = conn
     return conn
 end
 
@@ -38,7 +52,6 @@ local function applyHeadless(head)
     head.CanCollide = false
     removeFace(head)
 
-    -- Hide any existing mesh
     local existingMesh = head:FindFirstChildOfClass("SpecialMesh")
     if existingMesh then
         existingMesh.Scale = TINY_SCALE
@@ -51,12 +64,14 @@ local function applyHeadless(head)
     mesh.Scale = TINY_SCALE
     mesh.Parent = head
 
+    -- Keep head invisible persistently
     track(head:GetPropertyChangedSignal("Transparency"):Connect(function()
         if head.Transparency ~= 1 then
             head.Transparency = 1
         end
     end))
 
+    -- Remove any decals added to head
     track(head.ChildAdded:Connect(function(child)
         if child:IsA("Decal") then
             task.defer(function()
@@ -67,16 +82,17 @@ local function applyHeadless(head)
         end
     end))
 
-    -- Hide all accessories near head
     local character = head.Parent
     if character then
+        -- Hide head accessories
         task.spawn(function()
             task.wait(0.3)
+            if not character or not character.Parent then return end
             for _, v in pairs(character:GetChildren()) do
                 if v:IsA("Accessory") then
                     local handle = v:FindFirstChild("Handle")
                     if handle then
-                        local weld = handle:FindFirstChildOfClass("Weld") 
+                        local weld = handle:FindFirstChildOfClass("Weld")
                             or handle:FindFirstChildOfClass("Motor6D")
                         if weld then
                             local attachTo = weld.Part0 or weld.Part1
@@ -88,6 +104,24 @@ local function applyHeadless(head)
                 end
             end
         end)
+
+        -- Also catch accessories added AFTER apply (hats loading in late)
+        track(character.ChildAdded:Connect(function(child)
+            if child:IsA("Accessory") then
+                task.wait(0.1)
+                local handle = child:FindFirstChild("Handle")
+                if handle then
+                    local weld = handle:FindFirstChildOfClass("Weld")
+                        or handle:FindFirstChildOfClass("Motor6D")
+                    if weld then
+                        local attachTo = weld.Part0 or weld.Part1
+                        if attachTo and attachTo.Name == "Head" then
+                            handle.Transparency = 1
+                        end
+                    end
+                end
+            end
+        end))
     end
 end
 
@@ -95,7 +129,6 @@ local function applyKorbloxR6(character)
     local rightLeg = character:FindFirstChild("Right Leg")
     if not rightLeg or rightLeg:FindFirstChild("KorbloxMesh") then return end
 
-    -- Remove existing meshes
     for _, child in ipairs(rightLeg:GetChildren()) do
         if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
             child:Destroy()
@@ -122,95 +155,129 @@ end
 local function applyKorbloxR15(character)
     local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
     local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
-    local rightFoot = character:FindFirstChild("RightFoot")
+    local rightFoot     = character:FindFirstChild("RightFoot")
 
-    if not rightUpperLeg or character:FindFirstChild("KorbloxLeg") then return end
+    if not rightUpperLeg then return end
+    if character:FindFirstChild("KorbloxLeg") then return end
 
-    -- Make original parts invisible but keep collision
-    rightUpperLeg.Transparency = 1
-    if rightLowerLeg then rightLowerLeg.Transparency = 1 end
-    if rightFoot then rightFoot.Transparency = 1 end
-
-    -- Keep them invisible permanently
-    track(rightUpperLeg:GetPropertyChangedSignal("Transparency"):Connect(function()
-        if rightUpperLeg.Transparency ~= 1 then
-            rightUpperLeg.Transparency = 1
+    local function hidePart(part)
+        if not part then return end
+        part.Transparency = 1
+        part.CanCollide   = false
+        for _, child in ipairs(part:GetChildren()) do
+            if child:IsA("SpecialMesh") or child:IsA("Decal") then
+                child:Destroy()
+            end
         end
-    end))
-    if rightLowerLeg then
-        track(rightLowerLeg:GetPropertyChangedSignal("Transparency"):Connect(function()
-            if rightLowerLeg.Transparency ~= 1 then
+    end
+
+    hidePart(rightUpperLeg)
+    hidePart(rightLowerLeg)
+    hidePart(rightFoot)
+
+    local upperLegMotor = nil
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("Motor6D") and part.Part1 == rightUpperLeg then
+            upperLegMotor = part
+            break
+        end
+    end
+
+    local korbloxLeg = Instance.new("Part")
+    korbloxLeg.Name         = "KorbloxLeg"
+    korbloxLeg.Size         = Vector3.new(1, 1, 1)
+    korbloxLeg.Anchored     = false
+    korbloxLeg.CanCollide   = false
+    korbloxLeg.Massless     = true
+    korbloxLeg.CastShadow   = true
+    korbloxLeg.Color        = DARK_GREY_COLOR
+    korbloxLeg.Transparency = 0
+    korbloxLeg.Parent       = character
+
+    local mesh = Instance.new("SpecialMesh")
+    mesh.Name      = "KorbloxMesh"
+    mesh.MeshType  = Enum.MeshType.FileMesh
+    mesh.MeshId    = KORBLOX_MESH_ID
+    mesh.TextureId = KORBLOX_TEXTURE_ID
+    mesh.Scale     = Vector3.new(1, 1, 1)
+    mesh.Parent    = korbloxLeg
+
+    local driveMotor = Instance.new("Motor6D")
+    driveMotor.Name = "KorbloxDrive"
+
+    if upperLegMotor then
+        driveMotor.Part0  = upperLegMotor.Part0
+        driveMotor.Part1  = korbloxLeg
+        driveMotor.C0     = upperLegMotor.C0
+        driveMotor.C1     = CFrame.new(0, 0.5, 0)
+        driveMotor.Parent = upperLegMotor.Parent
+
+        -- Mirror animation + keep legs hidden
+        trackHeartbeat(RunService.Heartbeat:Connect(function()
+            if not character or not character.Parent then return end
+            if not upperLegMotor or not upperLegMotor.Parent then return end
+            if not driveMotor or not driveMotor.Parent then return end
+
+            driveMotor.C0 = upperLegMotor.C0
+
+            if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
+                rightUpperLeg.Transparency = 1
+            end
+            if rightLowerLeg and rightLowerLeg.Transparency ~= 1 then
                 rightLowerLeg.Transparency = 1
             end
+            if rightFoot and rightFoot.Transparency ~= 1 then
+                rightFoot.Transparency = 1
+            end
         end))
-    end
-    if rightFoot then
-        track(rightFoot:GetPropertyChangedSignal("Transparency"):Connect(function()
-            if rightFoot.Transparency ~= 1 then
+    else
+        driveMotor.Part0  = rightUpperLeg
+        driveMotor.Part1  = korbloxLeg
+        driveMotor.C0     = CFrame.new(0, 0, 0)
+        driveMotor.C1     = CFrame.new(0, 0.5, 0)
+        driveMotor.Parent = rightUpperLeg
+
+        trackHeartbeat(RunService.Heartbeat:Connect(function()
+            if not character or not character.Parent then return end
+            if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
+                rightUpperLeg.Transparency = 1
+            end
+            if rightLowerLeg and rightLowerLeg.Transparency ~= 1 then
+                rightLowerLeg.Transparency = 1
+            end
+            if rightFoot and rightFoot.Transparency ~= 1 then
                 rightFoot.Transparency = 1
             end
         end))
     end
-
-    -- Get the humanoid root to base size scaling
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local legScale = 1
-    if humanoid then
-        legScale = humanoid.HipHeight / 2.5 -- adjust scale based on character size
-    end
-
-    -- Create the Korblox visual part welded to RightUpperLeg
-    local korbloxLeg = Instance.new("Part")
-    korbloxLeg.Name = "KorbloxLeg"
-    korbloxLeg.Size = Vector3.new(1, 1, 1)
-    korbloxLeg.Anchored = false
-    korbloxLeg.CanCollide = false
-    korbloxLeg.CastShadow = false
-    korbloxLeg.Massless = true
-    korbloxLeg.Color = DARK_GREY_COLOR
-    korbloxLeg.Transparency = 0
-
-    local mesh = Instance.new("SpecialMesh")
-    mesh.MeshType = Enum.MeshType.FileMesh
-    mesh.MeshId = KORBLOX_MESH_ID
-    mesh.TextureId = KORBLOX_TEXTURE_ID
-    mesh.Scale = Vector3.new(legScale, legScale, legScale)
-    mesh.Offset = Vector3.new(0, 0, 0)
-    mesh.Parent = korbloxLeg
-
-    -- Weld to upper leg
-    local weld = Instance.new("Motor6D")
-    weld.Name = "KorbloxWeld"
-    weld.Part0 = rightUpperLeg
-    weld.Part1 = korbloxLeg
-    -- Adjust offset so it lines up correctly with R15 leg position
-    weld.C0 = CFrame.new(0, -0.5, 0)
-    weld.C1 = CFrame.new(0, 0.5, 0)
-    weld.Parent = rightUpperLeg
-
-    korbloxLeg.Parent = character
 end
 
 local function waitForRig(character)
-    -- Wait until humanoid rig type is known
-    local humanoid = character:WaitForChild("Humanoid", 5)
+    local humanoid = character:WaitForChild("Humanoid", 10)
     if not humanoid then return end
 
-    -- For R15 wait for leg parts
     if humanoid.RigType == Enum.HumanoidRigType.R15 then
-        character:WaitForChild("RightUpperLeg", 5)
-        character:WaitForChild("RightLowerLeg", 5)
-        character:WaitForChild("RightFoot", 5)
+        character:WaitForChild("RightUpperLeg",    10)
+        character:WaitForChild("RightLowerLeg",    10)
+        character:WaitForChild("RightFoot",        10)
+        character:WaitForChild("HumanoidRootPart", 10)
     else
-        character:WaitForChild("Right Leg", 5)
+        character:WaitForChild("Right Leg", 10)
     end
 end
 
 local function applyCharacter(character)
+    -- Guard: don't apply twice to same character
     if applied then return end
     applied = true
 
     waitForRig(character)
+
+    -- Extra safety: make sure character is still alive/in workspace
+    if not character or not character.Parent then
+        applied = false
+        return
+    end
 
     local head = character:FindFirstChild("Head")
     if head then
@@ -225,18 +292,26 @@ local function applyCharacter(character)
             applyKorbloxR15(character)
         end
     end
+
+    -- Reapply headless if character reloads parts mid-session
+    track(character.ChildAdded:Connect(function(child)
+        if child.Name == "Head" then
+            task.wait(0.1)
+            applyHeadless(child)
+        end
+    end))
 end
 
--- Initial apply
+-- Initial load
 if player.Character then
     task.spawn(function()
         applyCharacter(player.Character)
     end)
 end
 
--- Respawn
+-- Every respawn
 player.CharacterAdded:Connect(function(character)
-    cleanupConnections()
+    cleanupConnections() -- resets applied = false
     task.spawn(function()
         applyCharacter(character)
     end)
