@@ -10,9 +10,16 @@ local UP_CAP    = 100
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
--- Scan interval in seconds (was every frame, now every 0.1s)
-local SCAN_INTERVAL    = 0.1
-local REENFORCE_RATE   = 1.0  -- was 0.3, no need to be that frequent
+local SCAN_INTERVAL  = 0.1
+local REENFORCE_RATE = 1.0
+
+-- ═══════════════════════════════════════════════
+-- VELOCITY SPIKE DETECTION
+-- Tracks last frame velocity to detect sudden spikes
+-- This is what catches the *500 multiplier attack
+-- ═══════════════════════════════════════════════
+local MAX_VELOCITY_DELTA = 80  -- max units/s change allowed between frames
+local MAX_ABSOLUTE_SPEED = 130 -- same as HORIZ_CAP, hard ceiling
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
@@ -103,14 +110,61 @@ local function trackChar(ch, plr)
         hookPartProperties(p, charConns)
     end
 
-    -- FIX: removed triple killPart calls on DescendantAdded, one is enough
-    -- The task.defer handles anything that slips through
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
         killPart(p)
         task.defer(function()
             if p.Parent then killPart(p) end
         end)
         hookPartProperties(p, charConns)
+    end)
+
+    -- ═══════════════════════════════════════════════
+    -- TWEEN POSITION ATTACK COUNTER
+    -- The fling script tweens HumanoidRootPart.Position
+    -- to ram into the target. We detect when OTHER players
+    -- move impossibly fast (position delta too large per frame)
+    -- and freeze their root in place.
+    -- ═══════════════════════════════════════════════
+    local hrpOther = ch:FindFirstChild("HumanoidRootPart")
+    if hrpOther and hrpOther:IsA("BasePart") then
+        local lastPos = hrpOther.Position
+        local TWEEN_SPEED_LIMIT = 60  -- studs/sec, normal movement is ~16-25
+
+        charConns[#charConns + 1] = RunService.Heartbeat:Connect(function(dt)
+            if not hrpOther.Parent then return end
+
+            local currentPos = hrpOther.Position
+            local delta = (currentPos - lastPos).Magnitude
+            local speed = delta / math.max(dt, 0.001)
+
+            if speed > TWEEN_SPEED_LIMIT then
+                -- They're moving way too fast (tween strike)
+                -- Kill their velocity so they can't push us
+                killPartVelocity(hrpOther)
+            end
+
+            lastPos = currentPos
+        end)
+    end
+
+    -- Re-hook if the character respawns into a new HRP
+    charConns[#charConns + 1] = ch.ChildAdded:Connect(function(child)
+        if child.Name == "HumanoidRootPart" and child:IsA("BasePart") then
+            local hrp2 = child
+            local lastPos2 = hrp2.Position
+            local TWEEN_SPEED_LIMIT = 60
+
+            charConns[#charConns + 1] = RunService.Heartbeat:Connect(function(dt)
+                if not hrp2.Parent then return end
+                local currentPos = hrp2.Position
+                local delta = (currentPos - lastPos2).Magnitude
+                local speed = delta / math.max(dt, 0.001)
+                if speed > TWEEN_SPEED_LIMIT then
+                    killPartVelocity(hrp2)
+                end
+                lastPos2 = currentPos
+            end)
+        end
     end)
 end
 
@@ -136,9 +190,6 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
--- FIX: bumped re-enforce interval from 0.3 → 1.0s
--- DescendantAdded already catches new parts so this just
--- needs to handle edge cases, not run constantly
 task.spawn(function()
     while true do
         task.wait(REENFORCE_RATE)
@@ -178,7 +229,6 @@ local function protect(char)
 
     -- ═══════════════════════════════════
     -- OUR COLLISION GROUP
-    -- Merged both DescendantAdded hooks into ONE
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
@@ -201,7 +251,6 @@ local function protect(char)
         hookOwnPart(p)
     end
 
-    -- FIX: was two separate DescendantAdded connections, merged into one
     reg(char.DescendantAdded:Connect(function(p)
         fortify(p)
         hookOwnPart(p)
@@ -211,18 +260,39 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING
-    -- FIX: was on Stepped + RenderStepped + Heartbeat (3x per frame!)
-    -- Now only on Heartbeat — one connection is sufficient
+    -- VELOCITY CLAMPING + SPIKE DETECTION
+    -- 
+    -- The fling script does:
+    --   velocity = oldVelocity * 500 + Vector3(0,500,0)
+    -- This creates an enormous per-frame delta.
+    -- We track lastVelocity and if the change between
+    -- frames is too large we know it was externally set
+    -- and we zero it out immediately.
     -- ═══════════════════════════════════
+    local lastVelocity = V3ZERO
+
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
+        -- Angular velocity check
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
         local vel = hrp.AssemblyLinearVelocity
+
+        -- ── SPIKE DETECTION ─────────────────────────────
+        -- If velocity changed by more than MAX_VELOCITY_DELTA
+        -- in a single frame, it was externally forced (the *500 attack)
+        -- Zero it immediately before doing normal clamping
+        local delta = (vel - lastVelocity).Magnitude
+        if delta > MAX_VELOCITY_DELTA then
+            hrp.AssemblyLinearVelocity = V3ZERO
+            lastVelocity = V3ZERO
+            return  -- already zeroed, skip normal clamp this frame
+        end
+        -- ────────────────────────────────────────────────
+
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
         local dirty = false
@@ -243,16 +313,16 @@ local function protect(char)
 
         if dirty then
             hrp.AssemblyLinearVelocity = Vector3.new(vx, vy, vz)
+            lastVelocity = Vector3.new(vx, vy, vz)
+        else
+            lastVelocity = vel
         end
     end
 
-    -- FIX: single Heartbeat connection instead of three RunService connections
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN
-    -- FIX: was every Heartbeat frame — now throttled by SCAN_INTERVAL (0.1s)
-    -- GetPartBoundsInRadius is expensive, running it 60x/sec caused lag
+    -- NEARBY PART SCAN (throttled)
     -- ═══════════════════════════════════
     local lastScan = 0
 
@@ -305,8 +375,6 @@ local function protect(char)
 
     -- ═══════════════════════════════════
     -- FORCE / WELD GUARD
-    -- FIX: removed the redundant task.delay(0.1) third check
-    -- defer already handles the async case
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -323,7 +391,6 @@ local function protect(char)
                     end
                 end)
             end
-
             checkExternal()
             task.defer(checkExternal)
             return
@@ -348,7 +415,6 @@ local function protect(char)
                     end
                 end)
             end
-
             checkJoint()
             task.defer(checkJoint)
         end
@@ -375,9 +441,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD
-    -- FIX: added a per-part cooldown so a single touch event
-    -- can't spam clampVelocity dozens of times per second
+    -- TOUCH GUARD (with cooldown)
     -- ═══════════════════════════════════
     local touchCooldowns = {}
 
@@ -387,7 +451,6 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) or hit.Anchored then return end
 
-            -- FIX: cooldown per hit part — prevents event spam
             local now = os.clock()
             if touchCooldowns[hit] and now - touchCooldowns[hit] < 0.2 then return end
             touchCooldowns[hit] = now
@@ -408,7 +471,6 @@ local function protect(char)
     for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
     reg(char.DescendantAdded:Connect(hookTouch))
 
-    -- Periodically clear the cooldown table so it doesn't grow forever
     task.spawn(function()
         while char.Parent do
             task.wait(5)
@@ -426,6 +488,36 @@ local function protect(char)
                     hum.PlatformStand = false
                 end
             end)
+        end
+    end))
+
+    -- ═══════════════════════════════════
+    -- POSITION ANCHOR
+    -- Counter for the TweenService Position attack.
+    -- If OUR position changes by an impossible amount
+    -- in one frame (we got rammed/teleported),
+    -- we snap back to where we were.
+    -- ═══════════════════════════════════
+    local lastMyPos = hrp.Position
+    -- Max studs/sec we'd ever legitimately move
+    -- Walk speed 16, sprint ~30, generous ceiling 80
+    local MY_POS_SPEED_LIMIT = 80
+
+    reg(RunService.Heartbeat:Connect(function(dt)
+        if not char.Parent or not hrp.Parent then return end
+
+        local curPos = hrp.Position
+        local moved = (curPos - lastMyPos).Magnitude
+        local speed = moved / math.max(dt, 0.001)
+
+        if speed > MY_POS_SPEED_LIMIT then
+            -- We moved impossibly fast — snap back and zero velocity
+            hrp.CFrame = CFrame.new(lastMyPos) * (hrp.CFrame - hrp.CFrame.Position)
+            hrp.AssemblyLinearVelocity = V3ZERO
+            hrp.AssemblyAngularVelocity = V3ZERO
+            -- Don't update lastMyPos so we keep snapping until settled
+        else
+            lastMyPos = curPos
         end
     end))
 end
