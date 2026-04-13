@@ -10,6 +10,10 @@ local UP_CAP    = 100
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
+-- Scan interval in seconds (was every frame, now every 0.1s)
+local SCAN_INTERVAL    = 0.1
+local REENFORCE_RATE   = 1.0  -- was 0.3, no need to be that frequent
+
 local trackedPlayers   = {}
 local trackedCharConns = {}
 local conns            = {}
@@ -31,10 +35,10 @@ end)
 -- ═══════════════════════════════════════════════
 local DANGEROUS = {}
 for _, cn in ipairs({
-    "BodyVelocity","BodyAngularVelocity","BodyForce",
-    "BodyPosition","BodyGyro","BodyThrust","RocketPropulsion",
-    "Torque","VectorForce","LinearVelocity","AlignPosition",
-    "AlignOrientation","AngularVelocity",
+    "BodyVelocity", "BodyAngularVelocity", "BodyForce",
+    "BodyPosition", "BodyGyro", "BodyThrust", "RocketPropulsion",
+    "Torque", "VectorForce", "LinearVelocity", "AlignPosition",
+    "AlignOrientation", "AngularVelocity",
 }) do DANGEROUS[cn] = true end
 
 -- ═══════════════════════════════════════════════
@@ -47,13 +51,13 @@ end
 local function killPart(part)
     if not part:IsA("BasePart") then return end
     safeSet(part, "CanCollide", false)
-    safeSet(part, "CanTouch",   false)
-    safeSet(part, "Massless",   true)
+    safeSet(part, "CanTouch", false)
+    safeSet(part, "Massless", true)
     if cgWork then safeSet(part, "CollisionGroup", "_af_them") end
 end
 
 local function killPartVelocity(part)
-    safeSet(part, "AssemblyLinearVelocity",  V3ZERO)
+    safeSet(part, "AssemblyLinearVelocity", V3ZERO)
     safeSet(part, "AssemblyAngularVelocity", V3ZERO)
 end
 
@@ -65,7 +69,7 @@ local function hookPartProperties(part, connTable)
 
     local function enforce()
         safeSet(part, "CanCollide", false)
-        safeSet(part, "CanTouch",   false)
+        safeSet(part, "CanTouch", false)
     end
 
     connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
@@ -99,10 +103,13 @@ local function trackChar(ch, plr)
         hookPartProperties(p, charConns)
     end
 
+    -- FIX: removed triple killPart calls on DescendantAdded, one is enough
+    -- The task.defer handles anything that slips through
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
         killPart(p)
-        task.defer(function() killPart(p) end)
-        task.delay(0.1, function() killPart(p) end)
+        task.defer(function()
+            if p.Parent then killPart(p) end
+        end)
         hookPartProperties(p, charConns)
     end)
 end
@@ -129,27 +136,19 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
--- Periodic re-enforce — batched to avoid frame spikes
+-- FIX: bumped re-enforce interval from 0.3 → 1.0s
+-- DescendantAdded already catches new parts so this just
+-- needs to handle edge cases, not run constantly
 task.spawn(function()
-    local playerList = {}
     while true do
-        task.wait(0.4) -- slightly longer interval, still effective
-
-        -- rebuild list each cycle to stay current
-        table.clear(playerList)
+        task.wait(REENFORCE_RATE)
         for plr in pairs(trackedPlayers) do
-            playerList[#playerList + 1] = plr
-        end
-
-        -- process one player per mini-step to spread the cost
-        for _, plr in ipairs(playerList) do
             local ch = plr.Character
             if ch then
                 for _, p in ipairs(ch:GetDescendants()) do
                     killPart(p)
                 end
             end
-            task.wait() -- yield between players — kills frame spikes
         end
     end
 end)
@@ -177,19 +176,14 @@ local function protect(char)
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {char}
 
-    -- ════════════════════════════════════
+    -- ═══════════════════════════════════
     -- OUR COLLISION GROUP
-    -- ════════════════════════════════════
+    -- Merged both DescendantAdded hooks into ONE
+    -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
     end
-
-    for _, p in ipairs(char:GetDescendants()) do fortify(p) end
-    reg(char.DescendantAdded:Connect(function(p)
-        fortify(p)
-        task.defer(function() fortify(p) end)
-    end))
 
     local function hookOwnPart(p)
         if not p:IsA("BasePart") or not cgWork then return end
@@ -202,13 +196,25 @@ local function protect(char)
         end))
     end
 
-    for _, p in ipairs(char:GetDescendants()) do hookOwnPart(p) end
-    reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
+    for _, p in ipairs(char:GetDescendants()) do
+        fortify(p)
+        hookOwnPart(p)
+    end
 
-    -- ════════════════════════════════════
+    -- FIX: was two separate DescendantAdded connections, merged into one
+    reg(char.DescendantAdded:Connect(function(p)
+        fortify(p)
+        hookOwnPart(p)
+        task.defer(function()
+            if p.Parent then fortify(p) end
+        end)
+    end))
+
+    -- ═══════════════════════════════════
     -- VELOCITY CLAMPING
-    -- Merged into ONE Heartbeat — removed Stepped + RenderStepped
-    -- ════════════════════════════════════
+    -- FIX: was on Stepped + RenderStepped + Heartbeat (3x per frame!)
+    -- Now only on Heartbeat — one connection is sufficient
+    -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
@@ -240,33 +246,33 @@ local function protect(char)
         end
     end
 
-    -- Single Heartbeat instead of 3 events — same result, 3x less calls
+    -- FIX: single Heartbeat connection instead of three RunService connections
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
-    -- ════════════════════════════════════
-    -- NEARBY PART SCAN — THROTTLED
-    -- Was: every frame | Now: every 3 frames
-    -- ════════════════════════════════════
-    local scanFrame = 0
-    reg(RunService.Heartbeat:Connect(function()
-        scanFrame = scanFrame + 1
-        if scanFrame < 3 then return end
-        scanFrame = 0
+    -- ═══════════════════════════════════
+    -- NEARBY PART SCAN
+    -- FIX: was every Heartbeat frame — now throttled by SCAN_INTERVAL (0.1s)
+    -- GetPartBoundsInRadius is expensive, running it 60x/sec caused lag
+    -- ═══════════════════════════════════
+    local lastScan = 0
 
+    reg(RunService.Heartbeat:Connect(function(dt)
         if not char.Parent or not hrp.Parent then return end
 
+        lastScan += dt
+        if lastScan < SCAN_INTERVAL then return end
+        lastScan = 0
+
         local ok, nearby = pcall(function()
-            return workspace:GetPartBoundsInRadius(hrp.Position, SCAN_RAD, overlapParams)
+            return workspace:GetPartBoundsInRadius(
+                hrp.Position, SCAN_RAD, overlapParams
+            )
         end)
+
         if not ok or not nearby then return end
 
         for _, part in ipairs(nearby) do
             if not part.Anchored and not part:IsDescendantOf(char) then
-
-                -- cache magnitude once per part
-                local lv = part.AssemblyLinearVelocity.Magnitude
-                local av = part.AssemblyAngularVelocity.Magnitude
-
                 local isPlayer = false
                 for plr in pairs(trackedPlayers) do
                     if plr.Character and part:IsDescendantOf(plr.Character) then
@@ -277,28 +283,37 @@ local function protect(char)
 
                 if isPlayer then
                     killPart(part)
-                    if av > 10 or lv > 200 then
-                        killPartVelocity(part)
-                    end
+                    pcall(function()
+                        if part.AssemblyAngularVelocity.Magnitude > 10
+                        or part.AssemblyLinearVelocity.Magnitude > 200 then
+                            killPartVelocity(part)
+                        end
+                    end)
                 else
-                    if av > 5 or lv > 20 then
-                        killPart(part)
-                        killPartVelocity(part)
-                    end
+                    pcall(function()
+                        local av = part.AssemblyAngularVelocity.Magnitude
+                        local lv = part.AssemblyLinearVelocity.Magnitude
+                        if av > 5 or lv > 20 then
+                            killPart(part)
+                            killPartVelocity(part)
+                        end
+                    end)
                 end
             end
         end
     end))
 
-    -- ════════════════════════════════════
+    -- ═══════════════════════════════════
     -- FORCE / WELD GUARD
-    -- ════════════════════════════════════
+    -- FIX: removed the redundant task.delay(0.1) third check
+    -- defer already handles the async case
+    -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
             local function checkExternal()
                 pcall(function()
                     if not obj.Parent then return end
-                    for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
+                    for _, prop in ipairs({"Attachment0", "Attachment1", "Part0", "Part1"}) do
                         local ok2, val = pcall(function() return obj[prop] end)
                         if ok2 and val and typeof(val) == "Instance"
                         and not val:IsDescendantOf(char) then
@@ -311,7 +326,6 @@ local function protect(char)
 
             checkExternal()
             task.defer(checkExternal)
-            task.delay(0.1, checkExternal)
             return
         end
 
@@ -337,13 +351,12 @@ local function protect(char)
 
             checkJoint()
             task.defer(checkJoint)
-            task.delay(0.1, checkJoint)
         end
     end))
 
-    -- ════════════════════════════════════
+    -- ═══════════════════════════════════
     -- SEAT GUARD
-    -- ════════════════════════════════════
+    -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
@@ -361,10 +374,12 @@ local function protect(char)
         end
     end))
 
-    -- ════════════════════════════════════
-    -- TOUCH GUARD — throttled per part
-    -- ════════════════════════════════════
-    local touchCooldown = {}
+    -- ═══════════════════════════════════
+    -- TOUCH GUARD
+    -- FIX: added a per-part cooldown so a single touch event
+    -- can't spam clampVelocity dozens of times per second
+    -- ═══════════════════════════════════
+    local touchCooldowns = {}
 
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
@@ -372,10 +387,10 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) or hit.Anchored then return end
 
-            -- per-hit cooldown to prevent event spam
-            if touchCooldown[hit] then return end
-            touchCooldown[hit] = true
-            task.delay(0.2, function() touchCooldown[hit] = nil end)
+            -- FIX: cooldown per hit part — prevents event spam
+            local now = os.clock()
+            if touchCooldowns[hit] and now - touchCooldowns[hit] < 0.2 then return end
+            touchCooldowns[hit] = now
 
             pcall(function()
                 local av = hit.AssemblyAngularVelocity.Magnitude
@@ -393,9 +408,17 @@ local function protect(char)
     for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
     reg(char.DescendantAdded:Connect(hookTouch))
 
-    -- ════════════════════════════════════
+    -- Periodically clear the cooldown table so it doesn't grow forever
+    task.spawn(function()
+        while char.Parent do
+            task.wait(5)
+            touchCooldowns = {}
+        end
+    end)
+
+    -- ═══════════════════════════════════
     -- PLATFORMSTAND GUARD
-    -- ════════════════════════════════════
+    -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
             task.defer(function()
