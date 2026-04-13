@@ -6,20 +6,49 @@ local LP             = Players.LocalPlayer
 local V3ZERO    = Vector3.zero
 local ANG_CAP   = 15
 local HORIZ_CAP = 130
-local UP_CAP    = 100
+local UP_CAP    = 300   -- raised from 100 so balloon doesnt get cut
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
 local SCAN_INTERVAL  = 0.1
 local REENFORCE_RATE = 1.0
+local MAX_VELOCITY_DELTA = 80
+local MAX_ABSOLUTE_SPEED = 130
 
 -- ═══════════════════════════════════════════════
--- VELOCITY SPIKE DETECTION
--- Tracks last frame velocity to detect sudden spikes
--- This is what catches the *500 multiplier attack
+-- TP WHITELIST SYSTEM
+-- Call allowNextTP() before any teleport
+-- It opens a 2 second window where position
+-- anchor is disabled so the TP goes through
 -- ═══════════════════════════════════════════════
-local MAX_VELOCITY_DELTA = 80  -- max units/s change allowed between frames
-local MAX_ABSOLUTE_SPEED = 130 -- same as HORIZ_CAP, hard ceiling
+local tpAllowed     = false
+local tpAllowedUntil = 0
+
+local function allowNextTP(duration)
+    duration = duration or 2  -- seconds to keep anchor off
+    tpAllowed = true
+    tpAllowedUntil = os.clock() + duration
+end
+
+-- expose it globally so you can call it from console
+-- or from other scripts before teleporting
+getgenv().allowNextTP = allowNextTP
+
+-- ═══════════════════════════════════════════════
+-- also expose a global to temporarily raise UP_CAP
+-- call boostUp() when balloon activates
+-- ═══════════════════════════════════════════════
+local upCapOverride = nil
+local upCapUntil    = 0
+
+local function boostUp(newCap, duration)
+    newCap   = newCap   or 600
+    duration = duration or 5
+    upCapOverride = newCap
+    upCapUntil    = os.clock() + duration
+end
+
+getgenv().boostUp = boostUp
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
@@ -58,13 +87,13 @@ end
 local function killPart(part)
     if not part:IsA("BasePart") then return end
     safeSet(part, "CanCollide", false)
-    safeSet(part, "CanTouch", false)
-    safeSet(part, "Massless", true)
+    safeSet(part, "CanTouch",   false)
+    safeSet(part, "Massless",   true)
     if cgWork then safeSet(part, "CollisionGroup", "_af_them") end
 end
 
 local function killPartVelocity(part)
-    safeSet(part, "AssemblyLinearVelocity", V3ZERO)
+    safeSet(part, "AssemblyLinearVelocity",  V3ZERO)
     safeSet(part, "AssemblyAngularVelocity", V3ZERO)
 end
 
@@ -76,7 +105,7 @@ local function hookPartProperties(part, connTable)
 
     local function enforce()
         safeSet(part, "CanCollide", false)
-        safeSet(part, "CanTouch", false)
+        safeSet(part, "CanTouch",   false)
     end
 
     connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
@@ -118,51 +147,33 @@ local function trackChar(ch, plr)
         hookPartProperties(p, charConns)
     end)
 
-    -- ═══════════════════════════════════════════════
-    -- TWEEN POSITION ATTACK COUNTER
-    -- The fling script tweens HumanoidRootPart.Position
-    -- to ram into the target. We detect when OTHER players
-    -- move impossibly fast (position delta too large per frame)
-    -- and freeze their root in place.
-    -- ═══════════════════════════════════════════════
     local hrpOther = ch:FindFirstChild("HumanoidRootPart")
     if hrpOther and hrpOther:IsA("BasePart") then
-        local lastPos = hrpOther.Position
-        local TWEEN_SPEED_LIMIT = 60  -- studs/sec, normal movement is ~16-25
+        local lastPos        = hrpOther.Position
+        local TWEEN_LIMIT    = 60
 
         charConns[#charConns + 1] = RunService.Heartbeat:Connect(function(dt)
             if not hrpOther.Parent then return end
-
-            local currentPos = hrpOther.Position
-            local delta = (currentPos - lastPos).Magnitude
-            local speed = delta / math.max(dt, 0.001)
-
-            if speed > TWEEN_SPEED_LIMIT then
-                -- They're moving way too fast (tween strike)
-                -- Kill their velocity so they can't push us
+            local cur   = hrpOther.Position
+            local speed = (cur - lastPos).Magnitude / math.max(dt, 0.001)
+            if speed > TWEEN_LIMIT then
                 killPartVelocity(hrpOther)
             end
-
-            lastPos = currentPos
+            lastPos = cur
         end)
     end
 
-    -- Re-hook if the character respawns into a new HRP
     charConns[#charConns + 1] = ch.ChildAdded:Connect(function(child)
         if child.Name == "HumanoidRootPart" and child:IsA("BasePart") then
-            local hrp2 = child
+            local hrp2    = child
             local lastPos2 = hrp2.Position
-            local TWEEN_SPEED_LIMIT = 60
-
+            local TWEEN_LIMIT = 60
             charConns[#charConns + 1] = RunService.Heartbeat:Connect(function(dt)
                 if not hrp2.Parent then return end
-                local currentPos = hrp2.Position
-                local delta = (currentPos - lastPos2).Magnitude
-                local speed = delta / math.max(dt, 0.001)
-                if speed > TWEEN_SPEED_LIMIT then
-                    killPartVelocity(hrp2)
-                end
-                lastPos2 = currentPos
+                local cur   = hrp2.Position
+                local speed = (cur - lastPos2).Magnitude / math.max(dt, 0.001)
+                if speed > TWEEN_LIMIT then killPartVelocity(hrp2) end
+                lastPos2 = cur
             end)
         end
     end)
@@ -220,16 +231,14 @@ local function protect(char)
     clearConns()
 
     local hrp = char:WaitForChild("HumanoidRootPart", 5)
-    local hum = char:WaitForChild("Humanoid", 5)
+    local hum = char:WaitForChild("Humanoid",         5)
     if not hrp or not hum then return end
 
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {char}
 
-    -- ═══════════════════════════════════
-    -- OUR COLLISION GROUP
-    -- ═══════════════════════════════════
+    -- ─── collision group ────────────────────────
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
@@ -259,55 +268,48 @@ local function protect(char)
         end)
     end))
 
-    -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING + SPIKE DETECTION
-    -- 
-    -- The fling script does:
-    --   velocity = oldVelocity * 500 + Vector3(0,500,0)
-    -- This creates an enormous per-frame delta.
-    -- We track lastVelocity and if the change between
-    -- frames is too large we know it was externally set
-    -- and we zero it out immediately.
-    -- ═══════════════════════════════════
+    -- ─── velocity clamp + spike detection ───────
     local lastVelocity = V3ZERO
 
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
-        -- Angular velocity check
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
-        local vel = hrp.AssemblyLinearVelocity
-
-        -- ── SPIKE DETECTION ─────────────────────────────
-        -- If velocity changed by more than MAX_VELOCITY_DELTA
-        -- in a single frame, it was externally forced (the *500 attack)
-        -- Zero it immediately before doing normal clamping
+        local vel   = hrp.AssemblyLinearVelocity
         local delta = (vel - lastVelocity).Magnitude
+
         if delta > MAX_VELOCITY_DELTA then
             hrp.AssemblyLinearVelocity = V3ZERO
             lastVelocity = V3ZERO
-            return  -- already zeroed, skip normal clamp this frame
+            return
         end
-        -- ────────────────────────────────────────────────
 
         local vx, vy, vz = vel.X, vel.Y, vel.Z
-        local hMag = math.sqrt(vx * vx + vz * vz)
+        local hMag = math.sqrt(vx*vx + vz*vz)
         local dirty = false
 
         if hMag > HORIZ_CAP then
             local s = HORIZ_CAP / hMag
-            vx, vz = vx * s, vz * s
+            vx, vz = vx*s, vz*s
             dirty = true
         end
 
-        if vy > UP_CAP then
-            vy = UP_CAP
+        -- ── use override cap if balloon boosted ──
+        local effectiveUpCap = UP_CAP
+        if upCapOverride and os.clock() < upCapUntil then
+            effectiveUpCap = upCapOverride
+        else
+            upCapOverride = nil
+        end
+
+        if vy > effectiveUpCap then
+            vy    = effectiveUpCap
             dirty = true
         elseif vy < -DOWN_CAP then
-            vy = -DOWN_CAP
+            vy    = -DOWN_CAP
             dirty = true
         end
 
@@ -321,24 +323,17 @@ local function protect(char)
 
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
-    -- ═══════════════════════════════════
-    -- NEARBY PART SCAN (throttled)
-    -- ═══════════════════════════════════
+    -- ─── nearby scan (throttled) ─────────────────
     local lastScan = 0
-
     reg(RunService.Heartbeat:Connect(function(dt)
         if not char.Parent or not hrp.Parent then return end
-
         lastScan += dt
         if lastScan < SCAN_INTERVAL then return end
         lastScan = 0
 
         local ok, nearby = pcall(function()
-            return workspace:GetPartBoundsInRadius(
-                hrp.Position, SCAN_RAD, overlapParams
-            )
+            return workspace:GetPartBoundsInRadius(hrp.Position, SCAN_RAD, overlapParams)
         end)
-
         if not ok or not nearby then return end
 
         for _, part in ipairs(nearby) do
@@ -355,7 +350,7 @@ local function protect(char)
                     killPart(part)
                     pcall(function()
                         if part.AssemblyAngularVelocity.Magnitude > 10
-                        or part.AssemblyLinearVelocity.Magnitude > 200 then
+                        or part.AssemblyLinearVelocity.Magnitude  > 200 then
                             killPartVelocity(part)
                         end
                     end)
@@ -373,15 +368,13 @@ local function protect(char)
         end
     end))
 
-    -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD
-    -- ═══════════════════════════════════
+    -- ─── force / weld guard ──────────────────────
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
             local function checkExternal()
                 pcall(function()
                     if not obj.Parent then return end
-                    for _, prop in ipairs({"Attachment0", "Attachment1", "Part0", "Part1"}) do
+                    for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
                         local ok2, val = pcall(function() return obj[prop] end)
                         if ok2 and val and typeof(val) == "Instance"
                         and not val:IsDescendantOf(char) then
@@ -396,9 +389,7 @@ local function protect(char)
             return
         end
 
-        if obj:IsA("JointInstance")
-        or obj:IsA("WeldConstraint")
-        or obj:IsA("Constraint") then
+        if obj:IsA("JointInstance") or obj:IsA("WeldConstraint") or obj:IsA("Constraint") then
             local function checkJoint()
                 pcall(function()
                     if not obj.Parent then return end
@@ -420,9 +411,7 @@ local function protect(char)
         end
     end))
 
-    -- ═══════════════════════════════════
-    -- SEAT GUARD
-    -- ═══════════════════════════════════
+    -- ─── seat guard ──────────────────────────────
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
@@ -434,15 +423,13 @@ local function protect(char)
         end
         if not seat.Anchored and not seat:IsDescendantOf(char) then
             if seat.AssemblyAngularVelocity.Magnitude > 8
-            or seat.AssemblyLinearVelocity.Magnitude > 40 then
+            or seat.AssemblyLinearVelocity.Magnitude  > 40 then
                 hum.Sit = false
             end
         end
     end))
 
-    -- ═══════════════════════════════════
-    -- TOUCH GUARD (with cooldown)
-    -- ═══════════════════════════════════
+    -- ─── touch guard ─────────────────────────────
     local touchCooldowns = {}
 
     local function hookTouch(bp)
@@ -478,44 +465,42 @@ local function protect(char)
         end
     end)
 
-    -- ═══════════════════════════════════
-    -- PLATFORMSTAND GUARD
-    -- ═══════════════════════════════════
+    -- ─── platformstand guard ─────────────────────
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
             task.defer(function()
-                if hum.Parent then
-                    hum.PlatformStand = false
-                end
+                if hum.Parent then hum.PlatformStand = false end
             end)
         end
     end))
 
-    -- ═══════════════════════════════════
-    -- POSITION ANCHOR
-    -- Counter for the TweenService Position attack.
-    -- If OUR position changes by an impossible amount
-    -- in one frame (we got rammed/teleported),
-    -- we snap back to where we were.
-    -- ═══════════════════════════════════
+    -- ─── position anchor (TP aware) ──────────────
     local lastMyPos = hrp.Position
-    -- Max studs/sec we'd ever legitimately move
-    -- Walk speed 16, sprint ~30, generous ceiling 80
-    local MY_POS_SPEED_LIMIT = 80
+
+    -- studs/sec — generous enough for balloon
+    -- but still catches fling attacks
+    local MY_POS_SPEED_LIMIT = 250
 
     reg(RunService.Heartbeat:Connect(function(dt)
         if not char.Parent or not hrp.Parent then return end
 
+        -- ── if TP window is open, skip anchor entirely
+        -- and update lastMyPos so we dont snap back after
+        if tpAllowed then
+            if os.clock() > tpAllowedUntil then
+                tpAllowed = false
+            end
+            lastMyPos = hrp.Position  -- accept new position
+            return
+        end
+
         local curPos = hrp.Position
-        local moved = (curPos - lastMyPos).Magnitude
-        local speed = moved / math.max(dt, 0.001)
+        local speed  = (curPos - lastMyPos).Magnitude / math.max(dt, 0.001)
 
         if speed > MY_POS_SPEED_LIMIT then
-            -- We moved impossibly fast — snap back and zero velocity
             hrp.CFrame = CFrame.new(lastMyPos) * (hrp.CFrame - hrp.CFrame.Position)
-            hrp.AssemblyLinearVelocity = V3ZERO
+            hrp.AssemblyLinearVelocity  = V3ZERO
             hrp.AssemblyAngularVelocity = V3ZERO
-            -- Don't update lastMyPos so we keep snapping until settled
         else
             lastMyPos = curPos
         end
@@ -527,3 +512,7 @@ LP.CharacterAdded:Connect(function(c)
     task.wait(0.15)
     protect(c)
 end)
+
+print("Anti-fling loaded")
+print("Before teleporting run: allowNextTP()")
+print("If balloon gets cut run: boostUp()")
