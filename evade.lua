@@ -102,19 +102,6 @@ local ColaSpeedPresets = {
     {name = "Max",       speed = 3.0},
 }
 
--- ═══════════════════════════════════════════════════════════════
--- BHOP CONFIG
--- ═══════════════════════════════════════════════════════════════
-
-local BhopConfig = {
-    PreJumpDistance = 4.5,
-    PreJumpVelThreshold = -2,
-    GroundRayLength = 2.4,
-    SlopeMaxAngle = 40,
-    GroundCheckMultiRay = true,
-    MultiRaySpread = 1.1,
-}
-
 local Humanoid, RootPart = nil, nil
 local GUI, VIPPanel, TimerGUI = nil, nil, nil
 local TimerLabel, StatusLabel = nil, nil
@@ -142,13 +129,10 @@ local ExchangeConnections = {}
 local CachedGame = nil
 local StateChangedConn = nil
 local BounceStateConn = nil
+local BhopHeartbeatConn = nil
 
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
 local SliderMin, SliderMax = 1.4, 3.0
-
-local LastGroundState = false
-local LastJumpTick = 0
-local BHOP_COOLDOWN = 0
 
 local LastGCTime = 0
 local GC_INTERVAL = 120
@@ -160,10 +144,6 @@ local RecordedSpeed = 16
 local IsBouncing = false
 local WasInAir = false
 
-local BhopRayParams = RaycastParams.new()
-BhopRayParams.FilterType = Enum.RaycastFilterType.Exclude
-BhopRayParams.RespectCanCollide = true
-
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
 EdgeRayParams.IgnoreWater = true
@@ -173,20 +153,6 @@ local VEC3_ZERO = Vector3.zero
 local VEC3_DOWN = Vector3.new(0, -1, 0)
 local VEC3_Y_AXIS = Vector3.yAxis
 local VEC2_ZERO = Vector2.new(0, 0)
-
-local GROUND_RAY_VEC = Vector3.new(0, -BhopConfig.GroundRayLength, 0)
-
-local MULTI_RAY_OFFSETS
-local function RebuildMultiRayOffsets()
-    local s = BhopConfig.MultiRaySpread
-    MULTI_RAY_OFFSETS = {
-        Vector3.new(s, 0, 0),
-        Vector3.new(-s, 0, 0),
-        Vector3.new(0, 0, s),
-        Vector3.new(0, 0, -s),
-    }
-end
-RebuildMultiRayOffsets()
 
 -- ═══════════════════════════════════════════════════════════════
 -- THEME
@@ -257,7 +223,6 @@ local function UpdateRayFilter()
         local gamePlayers = gameFolder:FindFirstChild("Players")
         if gamePlayers then filterList[#filterList + 1] = gamePlayers end
     end
-    BhopRayParams.FilterDescendantsInstances = filterList
     EdgeRayParams.FilterDescendantsInstances = filterList
 end
 
@@ -348,6 +313,7 @@ local function CleanupAll()
     getgenv().var156_upvw_arg1 = nil
     if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
     if BounceStateConn then SafeCall(function() BounceStateConn:Disconnect() end) BounceStateConn = nil end
+    if BhopHeartbeatConn then SafeCall(function() BhopHeartbeatConn:Disconnect() end) BhopHeartbeatConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
     table.clear(CachedBots)
@@ -367,91 +333,43 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP SYSTEM
+-- ULTRA RESPONSIVE BHOP SYSTEM (Pure State-Based)
 -- ═══════════════════════════════════════════════════════════════
-
-local COS_SLOPE_MAX = math.cos(math.rad(BhopConfig.SlopeMaxAngle))
-
-local function ValidateRayHit(rayResult)
-    if not rayResult then return false end
-    return rayResult.Normal:Dot(VEC3_Y_AXIS) >= COS_SLOPE_MAX
-end
-
-local function IsOnGroundInstant()
-    if not Humanoid or not RootPart then return false end
-    local pos = RootPart.Position
-    local rayResult = Workspace:Raycast(pos, GROUND_RAY_VEC, BhopRayParams)
-    if ValidateRayHit(rayResult) then return true end
-    if BhopConfig.GroundCheckMultiRay then
-        for i = 1, #MULTI_RAY_OFFSETS do
-            local sideRay = Workspace:Raycast(pos + MULTI_RAY_OFFSETS[i], GROUND_RAY_VEC, BhopRayParams)
-            if ValidateRayHit(sideRay) then return true end
-        end
-    end
-    return false
-end
 
 local function ExecuteJump()
     if not Humanoid or Humanoid.Health <= 0 then return end
+    if not holdSpace then return end
+    
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    LastJumpTick = tick()
 end
 
-local function SuperBhop()
-    if not holdSpace or not Humanoid or not RootPart then return end
-    if Humanoid.Health <= 0 then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if isDowned then return end
+-- State-based detection (fires on state change)
+local function OnBhopStateChanged(old, new)
+    if not holdSpace then return end
     
-    local onGround = IsOnGroundInstant()
-    local now = tick()
-    
-    if onGround and (now - LastJumpTick) >= 0.05 then
+    -- Jump on ANY grounded state
+    if new == Enum.HumanoidStateType.Landed or 
+       new == Enum.HumanoidStateType.Running or 
+       new == Enum.HumanoidStateType.RunningNoPhysics then
         ExecuteJump()
     end
 end
 
-local function PreJumpQueue()
-    if not holdSpace or not Humanoid or not RootPart then return end
-    if Humanoid.Health <= 0 then return end
+-- Heartbeat loop for maximum responsiveness
+local function OnBhopHeartbeat()
+    if not holdSpace or not Humanoid then return end
+    
     local state = Humanoid:GetState()
-    if state ~= Enum.HumanoidStateType.Freefall then return end
     
-    local pos = RootPart.Position
-    local vel = RootPart.AssemblyLinearVelocity
-    
-    local predictiveLength = BhopConfig.PreJumpDistance
-    if vel.Y < -20 then predictiveLength = predictiveLength * 1.5 end
-    
-    local rayVec = Vector3.new(0, -predictiveLength, 0)
-    local rayResult = Workspace:Raycast(pos, rayVec, BhopRayParams)
-    
-    if rayResult and ValidateRayHit(rayResult) then
-        local dist = pos.Y - rayResult.Position.Y
-        local threshold = 3.5
-        if vel.Y < BhopConfig.PreJumpVelThreshold then
-            threshold = math.clamp(3.5 + math.abs(vel.Y) * 0.04, 3.5, 6.0)
-        end
-        if dist < threshold then
+    -- Continuously check if we're in a grounded state
+    if state == Enum.HumanoidStateType.Landed or 
+       state == Enum.HumanoidStateType.Running or
+       state == Enum.HumanoidStateType.RunningNoPhysics then
+        
+        -- Only jump if we're not already jumping/freefalling
+        if state ~= Enum.HumanoidStateType.Jumping and 
+           state ~= Enum.HumanoidStateType.Freefall then
             ExecuteJump()
-        end
-    end
-end
-
-local function OnHumanoidStateChanged(old, new)
-    if not holdSpace then
-        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
-            LastJumpTick = 0
-        end
-    else
-        if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
-            task.defer(function()
-                if holdSpace and Humanoid and Humanoid.Health > 0 then
-                    ExecuteJump()
-                end
-            end)
         end
     end
 end
@@ -1221,7 +1139,7 @@ local function StartModeVoting() if State.VoteMode then return end State.VoteMod
 local function StopModeVoting() State.VoteMode = false end
 
 -- ═══════════════════════════════════════════════════════════════
--- GUI
+-- GUI (Shortened for character limit - same as original)
 -- ═══════════════════════════════════════════════════════════════
 
 local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -1607,6 +1525,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     
     if key == Enum.KeyCode.Space then
         holdSpace = true
+        ExecuteJump() -- Immediate first jump
     elseif key == Enum.KeyCode.E then 
         Revive()
     elseif key == Enum.KeyCode.R then 
@@ -1662,20 +1581,25 @@ end)
 local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
     if BounceStateConn then BounceStateConn:Disconnect() BounceStateConn = nil end
+    if BhopHeartbeatConn then BhopHeartbeatConn:Disconnect() BhopHeartbeatConn = nil end
+    
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter()
     SetupEdgeBoost()
     CurrentTarget, FarmStart = nil, 0
     LastBounce = 0
-    LastJumpTick = 0
     WasInAir = false
     IsBouncing = false
     RecordedSpeed = 16
     table.clear(CachedBots) table.clear(CachedItems)
+    
     if Humanoid then 
-        StateChangedConn = Humanoid.StateChanged:Connect(OnHumanoidStateChanged)
-        -- Separate connection for bounce - fires instantly on state change
+        -- Bhop: Dual detection system
+        StateChangedConn = Humanoid.StateChanged:Connect(OnBhopStateChanged)
+        BhopHeartbeatConn = RunService.Heartbeat:Connect(OnBhopHeartbeat)
+        
+        -- Bounce: Separate connection
         BounceStateConn = Humanoid.StateChanged:Connect(OnBounceStateChanged)
     end
 end
@@ -1701,11 +1625,6 @@ local function StartMainLoop()
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
-        if holdSpace then
-            SuperBhop()
-            PreJumpQueue()
-        end
-        
         -- Only track air speed, bouncing is handled by state change event
         UpdateBounceAirSpeed()
     end)
@@ -1748,7 +1667,7 @@ LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce = 0 LastJumpTick = 0
+        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 LastBounce = 0
         WasInAir = false
         IsBouncing = false
         RecordedSpeed = 16
@@ -1765,4 +1684,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Realistic bounce: touch ground to bounce, instant state-change response, air speed preserved!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Ultra-responsive bhop + Realistic bounce integrated!")
