@@ -10,16 +10,9 @@ local UP_CAP    = 100
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
--- NEW: performance knobs (keeps it strong but avoids spikes)
-local SCAN_INTERVAL       = 0.06   -- seconds between scans (0.03-0.08 recommended)
-local MAX_PARTS_PER_SCAN  = 140    -- hard cap to prevent huge spikes
-
 local trackedPlayers   = {}
 local trackedCharConns = {}
 local conns            = {}
-
--- fast lookup so the radius scan doesn't do O(players) checks per part
-local playerCharByPart = {} -- [BasePart] = true if belongs to any tracked player's character
 
 -- ═══════════════════════════════════════════════
 -- COLLISION GROUPS
@@ -64,15 +57,6 @@ local function killPartVelocity(part)
     safeSet(part, "AssemblyAngularVelocity", V3ZERO)
 end
 
-local function markPlayerCharParts(ch, val)
-    if not ch then return end
-    for _, d in ipairs(ch:GetDescendants()) do
-        if d:IsA("BasePart") then
-            playerCharByPart[d] = val or nil
-        end
-    end
-end
-
 -- ═══════════════════════════════════════════════
 -- NEUTRALIZE OTHER PLAYERS
 -- ═══════════════════════════════════════════════
@@ -111,27 +95,15 @@ local function trackChar(ch, plr)
     trackedCharConns[plr] = charConns
 
     for _, p in ipairs(ch:GetDescendants()) do
-        if p:IsA("BasePart") then
-            playerCharByPart[p] = true
-        end
         killPart(p)
         hookPartProperties(p, charConns)
     end
 
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
-        if p:IsA("BasePart") then
-            playerCharByPart[p] = true
-        end
         killPart(p)
         task.defer(function() killPart(p) end)
         task.delay(0.1, function() killPart(p) end)
         hookPartProperties(p, charConns)
-    end)
-
-    charConns[#charConns + 1] = ch.DescendantRemoving:Connect(function(p)
-        if p:IsA("BasePart") then
-            playerCharByPart[p] = nil
-        end
     end)
 end
 
@@ -149,11 +121,6 @@ for _, plr in ipairs(Players:GetPlayers()) do trackPlayer(plr) end
 Players.PlayerAdded:Connect(trackPlayer)
 Players.PlayerRemoving:Connect(function(plr)
     trackedPlayers[plr] = nil
-
-    if plr.Character then
-        markPlayerCharParts(plr.Character, false)
-    end
-
     if trackedCharConns[plr] then
         for _, c in ipairs(trackedCharConns[plr]) do
             pcall(function() c:Disconnect() end)
@@ -229,15 +196,19 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING (kept as original-powerful)
+    -- VELOCITY CLAMPING
+    -- KEY FIX: angular and linear are clamped INDEPENDENTLY
+    -- Runs on ALL three RunService events
     -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
+        -- Always kill excessive angular velocity
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
+        -- Always clamp linear velocity regardless of spin
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
@@ -267,15 +238,10 @@ local function protect(char)
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN — throttled + capped (big lag fix)
+    -- NEARBY PART SCAN — EVERY FRAME
     -- ═══════════════════════════════════
-    local scanAccum = 0
-    reg(RunService.Heartbeat:Connect(function(dt)
+    reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
-
-        scanAccum += dt
-        if scanAccum < SCAN_INTERVAL then return end
-        scanAccum = 0
 
         local ok, nearby = pcall(function()
             return workspace:GetPartBoundsInRadius(
@@ -285,37 +251,15 @@ local function protect(char)
 
         if not ok or not nearby then return end
 
-        local processed = 0
-
-        -- Pass 1: process the most dangerous (fast moving) parts first
         for _, part in ipairs(nearby) do
-            if processed >= MAX_PARTS_PER_SCAN then break end
             if not part.Anchored and not part:IsDescendantOf(char) then
-                local okv, av, lv = pcall(function()
-                    return part.AssemblyAngularVelocity.Magnitude, part.AssemblyLinearVelocity.Magnitude
-                end)
-
-                if okv and (av > 20 or lv > 120) then
-                    local isPlayer = playerCharByPart[part] == true
-                    if isPlayer then
-                        killPart(part)
-                        if av > 10 or lv > 200 then
-                            killPartVelocity(part)
-                        end
-                    else
-                        killPart(part)
-                        killPartVelocity(part)
+                local isPlayer = false
+                for plr in pairs(trackedPlayers) do
+                    if plr.Character and part:IsDescendantOf(plr.Character) then
+                        isPlayer = true
+                        break
                     end
-                    processed += 1
                 end
-            end
-        end
-
-        -- Pass 2: normal thresholds for remaining parts (still capped)
-        for _, part in ipairs(nearby) do
-            if processed >= MAX_PARTS_PER_SCAN then break end
-            if not part.Anchored and not part:IsDescendantOf(char) then
-                local isPlayer = playerCharByPart[part] == true
 
                 if isPlayer then
                     killPart(part)
@@ -335,13 +279,12 @@ local function protect(char)
                         end
                     end)
                 end
-                processed += 1
             end
         end
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD
+    -- FORCE / WELD GUARD — immediate + deferred + delayed
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -412,8 +355,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD — keep, but only hook HRP (big event reduction)
-    -- still powerful because HRP is what gets flung/impacted
+    -- TOUCH GUARD — no cooldown
     -- ═══════════════════════════════════
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
@@ -430,12 +372,13 @@ local function protect(char)
                 end
             end)
 
+            -- Immediately re-clamp ourselves after any suspicious touch
             task.defer(clampVelocity)
         end))
     end
 
-    -- CHANGED: only hook HRP touch (instead of every limb)
-    hookTouch(hrp)
+    for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
+    reg(char.DescendantAdded:Connect(hookTouch))
 
     -- ═══════════════════════════════════
     -- PLATFORMSTAND GUARD
