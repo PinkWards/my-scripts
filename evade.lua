@@ -1457,17 +1457,45 @@ end
 
 local function CreateTimerGUI()
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) end
-    TimerGUI = Instance.new("ScreenGui") TimerGUI.Name = "EvadeTimer" TimerGUI.ResetOnSpawn = false TimerGUI.Parent = PlayerGui
-    local container = Instance.new("Frame", TimerGUI) container.Name = "Timer" container.AnchorPoint = Vector2.new(0.5, 0)
-    container.Position = UDim2.new(0.5, 0, 0.015, 0) container.Size = UDim2.new(0, 120, 0, 52) container.BackgroundColor3 = Theme.Background container.BorderSizePixel = 0
-    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 10)
-    Instance.new("UIStroke", container).Color = Theme.Border
-    local topLine = Instance.new("Frame") topLine.Size = UDim2.new(0.6, 0, 0, 2) topLine.Position = UDim2.new(0.2, 0, 0, 0) topLine.BackgroundColor3 = Theme.Accent topLine.BorderSizePixel = 0 topLine.Parent = container
-    Instance.new("UICorner", topLine).CornerRadius = UDim.new(0, 1)
-    StatusLabel = Instance.new("TextLabel", container) StatusLabel.Position = UDim2.new(0.5, 0, 0, 8) StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
-    StatusLabel.Size = UDim2.new(1, 0, 0, 14) StatusLabel.BackgroundTransparency = 1 StatusLabel.Font = FONT_HEADING StatusLabel.Text = "WAITING" StatusLabel.TextColor3 = Theme.TextMuted StatusLabel.TextSize = 9
-    TimerLabel = Instance.new("TextLabel", container) TimerLabel.Position = UDim2.new(0.5, 0, 0, 22) TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
-    TimerLabel.Size = UDim2.new(1, 0, 0, 26) TimerLabel.BackgroundTransparency = 1 TimerLabel.Font = FONT_TITLE TimerLabel.Text = "0:00" TimerLabel.TextColor3 = Theme.TextPrimary TimerLabel.TextSize = 22
+    TimerGUI = Instance.new("ScreenGui") 
+    TimerGUI.Name = "EvadeTimer" 
+    TimerGUI.ResetOnSpawn = false 
+    TimerGUI.Parent = PlayerGui
+    
+    -- Container positioned in lower right corner
+    local container = Instance.new("Frame", TimerGUI) 
+    container.Name = "Timer" 
+    container.AnchorPoint = Vector2.new(1, 1)  -- Anchor to bottom right
+    container.Position = UDim2.new(1, -20, 1, -20)  -- Lower right with 20px margin
+    container.Size = UDim2.new(0, 150, 0, 60)  -- Larger size for visibility
+    container.BackgroundTransparency = 1  -- No background
+    container.BorderSizePixel = 0
+    
+    -- Status label (small text above timer)
+    StatusLabel = Instance.new("TextLabel", container) 
+    StatusLabel.Position = UDim2.new(0.5, 0, 0, 0) 
+    StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
+    StatusLabel.Size = UDim2.new(1, 0, 0, 18) 
+    StatusLabel.BackgroundTransparency = 1 
+    StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.Text = "WAITING" 
+    StatusLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
+    StatusLabel.TextSize = 12
+    StatusLabel.TextStrokeTransparency = 0.8  -- Slight stroke for visibility
+    StatusLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+    
+    -- Timer label with NBA shot clock style
+    TimerLabel = Instance.new("TextLabel", container) 
+    TimerLabel.Position = UDim2.new(0.5, 0, 0, 18) 
+    TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
+    TimerLabel.Size = UDim2.new(1, 0, 0, 42) 
+    TimerLabel.BackgroundTransparency = 1 
+    TimerLabel.Font = Enum.Font.Code  -- Monospace font (closest to 7-segment)
+    TimerLabel.Text = "0:00" 
+    TimerLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
+    TimerLabel.TextSize = 42  -- Large, bold numbers
+    TimerLabel.TextStrokeTransparency = 0.8  -- Slight stroke for better visibility
+    TimerLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
 end
 
 local function UpdateTimer()
