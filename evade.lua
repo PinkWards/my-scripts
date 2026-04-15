@@ -1462,12 +1462,12 @@ local function CreateTimerGUI()
     TimerGUI.ResetOnSpawn = false 
     TimerGUI.Parent = PlayerGui
     
-    -- Container positioned in lower right corner
+    -- Container positioned tight in lower right corner
     local container = Instance.new("Frame", TimerGUI) 
     container.Name = "Timer" 
     container.AnchorPoint = Vector2.new(1, 1)  -- Anchor to bottom right
-    container.Position = UDim2.new(1, -20, 1, -20)  -- Lower right with 20px margin
-    container.Size = UDim2.new(0, 150, 0, 60)  -- Larger size for visibility
+    container.Position = UDim2.new(1, -5, 1, -5)  -- Very tight corner placement (5px margin)
+    container.Size = UDim2.new(0, 80, 0, 35)  -- Much smaller size
     container.BackgroundTransparency = 1  -- No background
     container.BorderSizePixel = 0
     
@@ -1475,25 +1475,25 @@ local function CreateTimerGUI()
     StatusLabel = Instance.new("TextLabel", container) 
     StatusLabel.Position = UDim2.new(0.5, 0, 0, 0) 
     StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
-    StatusLabel.Size = UDim2.new(1, 0, 0, 18) 
+    StatusLabel.Size = UDim2.new(1, 0, 0, 10) 
     StatusLabel.BackgroundTransparency = 1 
     StatusLabel.Font = Enum.Font.GothamBold
     StatusLabel.Text = "WAITING" 
     StatusLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
-    StatusLabel.TextSize = 12
+    StatusLabel.TextSize = 8
     StatusLabel.TextStrokeTransparency = 0.8  -- Slight stroke for visibility
     StatusLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
     
     -- Timer label with NBA shot clock style
     TimerLabel = Instance.new("TextLabel", container) 
-    TimerLabel.Position = UDim2.new(0.5, 0, 0, 18) 
+    TimerLabel.Position = UDim2.new(0.5, 0, 0, 10) 
     TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
-    TimerLabel.Size = UDim2.new(1, 0, 0, 42) 
+    TimerLabel.Size = UDim2.new(1, 0, 0, 25) 
     TimerLabel.BackgroundTransparency = 1 
     TimerLabel.Font = Enum.Font.Code  -- Monospace font (closest to 7-segment)
     TimerLabel.Text = "0:00" 
     TimerLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
-    TimerLabel.TextSize = 42  -- Large, bold numbers
+    TimerLabel.TextSize = 24  -- Smaller but still readable
     TimerLabel.TextStrokeTransparency = 0.8  -- Slight stroke for better visibility
     TimerLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
 end
