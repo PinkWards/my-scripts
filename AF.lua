@@ -43,8 +43,6 @@ for _, cn in ipairs({
 
 -- ═══════════════════════════════════════════════
 -- ENEMY PART FAST LOOKUP TABLE
--- Maintained incrementally so scan loop is O(1) per part
--- Covers character parts AND workspace tool parts
 -- ═══════════════════════════════════════════════
 local enemyPartSet = {}
 
@@ -67,8 +65,18 @@ local function safeSet(part, prop, val)
     pcall(function() part[prop] = val end)
 end
 
+-- ┌─────────────────────────────────────────────┐
+-- │ killPart: ONLY for unanchored enemy/exploit  │
+-- │ parts. NEVER call this on anchored map parts │
+-- │ like poles, walls, floors — that is what     │
+-- │ caused the noclip through everything bug     │
+-- └─────────────────────────────────────────────┘
 local function killPart(part)
     if not part:IsA("BasePart") then return end
+    -- CRITICAL: never touch anchored parts' collision
+    -- Anchored parts are map geometry — poles, walls, floors
+    -- Removing their collision is what caused noclip
+    if part.Anchored then return end
     if part.CanCollide   then safeSet(part, "CanCollide",  false) end
     if part.CanTouch     then safeSet(part, "CanTouch",    false) end
     if not part.Massless then safeSet(part, "Massless",    true)  end
@@ -87,6 +95,9 @@ end
 -- ═══════════════════════════════════════════════
 local function hookPartProperties(part, connTable)
     if not part:IsA("BasePart") then return end
+    -- Only hook unanchored parts — anchored parts
+    -- should never have their collision messed with
+    if part.Anchored then return end
 
     local function enforceCanCollide()
         if part.CanCollide then safeSet(part, "CanCollide", false) end
@@ -110,13 +121,21 @@ local function hookPartProperties(part, connTable)
                 end)
             end)
     end
+
+    -- If a part gets unanchored later (disaster breaks it),
+    -- we need to re-enforce it at that moment
+    connTable[#connTable + 1] =
+        part:GetPropertyChangedSignal("Anchored"):Connect(function()
+            pcall(function()
+                if not part.Anchored then
+                    -- Just became unanchored (disaster broke it)
+                    -- Now it is safe to kill its collision
+                    killPart(part)
+                end
+            end)
+        end)
 end
 
--- ─────────────────────────────────────────────
--- trackChar: hook an enemy player's character
--- No batching — enemy chars are small (< 20 parts)
--- so processing them immediately is fine and safe
--- ─────────────────────────────────────────────
 local function trackChar(ch, plr)
     if not ch then return end
 
@@ -124,7 +143,6 @@ local function trackChar(ch, plr)
         for _, c in ipairs(trackedCharConns[plr]) do
             pcall(function() c:Disconnect() end)
         end
-        -- Remove old char parts from enemy set
         if plr.Character and plr.Character ~= ch then
             for _, p in ipairs(plr.Character:GetDescendants()) do
                 removeFromEnemySet(p)
@@ -135,7 +153,6 @@ local function trackChar(ch, plr)
     local charConns = {}
     trackedCharConns[plr] = charConns
 
-    -- Process immediately — char parts are few, this won't lag
     for _, p in ipairs(ch:GetDescendants()) do
         addToEnemySet(p)
         killPart(p)
@@ -155,37 +172,10 @@ local function trackChar(ch, plr)
     end)
 end
 
--- ─────────────────────────────────────────────
--- Also track parts that enemy players put in
--- Workspace directly (ring tools, fling parts)
--- This is what the original was missing for workspace tools
--- ─────────────────────────────────────────────
-local workspaceConns = {}
-
-local function watchPlayerWorkspaceParts(plr)
-    -- Watch workspace for parts whose name/owner ties to this player
-    -- The reliable way: watch the player's tool/backpack additions
-    local conn1 = plr.Backpack.ChildAdded:Connect(function(tool)
-        -- When a tool enters backpack, parts aren't dangerous yet
-    end)
-
-    -- Watch when player equips something into workspace
-    local conn2 = workspace.ChildAdded:Connect(function(obj)
-        -- If a new model/part appears in workspace and a script
-        -- in it references this player, treat it as enemy
-        -- Simpler and reliable: just add it to scan naturally
-        -- The key fix is removing MAX_PER_SCAN so scan catches it
-    end)
-
-    workspaceConns[plr] = {conn1, conn2}
-end
-
 local function trackPlayer(plr)
     if plr == LP or trackedPlayers[plr] then return end
     trackedPlayers[plr] = true
-
     if plr.Character then trackChar(plr.Character, plr) end
-
     plr.CharacterAdded:Connect(function(c)
         task.wait(0.05)
         trackChar(c, plr)
@@ -209,17 +199,10 @@ Players.PlayerRemoving:Connect(function(plr)
         end
         trackedCharConns[plr] = nil
     end
-    if workspaceConns[plr] then
-        for _, c in ipairs(workspaceConns[plr]) do
-            pcall(function() c:Disconnect() end)
-        end
-        workspaceConns[plr] = nil
-    end
 end)
 
 -- ─────────────────────────────────────────────
--- Periodic re-enforce enemy chars
--- Only touches parts that actually need fixing
+-- Periodic re-enforce — only unanchored parts
 -- ─────────────────────────────────────────────
 task.spawn(function()
     while true do
@@ -228,7 +211,7 @@ task.spawn(function()
             local ch = plr.Character
             if ch then
                 for _, p in ipairs(ch:GetDescendants()) do
-                    if p:IsA("BasePart") then
+                    if p:IsA("BasePart") and not p.Anchored then
                         local needsFix = p.CanCollide or p.CanTouch
                             or not p.Massless
                             or (cgWork and p.CollisionGroup ~= "_af_them")
@@ -294,7 +277,7 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
 
     -- ─────────────────────────────────────
-    -- VELOCITY CLAMPING — Heartbeat only
+    -- VELOCITY CLAMPING
     -- ─────────────────────────────────────
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
@@ -328,12 +311,8 @@ local function protect(char)
 
     -- ─────────────────────────────────────
     -- NEARBY PART SCAN
-    --
-    -- KEY FIXES vs the broken version:
-    -- 1. NO MAX_PER_SCAN cap — enemy parts must NEVER be skipped
-    -- 2. enemyPartSet gives O(1) lookup so no nested player loop
-    -- 3. Map parts use cooldown cache to skip redundant work
-    -- 4. Enemy parts are ALWAYS processed, no cooldown on them
+    -- Only processes UNANCHORED parts
+    -- Anchored map geometry is completely ignored
     -- ─────────────────────────────────────
     local partLastHandled = {}
     local lastCleanup = 0
@@ -346,7 +325,6 @@ local function protect(char)
 
         if not char.Parent or not hrp.Parent then return end
 
-        -- Clean stale cache every 15s
         if now - lastCleanup > 15 then
             lastCleanup = now
             for p, t in pairs(partLastHandled) do
@@ -362,11 +340,13 @@ local function protect(char)
         if not ok or not nearby then return end
 
         for _, part in ipairs(nearby) do
-            if part.Anchored or part:IsDescendantOf(char) then continue end
+            -- Skip anchored parts entirely — they are safe map geometry
+            -- This is the main fix: poles, walls, floors are never touched
+            if part.Anchored then continue end
+            if part:IsDescendantOf(char) then continue end
 
-            -- O(1) lookup — is this an enemy player part?
             if enemyPartSet[part] then
-                -- ALWAYS process enemy parts — no cap, no cooldown
+                -- Enemy player part: always neutralize, no cooldown
                 killPart(part)
                 pcall(function()
                     if part.AssemblyAngularVelocity.Magnitude > 10
@@ -375,8 +355,8 @@ local function protect(char)
                     end
                 end)
             else
-                -- Map/disaster part — use cooldown to skip redundant work
-                -- This is where we save performance on map load
+                -- Unanchored map/disaster part
+                -- These are things like debris that disasters break loose
                 local av, lv = 0, 0
                 pcall(function()
                     av = part.AssemblyAngularVelocity.Magnitude
@@ -386,20 +366,16 @@ local function protect(char)
                 local isDangerous = av > 5 or lv > 20
 
                 if isDangerous then
-                    -- Dangerous map debris: always act immediately
                     partLastHandled[part] = now
                     killPart(part)
                     killPartVelocity(part)
                 elseif not partLastHandled[part]
                     or (now - partLastHandled[part] > PART_COOLDOWN) then
-                    -- Calm map part: only re-check after cooldown expires
-                    -- This is the main lag fix for map loads
                     partLastHandled[part] = now
                     local needsFix = part.CanCollide or part.CanTouch
                         or (cgWork and part.CollisionGroup ~= "_af_them")
                     if needsFix then killPart(part) end
                 end
-                -- If cached and calm: skip entirely — zero work this tick
             end
         end
     end))
@@ -457,7 +433,6 @@ local function protect(char)
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
-        -- O(1) check using enemyPartSet
         if enemyPartSet[seat] then
             hum.Sit = false
             return
@@ -471,8 +446,9 @@ local function protect(char)
     end))
 
     -- ─────────────────────────────────────
-    -- TOUCH GUARD — per-part cooldown stops debris spam
-    -- Enemy parts always trigger clampVelocity immediately
+    -- TOUCH GUARD
+    -- Only acts on unanchored parts
+    -- Anchored parts touching you is normal gameplay
     -- ─────────────────────────────────────
     local touchCooldowns = {}
 
@@ -480,14 +456,15 @@ local function protect(char)
         if not bp:IsA("BasePart") then return end
         reg(bp.Touched:Connect(function(hit)
             if not hit or not hit.Parent then return end
-            if hit:IsDescendantOf(char) or hit.Anchored then return end
+            if hit:IsDescendantOf(char) then return end
+            -- Never act on anchored parts — poles, walls, floors
+            if hit.Anchored then return end
 
             local now = tick()
             if touchCooldowns[hit] and now - touchCooldowns[hit] < TOUCH_COOLDOWN then
                 return
             end
 
-            -- Enemy part touch: treat as higher threat
             if enemyPartSet[hit] then
                 touchCooldowns[hit] = now
                 killPart(hit)
@@ -509,7 +486,6 @@ local function protect(char)
         end))
     end
 
-    -- Clean touch cooldowns periodically
     task.spawn(function()
         while char.Parent do
             task.wait(5)
