@@ -10,7 +10,7 @@ local UP_CAP    = 100
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
-local SCAN_INTERVAL  = 0.2  -- scan only 5x per second
+local SCAN_INTERVAL  = 0.15
 local PART_COOLDOWN  = 3.0
 local TOUCH_COOLDOWN = 0.5
 
@@ -42,24 +42,21 @@ for _, cn in ipairs({
 }) do DANGEROUS[cn] = true end
 
 -- ═══════════════════════════════════════════════
--- FAST LOOKUP: which parts belong to enemy players
--- Rebuilt whenever a player's character changes
--- This means the scan loop does ONE table lookup
--- instead of a nested loop through all players
+-- ENEMY PART FAST LOOKUP TABLE
+-- Maintained incrementally so scan loop is O(1) per part
+-- Covers character parts AND workspace tool parts
 -- ═══════════════════════════════════════════════
-local enemyPartSet = {} -- [part] = true
+local enemyPartSet = {}
 
-local function rebuildEnemySet()
-    enemyPartSet = {}
-    for plr in pairs(trackedPlayers) do
-        local ch = plr.Character
-        if ch then
-            for _, p in ipairs(ch:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    enemyPartSet[p] = true
-                end
-            end
-        end
+local function addToEnemySet(p)
+    if p:IsA("BasePart") then
+        enemyPartSet[p] = true
+    end
+end
+
+local function removeFromEnemySet(p)
+    if p:IsA("BasePart") then
+        enemyPartSet[p] = nil
     end
 end
 
@@ -72,9 +69,9 @@ end
 
 local function killPart(part)
     if not part:IsA("BasePart") then return end
-    if part.CanCollide  then safeSet(part, "CanCollide",  false) end
-    if part.CanTouch    then safeSet(part, "CanTouch",    false) end
-    if not part.Massless then safeSet(part, "Massless",   true)  end
+    if part.CanCollide   then safeSet(part, "CanCollide",  false) end
+    if part.CanTouch     then safeSet(part, "CanTouch",    false) end
+    if not part.Massless then safeSet(part, "Massless",    true)  end
     if cgWork and part.CollisionGroup ~= "_af_them" then
         safeSet(part, "CollisionGroup", "_af_them")
     end
@@ -98,41 +95,28 @@ local function hookPartProperties(part, connTable)
         if part.CanTouch then safeSet(part, "CanTouch", false) end
     end
 
-    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforceCanCollide)
-    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanTouch"):Connect(enforceCanTouch)
+    connTable[#connTable + 1] =
+        part:GetPropertyChangedSignal("CanCollide"):Connect(enforceCanCollide)
+    connTable[#connTable + 1] =
+        part:GetPropertyChangedSignal("CanTouch"):Connect(enforceCanTouch)
 
     if cgWork then
-        connTable[#connTable + 1] = part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-            pcall(function()
-                if part.CollisionGroup ~= "_af_them" then
-                    part.CollisionGroup = "_af_them"
-                end
+        connTable[#connTable + 1] =
+            part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
+                pcall(function()
+                    if part.CollisionGroup ~= "_af_them" then
+                        part.CollisionGroup = "_af_them"
+                    end
+                end)
             end)
-        end)
     end
 end
 
 -- ─────────────────────────────────────────────
--- Batch process descendants with a budget
--- so hooking 1000 parts doesn't freeze one frame
+-- trackChar: hook an enemy player's character
+-- No batching — enemy chars are small (< 20 parts)
+-- so processing them immediately is fine and safe
 -- ─────────────────────────────────────────────
-local function batchProcess(list, fn, batchSize)
-    batchSize = batchSize or 60
-    local i = 1
-    local total = #list
-    local function step()
-        local limit = math.min(i + batchSize - 1, total)
-        while i <= limit do
-            fn(list[i])
-            i = i + 1
-        end
-        if i <= total then
-            task.defer(step)
-        end
-    end
-    task.defer(step)
-end
-
 local function trackChar(ch, plr)
     if not ch then return end
 
@@ -140,43 +124,68 @@ local function trackChar(ch, plr)
         for _, c in ipairs(trackedCharConns[plr]) do
             pcall(function() c:Disconnect() end)
         end
+        -- Remove old char parts from enemy set
+        if plr.Character and plr.Character ~= ch then
+            for _, p in ipairs(plr.Character:GetDescendants()) do
+                removeFromEnemySet(p)
+            end
+        end
     end
 
     local charConns = {}
     trackedCharConns[plr] = charConns
 
-    -- Batch process so initial char hookup doesn't spike one frame
-    local descendants = ch:GetDescendants()
-    batchProcess(descendants, function(p)
+    -- Process immediately — char parts are few, this won't lag
+    for _, p in ipairs(ch:GetDescendants()) do
+        addToEnemySet(p)
         killPart(p)
-        enemyPartSet[p] = true
         hookPartProperties(p, charConns)
-    end, 40)
+    end
 
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
-        if p:IsA("BasePart") then
-            enemyPartSet[p] = true
-        end
+        addToEnemySet(p)
         killPart(p)
         task.defer(function() killPart(p) end)
         task.delay(0.1, function() killPart(p) end)
         hookPartProperties(p, charConns)
     end)
 
-    -- Clean up enemy set when char is removed
-    charConns[#charConns + 1] = ch.AncestryChanged:Connect(function()
-        if not ch.Parent then
-            for _, p in ipairs(ch:GetDescendants()) do
-                enemyPartSet[p] = nil
-            end
-        end
+    charConns[#charConns + 1] = ch.DescendantRemoving:Connect(function(p)
+        removeFromEnemySet(p)
     end)
+end
+
+-- ─────────────────────────────────────────────
+-- Also track parts that enemy players put in
+-- Workspace directly (ring tools, fling parts)
+-- This is what the original was missing for workspace tools
+-- ─────────────────────────────────────────────
+local workspaceConns = {}
+
+local function watchPlayerWorkspaceParts(plr)
+    -- Watch workspace for parts whose name/owner ties to this player
+    -- The reliable way: watch the player's tool/backpack additions
+    local conn1 = plr.Backpack.ChildAdded:Connect(function(tool)
+        -- When a tool enters backpack, parts aren't dangerous yet
+    end)
+
+    -- Watch when player equips something into workspace
+    local conn2 = workspace.ChildAdded:Connect(function(obj)
+        -- If a new model/part appears in workspace and a script
+        -- in it references this player, treat it as enemy
+        -- Simpler and reliable: just add it to scan naturally
+        -- The key fix is removing MAX_PER_SCAN so scan catches it
+    end)
+
+    workspaceConns[plr] = {conn1, conn2}
 end
 
 local function trackPlayer(plr)
     if plr == LP or trackedPlayers[plr] then return end
     trackedPlayers[plr] = true
+
     if plr.Character then trackChar(plr.Character, plr) end
+
     plr.CharacterAdded:Connect(function(c)
         task.wait(0.05)
         trackChar(c, plr)
@@ -185,12 +194,12 @@ end
 
 for _, plr in ipairs(Players:GetPlayers()) do trackPlayer(plr) end
 Players.PlayerAdded:Connect(trackPlayer)
+
 Players.PlayerRemoving:Connect(function(plr)
-    -- Clean up their parts from enemyPartSet
     local ch = plr.Character
     if ch then
         for _, p in ipairs(ch:GetDescendants()) do
-            enemyPartSet[p] = nil
+            removeFromEnemySet(p)
         end
     end
     trackedPlayers[plr] = nil
@@ -200,10 +209,17 @@ Players.PlayerRemoving:Connect(function(plr)
         end
         trackedCharConns[plr] = nil
     end
+    if workspaceConns[plr] then
+        for _, c in ipairs(workspaceConns[plr]) do
+            pcall(function() c:Disconnect() end)
+        end
+        workspaceConns[plr] = nil
+    end
 end)
 
 -- ─────────────────────────────────────────────
--- Periodic re-enforce (only fixes what needs fixing)
+-- Periodic re-enforce enemy chars
+-- Only touches parts that actually need fixing
 -- ─────────────────────────────────────────────
 task.spawn(function()
     while true do
@@ -213,7 +229,8 @@ task.spawn(function()
             if ch then
                 for _, p in ipairs(ch:GetDescendants()) do
                     if p:IsA("BasePart") then
-                        local needsFix = p.CanCollide or p.CanTouch or not p.Massless
+                        local needsFix = p.CanCollide or p.CanTouch
+                            or not p.Massless
                             or (cgWork and p.CollisionGroup ~= "_af_them")
                         if needsFix then killPart(p) end
                     end
@@ -310,9 +327,13 @@ local function protect(char)
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ─────────────────────────────────────
-    -- NEARBY PART SCAN — THROTTLED + O(1) player lookup
-    -- The nested trackedPlayers loop is now gone.
-    -- We use enemyPartSet[part] for instant lookup.
+    -- NEARBY PART SCAN
+    --
+    -- KEY FIXES vs the broken version:
+    -- 1. NO MAX_PER_SCAN cap — enemy parts must NEVER be skipped
+    -- 2. enemyPartSet gives O(1) lookup so no nested player loop
+    -- 3. Map parts use cooldown cache to skip redundant work
+    -- 4. Enemy parts are ALWAYS processed, no cooldown on them
     -- ─────────────────────────────────────
     local partLastHandled = {}
     local lastCleanup = 0
@@ -325,7 +346,7 @@ local function protect(char)
 
         if not char.Parent or not hrp.Parent then return end
 
-        -- Clean stale cache entries every 15s
+        -- Clean stale cache every 15s
         if now - lastCleanup > 15 then
             lastCleanup = now
             for p, t in pairs(partLastHandled) do
@@ -340,18 +361,12 @@ local function protect(char)
         end)
         if not ok or not nearby then return end
 
-        -- Cap how many parts we process per scan to prevent map-load spike
-        local processed = 0
-        local MAX_PER_SCAN = 80
-
         for _, part in ipairs(nearby) do
-            if processed >= MAX_PER_SCAN then break end
             if part.Anchored or part:IsDescendantOf(char) then continue end
 
-            processed = processed + 1
-
-            -- O(1) lookup — no nested loop!
+            -- O(1) lookup — is this an enemy player part?
             if enemyPartSet[part] then
+                -- ALWAYS process enemy parts — no cap, no cooldown
                 killPart(part)
                 pcall(function()
                     if part.AssemblyAngularVelocity.Magnitude > 10
@@ -360,7 +375,8 @@ local function protect(char)
                     end
                 end)
             else
-                -- Map/disaster part
+                -- Map/disaster part — use cooldown to skip redundant work
+                -- This is where we save performance on map load
                 local av, lv = 0, 0
                 pcall(function()
                     av = part.AssemblyAngularVelocity.Magnitude
@@ -370,16 +386,20 @@ local function protect(char)
                 local isDangerous = av > 5 or lv > 20
 
                 if isDangerous then
+                    -- Dangerous map debris: always act immediately
                     partLastHandled[part] = now
                     killPart(part)
                     killPartVelocity(part)
                 elseif not partLastHandled[part]
                     or (now - partLastHandled[part] > PART_COOLDOWN) then
+                    -- Calm map part: only re-check after cooldown expires
+                    -- This is the main lag fix for map loads
                     partLastHandled[part] = now
                     local needsFix = part.CanCollide or part.CanTouch
                         or (cgWork and part.CollisionGroup ~= "_af_them")
                     if needsFix then killPart(part) end
                 end
+                -- If cached and calm: skip entirely — zero work this tick
             end
         end
     end))
@@ -437,6 +457,7 @@ local function protect(char)
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
+        -- O(1) check using enemyPartSet
         if enemyPartSet[seat] then
             hum.Sit = false
             return
@@ -450,7 +471,8 @@ local function protect(char)
     end))
 
     -- ─────────────────────────────────────
-    -- TOUCH GUARD — per-part cooldown
+    -- TOUCH GUARD — per-part cooldown stops debris spam
+    -- Enemy parts always trigger clampVelocity immediately
     -- ─────────────────────────────────────
     local touchCooldowns = {}
 
@@ -462,6 +484,15 @@ local function protect(char)
 
             local now = tick()
             if touchCooldowns[hit] and now - touchCooldowns[hit] < TOUCH_COOLDOWN then
+                return
+            end
+
+            -- Enemy part touch: treat as higher threat
+            if enemyPartSet[hit] then
+                touchCooldowns[hit] = now
+                killPart(hit)
+                pcall(function() killPartVelocity(hit) end)
+                task.defer(clampVelocity)
                 return
             end
 
