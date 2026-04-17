@@ -10,12 +10,9 @@ local UP_CAP    = 100
 local DOWN_CAP  = 180
 local SCAN_RAD  = 30
 
-local SCAN_INTERVAL  = 0.15
-local PART_COOLDOWN  = 3.0
-local TOUCH_COOLDOWN = 0.5
-
 local trackedPlayers   = {}
 local trackedCharConns = {}
+local charCache        = {}   -- flat array of tracked character instances
 local conns            = {}
 
 -- ═══════════════════════════════════════════════
@@ -35,28 +32,11 @@ end)
 -- ═══════════════════════════════════════════════
 local DANGEROUS = {}
 for _, cn in ipairs({
-    "BodyVelocity","BodyAngularVelocity","BodyForce",
-    "BodyPosition","BodyGyro","BodyThrust","RocketPropulsion",
-    "Torque","VectorForce","LinearVelocity","AlignPosition",
-    "AlignOrientation","AngularVelocity",
+    "BodyVelocity", "BodyAngularVelocity", "BodyForce",
+    "BodyPosition", "BodyGyro", "BodyThrust", "RocketPropulsion",
+    "Torque", "VectorForce", "LinearVelocity", "AlignPosition",
+    "AlignOrientation", "AngularVelocity",
 }) do DANGEROUS[cn] = true end
-
--- ═══════════════════════════════════════════════
--- ENEMY PART FAST LOOKUP TABLE
--- ═══════════════════════════════════════════════
-local enemyPartSet = {}
-
-local function addToEnemySet(p)
-    if p:IsA("BasePart") then
-        enemyPartSet[p] = true
-    end
-end
-
-local function removeFromEnemySet(p)
-    if p:IsA("BasePart") then
-        enemyPartSet[p] = nil
-    end
-end
 
 -- ═══════════════════════════════════════════════
 -- UTILITY
@@ -65,29 +45,30 @@ local function safeSet(part, prop, val)
     pcall(function() part[prop] = val end)
 end
 
--- ┌─────────────────────────────────────────────┐
--- │ killPart: ONLY for unanchored enemy/exploit  │
--- │ parts. NEVER call this on anchored map parts │
--- │ like poles, walls, floors — that is what     │
--- │ caused the noclip through everything bug     │
--- └─────────────────────────────────────────────┘
 local function killPart(part)
     if not part:IsA("BasePart") then return end
-    -- CRITICAL: never touch anchored parts' collision
-    -- Anchored parts are map geometry — poles, walls, floors
-    -- Removing their collision is what caused noclip
-    if part.Anchored then return end
-    if part.CanCollide   then safeSet(part, "CanCollide",  false) end
-    if part.CanTouch     then safeSet(part, "CanTouch",    false) end
-    if not part.Massless then safeSet(part, "Massless",    true)  end
-    if cgWork and part.CollisionGroup ~= "_af_them" then
-        safeSet(part, "CollisionGroup", "_af_them")
-    end
+    safeSet(part, "CanCollide", false)
+    safeSet(part, "CanTouch", false)
+    safeSet(part, "Massless", true)
+    if cgWork then safeSet(part, "CollisionGroup", "_af_them") end
 end
 
 local function killPartVelocity(part)
-    safeSet(part, "AssemblyLinearVelocity",  V3ZERO)
+    safeSet(part, "AssemblyLinearVelocity", V3ZERO)
     safeSet(part, "AssemblyAngularVelocity", V3ZERO)
+end
+
+-- ═══════════════════════════════════════════════
+-- CHARACTER CACHE — avoids pairs()+.Character per part
+-- ═══════════════════════════════════════════════
+local function rebuildCharCache()
+    local new = {}
+    for plr in pairs(trackedPlayers) do
+        if plr.Character then
+            new[#new + 1] = plr.Character
+        end
+    end
+    charCache = new
 end
 
 -- ═══════════════════════════════════════════════
@@ -95,45 +76,24 @@ end
 -- ═══════════════════════════════════════════════
 local function hookPartProperties(part, connTable)
     if not part:IsA("BasePart") then return end
-    -- Only hook unanchored parts — anchored parts
-    -- should never have their collision messed with
-    if part.Anchored then return end
 
-    local function enforceCanCollide()
-        if part.CanCollide then safeSet(part, "CanCollide", false) end
-    end
-    local function enforceCanTouch()
-        if part.CanTouch then safeSet(part, "CanTouch", false) end
+    local function enforce()
+        safeSet(part, "CanCollide", false)
+        safeSet(part, "CanTouch", false)
     end
 
-    connTable[#connTable + 1] =
-        part:GetPropertyChangedSignal("CanCollide"):Connect(enforceCanCollide)
-    connTable[#connTable + 1] =
-        part:GetPropertyChangedSignal("CanTouch"):Connect(enforceCanTouch)
+    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
+    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanTouch"):Connect(enforce)
 
     if cgWork then
-        connTable[#connTable + 1] =
-            part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-                pcall(function()
-                    if part.CollisionGroup ~= "_af_them" then
-                        part.CollisionGroup = "_af_them"
-                    end
-                end)
-            end)
-    end
-
-    -- If a part gets unanchored later (disaster breaks it),
-    -- we need to re-enforce it at that moment
-    connTable[#connTable + 1] =
-        part:GetPropertyChangedSignal("Anchored"):Connect(function()
+        connTable[#connTable + 1] = part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
             pcall(function()
-                if not part.Anchored then
-                    -- Just became unanchored (disaster broke it)
-                    -- Now it is safe to kill its collision
-                    killPart(part)
+                if part.CollisionGroup ~= "_af_them" then
+                    part.CollisionGroup = "_af_them"
                 end
             end)
         end)
+    end
 end
 
 local function trackChar(ch, plr)
@@ -143,33 +103,23 @@ local function trackChar(ch, plr)
         for _, c in ipairs(trackedCharConns[plr]) do
             pcall(function() c:Disconnect() end)
         end
-        if plr.Character and plr.Character ~= ch then
-            for _, p in ipairs(plr.Character:GetDescendants()) do
-                removeFromEnemySet(p)
-            end
-        end
     end
 
     local charConns = {}
     trackedCharConns[plr] = charConns
 
     for _, p in ipairs(ch:GetDescendants()) do
-        addToEnemySet(p)
         killPart(p)
         hookPartProperties(p, charConns)
     end
 
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
-        addToEnemySet(p)
         killPart(p)
         task.defer(function() killPart(p) end)
-        task.delay(0.1, function() killPart(p) end)
         hookPartProperties(p, charConns)
     end)
 
-    charConns[#charConns + 1] = ch.DescendantRemoving:Connect(function(p)
-        removeFromEnemySet(p)
-    end)
+    rebuildCharCache()
 end
 
 local function trackPlayer(plr)
@@ -184,14 +134,7 @@ end
 
 for _, plr in ipairs(Players:GetPlayers()) do trackPlayer(plr) end
 Players.PlayerAdded:Connect(trackPlayer)
-
 Players.PlayerRemoving:Connect(function(plr)
-    local ch = plr.Character
-    if ch then
-        for _, p in ipairs(ch:GetDescendants()) do
-            removeFromEnemySet(p)
-        end
-    end
     trackedPlayers[plr] = nil
     if trackedCharConns[plr] then
         for _, c in ipairs(trackedCharConns[plr]) do
@@ -199,24 +142,18 @@ Players.PlayerRemoving:Connect(function(plr)
         end
         trackedCharConns[plr] = nil
     end
+    rebuildCharCache()
 end)
 
--- ─────────────────────────────────────────────
--- Periodic re-enforce — only unanchored parts
--- ─────────────────────────────────────────────
+-- Periodic re-enforce (0.5s — lighter, protection unchanged)
 task.spawn(function()
     while true do
-        task.wait(0.6)
+        task.wait(0.5)
         for plr in pairs(trackedPlayers) do
             local ch = plr.Character
             if ch then
                 for _, p in ipairs(ch:GetDescendants()) do
-                    if p:IsA("BasePart") and not p.Anchored then
-                        local needsFix = p.CanCollide or p.CanTouch
-                            or not p.Massless
-                            or (cgWork and p.CollisionGroup ~= "_af_them")
-                        if needsFix then killPart(p) end
-                    end
+                    killPart(p)
                 end
             end
         end
@@ -246,21 +183,13 @@ local function protect(char)
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {char}
 
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     -- OUR COLLISION GROUP
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
-        if cgWork and p.CollisionGroup ~= "_af_me" then
-            safeSet(p, "CollisionGroup", "_af_me")
-        end
+        if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
     end
-
-    for _, p in ipairs(char:GetDescendants()) do fortify(p) end
-    reg(char.DescendantAdded:Connect(function(p)
-        fortify(p)
-        task.defer(function() fortify(p) end)
-    end))
 
     local function hookOwnPart(p)
         if not p:IsA("BasePart") or not cgWork then return end
@@ -273,12 +202,23 @@ local function protect(char)
         end))
     end
 
-    for _, p in ipairs(char:GetDescendants()) do hookOwnPart(p) end
-    reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
+    for _, p in ipairs(char:GetDescendants()) do
+        fortify(p)
+        hookOwnPart(p)
+    end
 
-    -- ─────────────────────────────────────
+    -- Merged into one DescendantAdded instead of two
+    reg(char.DescendantAdded:Connect(function(p)
+        fortify(p)
+        task.defer(function() fortify(p) end)
+        hookOwnPart(p)
+    end))
+
+    -- ═══════════════════════════════════
     -- VELOCITY CLAMPING
-    -- ─────────────────────────────────────
+    -- Stepped only — fires before physics each frame,
+    -- same protection with 1 connection instead of 3
+    -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
@@ -288,18 +228,21 @@ local function protect(char)
 
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
-        local hMag = math.sqrt(vx*vx + vz*vz)
+        local hMag = math.sqrt(vx * vx + vz * vz)
         local dirty = false
 
         if hMag > HORIZ_CAP then
             local s = HORIZ_CAP / hMag
-            vx, vz = vx*s, vz*s
+            vx, vz = vx * s, vz * s
             dirty = true
         end
+
         if vy > UP_CAP then
-            vy = UP_CAP; dirty = true
+            vy = UP_CAP
+            dirty = true
         elseif vy < -DOWN_CAP then
-            vy = -DOWN_CAP; dirty = true
+            vy = -DOWN_CAP
+            dirty = true
         end
 
         if dirty then
@@ -307,88 +250,70 @@ local function protect(char)
         end
     end
 
-    reg(RunService.Heartbeat:Connect(clampVelocity))
+    reg(RunService.Stepped:Connect(clampVelocity))
 
-    -- ─────────────────────────────────────
-    -- NEARBY PART SCAN
-    -- Only processes UNANCHORED parts
-    -- Anchored map geometry is completely ignored
-    -- ─────────────────────────────────────
-    local partLastHandled = {}
-    local lastCleanup = 0
-    local lastScan    = 0
-
+    -- ═══════════════════════════════════
+    -- NEARBY PART SCAN — every 3rd frame
+    -- Uses cached charCache for fast lookup
+    -- ═══════════════════════════════════
+    local scanTick = 0
     reg(RunService.Heartbeat:Connect(function()
-        local now = tick()
-        if now - lastScan < SCAN_INTERVAL then return end
-        lastScan = now
+        scanTick = scanTick + 1
+        if scanTick % 3 ~= 0 then return end
 
         if not char.Parent or not hrp.Parent then return end
 
-        if now - lastCleanup > 15 then
-            lastCleanup = now
-            for p, t in pairs(partLastHandled) do
-                if now - t > PART_COOLDOWN * 2 then
-                    partLastHandled[p] = nil
-                end
-            end
-        end
-
         local ok, nearby = pcall(function()
-            return workspace:GetPartBoundsInRadius(hrp.Position, SCAN_RAD, overlapParams)
+            return workspace:GetPartBoundsInRadius(
+                hrp.Position, SCAN_RAD, overlapParams
+            )
         end)
+
         if not ok or not nearby then return end
 
+        local cache = charCache
         for _, part in ipairs(nearby) do
-            -- Skip anchored parts entirely — they are safe map geometry
-            -- This is the main fix: poles, walls, floors are never touched
-            if part.Anchored then continue end
-            if part:IsDescendantOf(char) then continue end
-
-            if enemyPartSet[part] then
-                -- Enemy player part: always neutralize, no cooldown
-                killPart(part)
-                pcall(function()
-                    if part.AssemblyAngularVelocity.Magnitude > 10
-                    or part.AssemblyLinearVelocity.Magnitude > 200 then
-                        killPartVelocity(part)
+            if not part.Anchored and not part:IsDescendantOf(char) then
+                local isPlayer = false
+                for i = 1, #cache do
+                    local ch = cache[i]
+                    if ch and ch.Parent and part:IsDescendantOf(ch) then
+                        isPlayer = true
+                        break
                     end
-                end)
-            else
-                -- Unanchored map/disaster part
-                -- These are things like debris that disasters break loose
-                local av, lv = 0, 0
-                pcall(function()
-                    av = part.AssemblyAngularVelocity.Magnitude
-                    lv = part.AssemblyLinearVelocity.Magnitude
-                end)
+                end
 
-                local isDangerous = av > 5 or lv > 20
-
-                if isDangerous then
-                    partLastHandled[part] = now
+                if isPlayer then
                     killPart(part)
-                    killPartVelocity(part)
-                elseif not partLastHandled[part]
-                    or (now - partLastHandled[part] > PART_COOLDOWN) then
-                    partLastHandled[part] = now
-                    local needsFix = part.CanCollide or part.CanTouch
-                        or (cgWork and part.CollisionGroup ~= "_af_them")
-                    if needsFix then killPart(part) end
+                    pcall(function()
+                        if part.AssemblyAngularVelocity.Magnitude > 10
+                        or part.AssemblyLinearVelocity.Magnitude > 200 then
+                            killPartVelocity(part)
+                        end
+                    end)
+                else
+                    pcall(function()
+                        local av = part.AssemblyAngularVelocity.Magnitude
+                        local lv = part.AssemblyLinearVelocity.Magnitude
+                        if av > 5 or lv > 20 then
+                            killPart(part)
+                            killPartVelocity(part)
+                        end
+                    end)
                 end
             end
         end
     end))
 
-    -- ─────────────────────────────────────
-    -- FORCE / WELD GUARD
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
+    -- FORCE / WELD GUARD — immediate + deferred + delayed
+    -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
             local function checkExternal()
                 pcall(function()
                     if not obj.Parent then return end
-                    for _, prop in ipairs({"Attachment0","Attachment1","Part0","Part1"}) do
+                    for _, prop in ipairs({"Attachment0", "Attachment1", "Part0", "Part1"}) do
                         local ok2, val = pcall(function() return obj[prop] end)
                         if ok2 and val and typeof(val) == "Instance"
                         and not val:IsDescendantOf(char) then
@@ -398,13 +323,16 @@ local function protect(char)
                     end
                 end)
             end
+
             checkExternal()
             task.defer(checkExternal)
             task.delay(0.1, checkExternal)
             return
         end
 
-        if obj:IsA("JointInstance") or obj:IsA("WeldConstraint") or obj:IsA("Constraint") then
+        if obj:IsA("JointInstance")
+        or obj:IsA("WeldConstraint")
+        or obj:IsA("Constraint") then
             local function checkJoint()
                 pcall(function()
                     if not obj.Parent then return end
@@ -421,21 +349,24 @@ local function protect(char)
                     end
                 end)
             end
+
             checkJoint()
             task.defer(checkJoint)
             task.delay(0.1, checkJoint)
         end
     end))
 
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     -- SEAT GUARD
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("SeatPart"):Connect(function()
         local seat = hum.SeatPart
         if not seat then return end
-        if enemyPartSet[seat] then
-            hum.Sit = false
-            return
+        for plr in pairs(trackedPlayers) do
+            if plr.Character and seat:IsDescendantOf(plr.Character) then
+                hum.Sit = false
+                return
+            end
         end
         if not seat.Anchored and not seat:IsDescendantOf(char) then
             if seat.AssemblyAngularVelocity.Magnitude > 8
@@ -445,65 +376,41 @@ local function protect(char)
         end
     end))
 
-    -- ─────────────────────────────────────
-    -- TOUCH GUARD
-    -- Only acts on unanchored parts
-    -- Anchored parts touching you is normal gameplay
-    -- ─────────────────────────────────────
-    local touchCooldowns = {}
+    -- ═══════════════════════════════════
+    -- TOUCH GUARD — per-part 0.1s cooldown
+    -- Weak-key table auto-cleans destroyed parts
+    -- ═══════════════════════════════════
+    local touchCooldowns = setmetatable({}, {__mode = "k"})
 
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
         reg(bp.Touched:Connect(function(hit)
             if not hit or not hit.Parent then return end
-            if hit:IsDescendantOf(char) then return end
-            -- Never act on anchored parts — poles, walls, floors
-            if hit.Anchored then return end
+            if hit:IsDescendantOf(char) or hit.Anchored then return end
 
             local now = tick()
-            if touchCooldowns[hit] and now - touchCooldowns[hit] < TOUCH_COOLDOWN then
-                return
-            end
-
-            if enemyPartSet[hit] then
-                touchCooldowns[hit] = now
-                killPart(hit)
-                pcall(function() killPartVelocity(hit) end)
-                task.defer(clampVelocity)
-                return
-            end
+            if touchCooldowns[hit] and now - touchCooldowns[hit] < 0.1 then return end
+            touchCooldowns[hit] = now
 
             pcall(function()
                 local av = hit.AssemblyAngularVelocity.Magnitude
                 local lv = hit.AssemblyLinearVelocity.Magnitude
                 if av > 5 or lv > 20 then
-                    touchCooldowns[hit] = now
                     killPart(hit)
                     killPartVelocity(hit)
-                    task.defer(clampVelocity)
                 end
             end)
+
+            task.defer(clampVelocity)
         end))
     end
-
-    task.spawn(function()
-        while char.Parent do
-            task.wait(5)
-            local now = tick()
-            for part, t in pairs(touchCooldowns) do
-                if now - t > TOUCH_COOLDOWN * 4 then
-                    touchCooldowns[part] = nil
-                end
-            end
-        end
-    end)
 
     for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
     reg(char.DescendantAdded:Connect(hookTouch))
 
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     -- PLATFORMSTAND GUARD
-    -- ─────────────────────────────────────
+    -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
         if hum.PlatformStand then
             task.defer(function()
