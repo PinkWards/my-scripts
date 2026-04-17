@@ -9,8 +9,27 @@ local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
 local activeConnections = {}
-local heartbeatConns = {} -- table instead of single var to avoid overwrite
+local heartbeatConns = {}
 local applied = false
+
+-- Safe shield function to get body scales without crashing
+local function getScaleProp(humanoid, propName)
+    local success, val = pcall(function()
+        return humanoid[propName]
+    end)
+    if success then
+        local num = tonumber(val)
+        if num then
+            return math.max(num, 0.5)
+        end
+        -- Fallback if the game uses an old NumberValue instead of a property
+        if typeof(val) == "Instance" and val:IsA("NumberValue") then
+            return math.max(val.Value, 0.5)
+        end
+    end
+    -- If it returns a table, nil, or breaks, just use default 1.0 scale
+    return 1.0
+end
 
 local function cleanupConnections()
     for i = #activeConnections, 1, -1 do
@@ -64,14 +83,12 @@ local function applyHeadless(head)
     mesh.Scale = TINY_SCALE
     mesh.Parent = head
 
-    -- Keep head invisible persistently
     track(head:GetPropertyChangedSignal("Transparency"):Connect(function()
         if head.Transparency ~= 1 then
             head.Transparency = 1
         end
     end))
 
-    -- Remove any decals added to head
     track(head.ChildAdded:Connect(function(child)
         if child:IsA("Decal") then
             task.defer(function()
@@ -84,7 +101,6 @@ local function applyHeadless(head)
 
     local character = head.Parent
     if character then
-        -- Hide head accessories
         task.spawn(function()
             task.wait(0.3)
             if not character or not character.Parent then return end
@@ -105,7 +121,6 @@ local function applyHeadless(head)
             end
         end)
 
-        -- Also catch accessories added AFTER apply (hats loading in late)
         track(character.ChildAdded:Connect(function(child)
             if child:IsA("Accessory") then
                 task.wait(0.1)
@@ -156,8 +171,9 @@ local function applyKorbloxR15(character)
     local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
     local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
     local rightFoot     = character:FindFirstChild("RightFoot")
+    local humanoid      = character:FindFirstChildOfClass("Humanoid")
 
-    if not rightUpperLeg then return end
+    if not rightUpperLeg or not humanoid then return end
     if character:FindFirstChild("KorbloxLeg") then return end
 
     local function hidePart(part)
@@ -175,13 +191,13 @@ local function applyKorbloxR15(character)
     hidePart(rightLowerLeg)
     hidePart(rightFoot)
 
-    local upperLegMotor = nil
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("Motor6D") and part.Part1 == rightUpperLeg then
-            upperLegMotor = part
-            break
-        end
-    end
+    -- Calculate total leg height
+    local legHeight = 0
+    if rightUpperLeg then legHeight = legHeight + rightUpperLeg.Size.Y end
+    if rightLowerLeg then legHeight = legHeight + rightLowerLeg.Size.Y end
+    if rightFoot then legHeight = legHeight + rightFoot.Size.Y end
+    
+    if legHeight == 0 then legHeight = 2.6 end -- Fallback
 
     local korbloxLeg = Instance.new("Part")
     korbloxLeg.Name         = "KorbloxLeg"
@@ -199,57 +215,54 @@ local function applyKorbloxR15(character)
     mesh.MeshType  = Enum.MeshType.FileMesh
     mesh.MeshId    = KORBLOX_MESH_ID
     mesh.TextureId = KORBLOX_TEXTURE_ID
-    mesh.Scale     = Vector3.new(1, 1, 1)
+    
+    -- Safely get the avatar's Width/Depth sliders!
+    local wScale = getScaleProp(humanoid, "BodyWidthScale")
+    local dScale = getScaleProp(humanoid, "BodyDepthScale")
+    
+    mesh.Scale     = Vector3.new(wScale, legHeight / 2.0, dScale)
     mesh.Parent    = korbloxLeg
 
-    local driveMotor = Instance.new("Motor6D")
-    driveMotor.Name = "KorbloxDrive"
+    -- Calculate offset so the top of the mesh aligns perfectly with the top of the upper leg
+    local yOffset = (rightUpperLeg.Size.Y / 2) - (legHeight / 2)
+    
+    -- Position the Korblox exactly on the leg before welding
+    korbloxLeg.CFrame = rightUpperLeg.CFrame * CFrame.new(0, yOffset, 0)
 
-    if upperLegMotor then
-        driveMotor.Part0  = upperLegMotor.Part0
-        driveMotor.Part1  = korbloxLeg
-        driveMotor.C0     = upperLegMotor.C0
-        driveMotor.C1     = CFrame.new(0, 0.5, 0)
-        driveMotor.Parent = upperLegMotor.Parent
+    -- Weld it directly to the real (invisible) RightUpperLeg! 
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = rightUpperLeg
+    weld.Part1 = korbloxLeg
+    weld.Parent = korbloxLeg
 
-        -- Mirror animation + keep legs hidden
-        trackHeartbeat(RunService.Heartbeat:Connect(function()
-            if not character or not character.Parent then return end
-            if not upperLegMotor or not upperLegMotor.Parent then return end
-            if not driveMotor or not driveMotor.Parent then return end
-
-            driveMotor.C0 = upperLegMotor.C0
-
-            if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
-                rightUpperLeg.Transparency = 1
-            end
-            if rightLowerLeg and rightLowerLeg.Transparency ~= 1 then
-                rightLowerLeg.Transparency = 1
-            end
-            if rightFoot and rightFoot.Transparency ~= 1 then
-                rightFoot.Transparency = 1
-            end
-        end))
-    else
-        driveMotor.Part0  = rightUpperLeg
-        driveMotor.Part1  = korbloxLeg
-        driveMotor.C0     = CFrame.new(0, 0, 0)
-        driveMotor.C1     = CFrame.new(0, 0.5, 0)
-        driveMotor.Parent = rightUpperLeg
-
-        trackHeartbeat(RunService.Heartbeat:Connect(function()
-            if not character or not character.Parent then return end
-            if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
-                rightUpperLeg.Transparency = 1
-            end
-            if rightLowerLeg and rightLowerLeg.Transparency ~= 1 then
-                rightLowerLeg.Transparency = 1
-            end
-            if rightFoot and rightFoot.Transparency ~= 1 then
-                rightFoot.Transparency = 1
-            end
-        end))
-    end
+    -- Keep real leg parts hidden persistently & dynamically update scale
+    trackHeartbeat(RunService.Heartbeat:Connect(function()
+        if not character or not character.Parent then return end
+        if not rightUpperLeg or not rightUpperLeg.Parent then return end
+        if not mesh or not mesh.Parent then return end
+        if not humanoid or not humanoid.Parent then return end
+        
+        if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
+            rightUpperLeg.Transparency = 1
+        end
+        if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then
+            rightLowerLeg.Transparency = 1
+        end
+        if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then
+            rightFoot.Transparency = 1
+        end
+        
+        -- Dynamically calculate current leg height
+        local currentLegHeight = rightUpperLeg.Size.Y
+        if rightLowerLeg and rightLowerLeg.Parent then currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y end
+        if rightFoot and rightFoot.Parent then currentLegHeight = currentLegHeight + rightFoot.Size.Y end
+        
+        if currentLegHeight > 0.1 then
+            local curW = getScaleProp(humanoid, "BodyWidthScale")
+            local curD = getScaleProp(humanoid, "BodyDepthScale")
+            mesh.Scale = Vector3.new(curW, currentLegHeight / 2.0, curD)
+        end
+    end))
 end
 
 local function waitForRig(character)
@@ -267,13 +280,11 @@ local function waitForRig(character)
 end
 
 local function applyCharacter(character)
-    -- Guard: don't apply twice to same character
     if applied then return end
     applied = true
 
     waitForRig(character)
 
-    -- Extra safety: make sure character is still alive/in workspace
     if not character or not character.Parent then
         applied = false
         return
@@ -293,7 +304,6 @@ local function applyCharacter(character)
         end
     end
 
-    -- Reapply headless if character reloads parts mid-session
     track(character.ChildAdded:Connect(function(child)
         if child.Name == "Head" then
             task.wait(0.1)
@@ -311,7 +321,7 @@ end
 
 -- Every respawn
 player.CharacterAdded:Connect(function(character)
-    cleanupConnections() -- resets applied = false
+    cleanupConnections()
     task.spawn(function()
         applyCharacter(character)
     end)
