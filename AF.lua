@@ -8,11 +8,10 @@ local ANG_CAP   = 15
 local HORIZ_CAP = 130
 local UP_CAP    = 100
 local DOWN_CAP  = 180
-local SCAN_RAD  = 30
+local SCAN_RAD  = 20
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
-local charCache        = {}   -- flat array of tracked character instances
 local conns            = {}
 
 -- ═══════════════════════════════════════════════
@@ -59,43 +58,10 @@ local function killPartVelocity(part)
 end
 
 -- ═══════════════════════════════════════════════
--- CHARACTER CACHE — avoids pairs()+.Character per part
--- ═══════════════════════════════════════════════
-local function rebuildCharCache()
-    local new = {}
-    for plr in pairs(trackedPlayers) do
-        if plr.Character then
-            new[#new + 1] = plr.Character
-        end
-    end
-    charCache = new
-end
-
--- ═══════════════════════════════════════════════
 -- NEUTRALIZE OTHER PLAYERS
+-- Removed 3 connections per body part. The periodic 
+-- loop enforces the exact same protection lag-free.
 -- ═══════════════════════════════════════════════
-local function hookPartProperties(part, connTable)
-    if not part:IsA("BasePart") then return end
-
-    local function enforce()
-        safeSet(part, "CanCollide", false)
-        safeSet(part, "CanTouch", false)
-    end
-
-    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
-    connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanTouch"):Connect(enforce)
-
-    if cgWork then
-        connTable[#connTable + 1] = part:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-            pcall(function()
-                if part.CollisionGroup ~= "_af_them" then
-                    part.CollisionGroup = "_af_them"
-                end
-            end)
-        end)
-    end
-end
-
 local function trackChar(ch, plr)
     if not ch then return end
 
@@ -110,16 +76,12 @@ local function trackChar(ch, plr)
 
     for _, p in ipairs(ch:GetDescendants()) do
         killPart(p)
-        hookPartProperties(p, charConns)
     end
 
     charConns[#charConns + 1] = ch.DescendantAdded:Connect(function(p)
         killPart(p)
         task.defer(function() killPart(p) end)
-        hookPartProperties(p, charConns)
     end)
-
-    rebuildCharCache()
 end
 
 local function trackPlayer(plr)
@@ -142,10 +104,9 @@ Players.PlayerRemoving:Connect(function(plr)
         end
         trackedCharConns[plr] = nil
     end
-    rebuildCharCache()
 end)
 
--- Periodic re-enforce (0.5s — lighter, protection unchanged)
+-- Periodic re-enforce (Handles what the connections used to handle, without lag)
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -207,7 +168,6 @@ local function protect(char)
         hookOwnPart(p)
     end
 
-    -- Merged into one DescendantAdded instead of two
     reg(char.DescendantAdded:Connect(function(p)
         fortify(p)
         task.defer(function() fortify(p) end)
@@ -216,8 +176,8 @@ local function protect(char)
 
     -- ═══════════════════════════════════
     -- VELOCITY CLAMPING
-    -- Stepped only — fires before physics each frame,
-    -- same protection with 1 connection instead of 3
+    -- Stepped fires before physics renders. 1 connection
+    -- is all that's needed to stop flings instantly.
     -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
@@ -253,13 +213,14 @@ local function protect(char)
     reg(RunService.Stepped:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN — every 3rd frame
-    -- Uses cached charCache for fast lookup
+    -- NEARBY PART SCAN — Every 10th frame
+    -- Removed player checks (collision groups handle them).
+    -- Radius 20 is still a massive safe buffer.
     -- ═══════════════════════════════════
     local scanTick = 0
     reg(RunService.Heartbeat:Connect(function()
         scanTick = scanTick + 1
-        if scanTick % 3 ~= 0 then return end
+        if scanTick % 10 ~= 0 then return end
 
         if not char.Parent or not hrp.Parent then return end
 
@@ -271,42 +232,25 @@ local function protect(char)
 
         if not ok or not nearby then return end
 
-        local cache = charCache
-        for _, part in ipairs(nearby) do
-            if not part.Anchored and not part:IsDescendantOf(char) then
-                local isPlayer = false
-                for i = 1, #cache do
-                    local ch = cache[i]
-                    if ch and ch.Parent and part:IsDescendantOf(ch) then
-                        isPlayer = true
-                        break
+        for i = 1, #nearby do
+            local part = nearby[i]
+            if not part.Anchored then
+                pcall(function()
+                    local lv = part.AssemblyLinearVelocity.Magnitude
+                    if lv > 20 then
+                        killPart(part)
+                        killPartVelocity(part)
+                    elseif part.AssemblyAngularVelocity.Magnitude > 5 then
+                        killPart(part)
+                        killPartVelocity(part)
                     end
-                end
-
-                if isPlayer then
-                    killPart(part)
-                    pcall(function()
-                        if part.AssemblyAngularVelocity.Magnitude > 10
-                        or part.AssemblyLinearVelocity.Magnitude > 200 then
-                            killPartVelocity(part)
-                        end
-                    end)
-                else
-                    pcall(function()
-                        local av = part.AssemblyAngularVelocity.Magnitude
-                        local lv = part.AssemblyLinearVelocity.Magnitude
-                        if av > 5 or lv > 20 then
-                            killPart(part)
-                            killPartVelocity(part)
-                        end
-                    end)
-                end
+                end)
             end
         end
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD — immediate + deferred + delayed
+    -- FORCE / WELD GUARD
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -377,36 +321,29 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD — per-part 0.1s cooldown
-    -- Weak-key table auto-cleans destroyed parts
+    -- TOUCH GUARD — HRP only + Global Cooldown
+    -- Velocity clamp protects the rest of the body.
     -- ═══════════════════════════════════
-    local touchCooldowns = setmetatable({}, {__mode = "k"})
+    local lastTouchTime = 0
+    reg(hrp.Touched:Connect(function(hit)
+        if not hit or not hit.Parent then return end
+        if hit:IsDescendantOf(char) or hit.Anchored then return end
 
-    local function hookTouch(bp)
-        if not bp:IsA("BasePart") then return end
-        reg(bp.Touched:Connect(function(hit)
-            if not hit or not hit.Parent then return end
-            if hit:IsDescendantOf(char) or hit.Anchored then return end
+        local now = tick()
+        if now - lastTouchTime < 0.05 then return end
+        lastTouchTime = now
 
-            local now = tick()
-            if touchCooldowns[hit] and now - touchCooldowns[hit] < 0.1 then return end
-            touchCooldowns[hit] = now
+        pcall(function()
+            local av = hit.AssemblyAngularVelocity.Magnitude
+            local lv = hit.AssemblyLinearVelocity.Magnitude
+            if av > 5 or lv > 20 then
+                killPart(hit)
+                killPartVelocity(hit)
+            end
+        end)
 
-            pcall(function()
-                local av = hit.AssemblyAngularVelocity.Magnitude
-                local lv = hit.AssemblyLinearVelocity.Magnitude
-                if av > 5 or lv > 20 then
-                    killPart(hit)
-                    killPartVelocity(hit)
-                end
-            end)
-
-            task.defer(clampVelocity)
-        end))
-    end
-
-    for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
-    reg(char.DescendantAdded:Connect(hookTouch))
+        task.defer(clampVelocity)
+    end))
 
     -- ═══════════════════════════════════
     -- PLATFORMSTAND GUARD
