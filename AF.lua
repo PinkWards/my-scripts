@@ -12,6 +12,7 @@ local SCAN_RAD  = 30
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
+local charCache        = {}
 local conns            = {}
 
 -- ═══════════════════════════════════════════════
@@ -38,23 +39,36 @@ for _, cn in ipairs({
 }) do DANGEROUS[cn] = true end
 
 -- ═══════════════════════════════════════════════
--- UTILITY — Merged pcalls for speed
+-- UTILITY
 -- ═══════════════════════════════════════════════
+local function safeSet(part, prop, val)
+    pcall(function() part[prop] = val end)
+end
+
 local function killPart(part)
     if not part:IsA("BasePart") then return end
-    pcall(function()
-        part.CanCollide = false
-        part.CanTouch = false
-        part.Massless = true
-        if cgWork then part.CollisionGroup = "_af_them" end
-    end)
+    safeSet(part, "CanCollide", false)
+    safeSet(part, "CanTouch", false)
+    safeSet(part, "Massless", true)
+    if cgWork then safeSet(part, "CollisionGroup", "_af_them") end
 end
 
 local function killPartVelocity(part)
-    pcall(function()
-        part.AssemblyLinearVelocity = V3ZERO
-        part.AssemblyAngularVelocity = V3ZERO
-    end)
+    safeSet(part, "AssemblyLinearVelocity", V3ZERO)
+    safeSet(part, "AssemblyAngularVelocity", V3ZERO)
+end
+
+-- ═══════════════════════════════════════════════
+-- CHARACTER CACHE (Lag Fix)
+-- ═══════════════════════════════════════════════
+local function rebuildCharCache()
+    local new = {}
+    for plr in pairs(trackedPlayers) do
+        if plr.Character then
+            new[#new + 1] = plr.Character
+        end
+    end
+    charCache = new
 end
 
 -- ═══════════════════════════════════════════════
@@ -64,10 +78,8 @@ local function hookPartProperties(part, connTable)
     if not part:IsA("BasePart") then return end
 
     local function enforce()
-        pcall(function()
-            part.CanCollide = false
-            part.CanTouch = false
-        end)
+        safeSet(part, "CanCollide", false)
+        safeSet(part, "CanTouch", false)
     end
 
     connTable[#connTable + 1] = part:GetPropertyChangedSignal("CanCollide"):Connect(enforce)
@@ -107,6 +119,8 @@ local function trackChar(ch, plr)
         task.delay(0.1, function() killPart(p) end)
         hookPartProperties(p, charConns)
     end)
+    
+    rebuildCharCache()
 end
 
 local function trackPlayer(plr)
@@ -129,6 +143,7 @@ Players.PlayerRemoving:Connect(function(plr)
         end
         trackedCharConns[plr] = nil
     end
+    rebuildCharCache()
 end)
 
 -- Periodic re-enforce
@@ -168,14 +183,14 @@ local function protect(char)
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {char}
-    -- ★ NO MaxParts! We removed the laggy player loops, so we can scan EVERY part instantly.
+    overlapParams.MaxParts = 50 -- ★ LAG FIX: Prevents scanning 500+ map parts at once on load
 
     -- ═══════════════════════════════════
     -- OUR COLLISION GROUP
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
-        if cgWork then pcall(function() p.CollisionGroup = "_af_me" end) end
+        if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
     end
 
     for _, p in ipairs(char:GetDescendants()) do fortify(p) end
@@ -199,15 +214,19 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(function(p) hookOwnPart(p) end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING (All 3 events - Original Strength)
+    -- VELOCITY CLAMPING
+    -- KEY FIX: angular and linear are clamped INDEPENDENTLY
+    -- Runs on ALL three RunService events
     -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
 
+        -- Always kill excessive angular velocity
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             hrp.AssemblyAngularVelocity = V3ZERO
         end
 
+        -- Always clamp linear velocity regardless of spin
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
@@ -237,8 +256,7 @@ local function protect(char)
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN — PURE UNANCHORED NOCLIP
-    -- ★ No player loops = no lag. Noclips EVERY unanchored part instantly.
+    -- NEARBY PART SCAN — EVERY FRAME
     -- ═══════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -252,16 +270,40 @@ local function protect(char)
         if not ok or not nearby then return end
 
         for _, part in ipairs(nearby) do
-            -- ★ YOUR LOGIC: If it's unanchored and not ours, NOCLIP it instantly.
-            -- Covers map debris, super rings, AND other players all in one line.
             if not part.Anchored and not part:IsDescendantOf(char) then
-                killPart(part)
+                local isPlayer = false
+                -- ★ LAG FIX: Uses flat array cache instead of pairs(trackedPlayers)
+                for _, ch in ipairs(charCache) do
+                    if part:IsDescendantOf(ch) then
+                        isPlayer = true
+                        break
+                    end
+                end
+
+                if isPlayer then
+                    killPart(part)
+                    pcall(function()
+                        if part.AssemblyAngularVelocity.Magnitude > 10
+                        or part.AssemblyLinearVelocity.Magnitude > 200 then
+                            killPartVelocity(part)
+                        end
+                    end)
+                else
+                    pcall(function()
+                        local av = part.AssemblyAngularVelocity.Magnitude
+                        local lv = part.AssemblyLinearVelocity.Magnitude
+                        if av > 5 or lv > 20 then
+                            killPart(part)
+                            killPartVelocity(part)
+                        end
+                    end)
+                end
             end
         end
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD
+    -- FORCE / WELD GUARD — immediate + deferred + delayed
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -332,8 +374,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD — NO COOLDOWNS, PURE NOCLIP
-    -- ★ Original Strength: fires on every single touch instantly.
+    -- TOUCH GUARD — no cooldown
     -- ═══════════════════════════════════
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
@@ -341,9 +382,16 @@ local function protect(char)
             if not hit or not hit.Parent then return end
             if hit:IsDescendantOf(char) or hit.Anchored then return end
 
-            -- ★ Instantly noclip any unanchored part that touches us
-            killPart(hit)
+            pcall(function()
+                local av = hit.AssemblyAngularVelocity.Magnitude
+                local lv = hit.AssemblyLinearVelocity.Magnitude
+                if av > 5 or lv > 20 then
+                    killPart(hit)
+                    killPartVelocity(hit)
+                end
+            end)
 
+            -- Immediately re-clamp ourselves after any suspicious touch
             task.defer(clampVelocity)
         end))
     end
