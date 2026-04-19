@@ -59,7 +59,7 @@ local function killPartVelocity(part)
 end
 
 -- ═══════════════════════════════════════════════
--- CHARACTER CACHE — flat array, no pairs() in hot loops
+-- CHARACTER CACHE
 -- ═══════════════════════════════════════════════
 local function rebuildCharCache()
     local new = {}
@@ -254,7 +254,7 @@ local function protect(char)
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN + SMART NOCLIP
+    -- NEARBY PART SCAN — PURE UNANCHORED NOCLIP
     -- ═══════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -269,40 +269,17 @@ local function protect(char)
 
         local cache = charCache
         for _, part in ipairs(nearby) do
+            -- ★ PURE LOGIC: If it's unanchored and not ours, NOCLIP it instantly
             if not part.Anchored and not part:IsDescendantOf(char) then
-                local isPlayer = false
-                for i = 1, #cache do
-                    local ch = cache[i]
-                    if ch and ch.Parent and part:IsDescendantOf(ch) then
-                        isPlayer = true
-                        break
+                killPart(part)
+                
+                -- Kill velocity only if it's moving fast to save performance
+                pcall(function()
+                    if part.AssemblyAngularVelocity.Magnitude > 10
+                    or part.AssemblyLinearVelocity.Magnitude > 200 then
+                        killPartVelocity(part)
                     end
-                end
-
-                if isPlayer then
-                    killPart(part)
-                    pcall(function()
-                        if part.AssemblyAngularVelocity.Magnitude > 10
-                        or part.AssemblyLinearVelocity.Magnitude > 200 then
-                            killPartVelocity(part)
-                        end
-                    end)
-                else
-                    pcall(function()
-                        local av = part.AssemblyAngularVelocity.Magnitude
-                        local lv = part.AssemblyLinearVelocity.Magnitude
-                        if av > 5 or lv > 20 then
-                            killPart(part)
-                            killPartVelocity(part)
-                        else
-                            -- ★ SMART NOCLIP: Phase through unanchored parts (CFrame'd super rings)
-                            -- BUT keep collision for parts directly below us so we don't fall through breaking floors
-                            if part.Position.Y >= hrp.Position.Y - 2.5 then
-                                killPart(part)
-                            end
-                        end
-                    end)
-                end
+                end)
             end
         end
     end))
@@ -379,7 +356,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD + SMART NOCLIP
+    -- TOUCH GUARD — PURE UNANCHORED NOCLIP
     -- ═══════════════════════════════════
     local touchCooldowns = setmetatable({}, {__mode = "k"})
 
@@ -393,17 +370,12 @@ local function protect(char)
             if touchCooldowns[hit] and now - touchCooldowns[hit] < 0.1 then return end
             touchCooldowns[hit] = now
 
+            -- ★ PURE LOGIC: If it touches us and it's unanchored, NOCLIP it instantly
+            killPart(hit)
             pcall(function()
-                local av = hit.AssemblyAngularVelocity.Magnitude
-                local lv = hit.AssemblyLinearVelocity.Magnitude
-                if av > 5 or lv > 20 then
-                    killPart(hit)
+                if hit.AssemblyAngularVelocity.Magnitude > 10
+                or hit.AssemblyLinearVelocity.Magnitude > 200 then
                     killPartVelocity(hit)
-                else
-                    -- ★ SMART NOCLIP: Phase through unanchored parts touching us
-                    if hit.Position.Y >= hrp.Position.Y - 2.5 then
-                        killPart(hit)
-                    end
                 end
             end)
 
