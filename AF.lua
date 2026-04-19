@@ -183,7 +183,7 @@ local function protect(char)
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {char}
-    overlapParams.MaxParts = 50 -- ★ THE ONLY LAG FIX: caps scan at 50 parts instead of 500+
+    overlapParams.MaxParts = 50
 
     -- ═══════════════════════════════════
     -- OUR COLLISION GROUP
@@ -216,7 +216,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING — all 3 events (original strength)
+    -- VELOCITY CLAMPING
     -- ═══════════════════════════════════
     local function clampVelocity()
         if not char.Parent or not hrp.Parent then return end
@@ -254,8 +254,7 @@ local function protect(char)
     reg(RunService.Heartbeat:Connect(clampVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN — every frame (original strength)
-    -- ★ MaxParts=50 prevents the 500-part lag spike
+    -- NEARBY PART SCAN + SMART NOCLIP
     -- ═══════════════════════════════════
     reg(RunService.Heartbeat:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -295,6 +294,12 @@ local function protect(char)
                         if av > 5 or lv > 20 then
                             killPart(part)
                             killPartVelocity(part)
+                        else
+                            -- ★ SMART NOCLIP: Phase through unanchored parts (CFrame'd super rings)
+                            -- BUT keep collision for parts directly below us so we don't fall through breaking floors
+                            if part.Position.Y >= hrp.Position.Y - 2.5 then
+                                killPart(part)
+                            end
                         end
                     end)
                 end
@@ -303,7 +308,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- FORCE / WELD GUARD — immediate + deferred + delayed
+    -- FORCE / WELD GUARD
     -- ═══════════════════════════════════
     reg(char.DescendantAdded:Connect(function(obj)
         if DANGEROUS[obj.ClassName] then
@@ -374,8 +379,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD — all parts (original strength)
-    -- Per-part 0.1s cooldown prevents spam, weak table auto-cleans
+    -- TOUCH GUARD + SMART NOCLIP
     -- ═══════════════════════════════════
     local touchCooldowns = setmetatable({}, {__mode = "k"})
 
@@ -395,6 +399,11 @@ local function protect(char)
                 if av > 5 or lv > 20 then
                     killPart(hit)
                     killPartVelocity(hit)
+                else
+                    -- ★ SMART NOCLIP: Phase through unanchored parts touching us
+                    if hit.Position.Y >= hrp.Position.Y - 2.5 then
+                        killPart(hit)
+                    end
                 end
             end)
 
