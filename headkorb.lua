@@ -65,15 +65,20 @@ local function removeFace(head)
 end
 
 local function applyHeadless(head)
-    if not head or head:FindFirstChild("HeadlessMesh") then return end
+    if not head or head:FindFirstChild("HeadlessApplied") then return end
+
+    -- Add a flag so we don't apply twice
+    local flag = Instance.new("BoolValue")
+    flag.Name = "HeadlessApplied"
+    flag.Parent = head
 
     head.Transparency = 1
-    head.CanCollide = false
     removeFace(head)
 
+    -- Destroy existing mesh to prevent double-mesh visual bugs
     local existingMesh = head:FindFirstChildOfClass("SpecialMesh")
     if existingMesh then
-        existingMesh.Scale = TINY_SCALE
+        existingMesh:Destroy()
     end
 
     local mesh = Instance.new("SpecialMesh")
@@ -111,8 +116,9 @@ local function applyHeadless(head)
                         local weld = handle:FindFirstChildOfClass("Weld")
                             or handle:FindFirstChildOfClass("Motor6D")
                         if weld then
-                            local attachTo = weld.Part0 or weld.Part1
-                            if attachTo and attachTo.Name == "Head" then
+                            -- Fixed: Check both Part0 and Part1 properly
+                            local isHeadAccessory = (weld.Part0 and weld.Part0.Name == "Head") or (weld.Part1 and weld.Part1.Name == "Head")
+                            if isHeadAccessory then
                                 handle.Transparency = 1
                             end
                         end
@@ -129,8 +135,8 @@ local function applyHeadless(head)
                     local weld = handle:FindFirstChildOfClass("Weld")
                         or handle:FindFirstChildOfClass("Motor6D")
                     if weld then
-                        local attachTo = weld.Part0 or weld.Part1
-                        if attachTo and attachTo.Name == "Head" then
+                        local isHeadAccessory = (weld.Part0 and weld.Part0.Name == "Head") or (weld.Part1 and weld.Part1.Name == "Head")
+                        if isHeadAccessory then
                             handle.Transparency = 1
                         end
                     end
@@ -142,15 +148,25 @@ end
 
 local function applyKorbloxR6(character)
     local rightLeg = character:FindFirstChild("Right Leg")
-    if not rightLeg or rightLeg:FindFirstChild("KorbloxMesh") then return end
-
-    for _, child in ipairs(rightLeg:GetChildren()) do
-        if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
-            child:Destroy()
+    if not rightLeg then return end
+    
+    local korbloxMesh = rightLeg:FindFirstChild("KorbloxMesh")
+    if not korbloxMesh then
+        for _, child in ipairs(rightLeg:GetChildren()) do
+            if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
+                child:Destroy()
+            end
         end
-    end
 
-    rightLeg.Color = DARK_GREY_COLOR
+        rightLeg.Color = DARK_GREY_COLOR
+
+        korbloxMesh = Instance.new("SpecialMesh")
+        korbloxMesh.Name = "KorbloxMesh"
+        korbloxMesh.MeshType = Enum.MeshType.FileMesh
+        korbloxMesh.MeshId = KORBLOX_MESH_ID
+        korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
+        korbloxMesh.Parent = rightLeg
+    end
 
     track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
         if rightLeg.Color ~= DARK_GREY_COLOR then
@@ -158,13 +174,20 @@ local function applyKorbloxR6(character)
         end
     end))
 
-    local korbloxMesh = Instance.new("SpecialMesh")
-    korbloxMesh.Name = "KorbloxMesh"
-    korbloxMesh.MeshType = Enum.MeshType.FileMesh
-    korbloxMesh.MeshId = KORBLOX_MESH_ID
-    korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
-    korbloxMesh.Scale = Vector3.new(1, 1, 1)
-    korbloxMesh.Parent = rightLeg
+    -- Added dynamic scaling for R6
+    trackHeartbeat(RunService.Heartbeat:Connect(function()
+        if not rightLeg or not rightLeg.Parent then return end
+        if not korbloxMesh or not korbloxMesh.Parent then return end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if not humanoid then return end
+        
+        local wScale = getScaleProp(humanoid, "BodyWidthScale")
+        local dScale = getScaleProp(humanoid, "BodyDepthScale")
+        local hScale = getScaleProp(humanoid, "BodyHeightScale")
+        
+        korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
+    end))
 end
 
 local function applyKorbloxR15(character)
@@ -172,14 +195,14 @@ local function applyKorbloxR15(character)
     local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
     local rightFoot     = character:FindFirstChild("RightFoot")
     local humanoid      = character:FindFirstChildOfClass("Humanoid")
+    local hrp           = character:FindFirstChild("HumanoidRootPart")
 
-    if not rightUpperLeg or not humanoid then return end
+    if not rightUpperLeg or not humanoid or not hrp then return end
     if character:FindFirstChild("KorbloxLeg") then return end
 
     local function hidePart(part)
         if not part then return end
         part.Transparency = 1
-        part.CanCollide   = false
         for _, child in ipairs(part:GetChildren()) do
             if child:IsA("SpecialMesh") or child:IsA("Decal") then
                 child:Destroy()
@@ -191,76 +214,68 @@ local function applyKorbloxR15(character)
     hidePart(rightLowerLeg)
     hidePart(rightFoot)
 
-    -- Calculate total leg height
-    local legHeight = 0
-    if rightUpperLeg then legHeight = legHeight + rightUpperLeg.Size.Y end
-    if rightLowerLeg then legHeight = legHeight + rightLowerLeg.Size.Y end
-    if rightFoot then legHeight = legHeight + rightFoot.Size.Y end
-    
-    if legHeight == 0 then legHeight = 2.6 end -- Fallback
-
     local korbloxLeg = Instance.new("Part")
     korbloxLeg.Name         = "KorbloxLeg"
     korbloxLeg.Size         = Vector3.new(1, 1, 1)
-    korbloxLeg.Anchored     = false
+    korbloxLeg.Anchored     = true -- Prevents physics flinging/disappearing completely
     korbloxLeg.CanCollide   = false
     korbloxLeg.Massless     = true
     korbloxLeg.CastShadow   = true
     korbloxLeg.Color        = DARK_GREY_COLOR
     korbloxLeg.Transparency = 0
-    korbloxLeg.Parent       = character
 
     local mesh = Instance.new("SpecialMesh")
     mesh.Name      = "KorbloxMesh"
     mesh.MeshType  = Enum.MeshType.FileMesh
     mesh.MeshId    = KORBLOX_MESH_ID
     mesh.TextureId = KORBLOX_TEXTURE_ID
-    
-    -- Safely get the avatar's Width/Depth sliders!
-    local wScale = getScaleProp(humanoid, "BodyWidthScale")
-    local dScale = getScaleProp(humanoid, "BodyDepthScale")
-    
-    mesh.Scale     = Vector3.new(wScale, legHeight / 2.0, dScale)
     mesh.Parent    = korbloxLeg
 
-    -- Calculate offset so the top of the mesh aligns perfectly with the top of the upper leg
-    local yOffset = (rightUpperLeg.Size.Y / 2) - (legHeight / 2)
+    -- Calculate initial position to prevent flashing at the world origin (0,0,0)
+    local initialLegHeight = rightUpperLeg.Size.Y + (rightLowerLeg and rightLowerLeg.Size.Y or 0) + (rightFoot and rightFoot.Size.Y or 0)
+    if initialLegHeight < 0.1 then initialLegHeight = 2.6 end
     
-    -- Position the Korblox exactly on the leg before welding
-    korbloxLeg.CFrame = rightUpperLeg.CFrame * CFrame.new(0, yOffset, 0)
+    local wScale = getScaleProp(humanoid, "BodyWidthScale")
+    local dScale = getScaleProp(humanoid, "BodyDepthScale")
+    mesh.Scale = Vector3.new(wScale, initialLegHeight / 2.0, dScale)
+    
+    local topPos = (rightUpperLeg.CFrame * CFrame.new(0, rightUpperLeg.Size.Y / 2, 0)).Position
+    local flatCFrame = CFrame.new(topPos) * hrp.CFrame.Rotation
+    korbloxLeg.CFrame = flatCFrame * CFrame.new(0, -initialLegHeight / 2, 0)
 
-    -- Weld it directly to the real (invisible) RightUpperLeg! 
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = rightUpperLeg
-    weld.Part1 = korbloxLeg
-    weld.Parent = korbloxLeg
+    korbloxLeg.Parent = character
 
-    -- Keep real leg parts hidden persistently & dynamically update scale
     trackHeartbeat(RunService.Heartbeat:Connect(function()
         if not character or not character.Parent then return end
-        if not rightUpperLeg or not rightUpperLeg.Parent then return end
+        -- Re-fetch parts if they were recreated by an animation/game script
+        if not rightUpperLeg or not rightUpperLeg.Parent then 
+            rightUpperLeg = character:FindFirstChild("RightUpperLeg")
+            rightLowerLeg = character:FindFirstChild("RightLowerLeg")
+            rightFoot = character:FindFirstChild("RightFoot")
+            hrp = character:FindFirstChild("HumanoidRootPart")
+        end
+        if not rightUpperLeg or not hrp then return end
         if not mesh or not mesh.Parent then return end
         if not humanoid or not humanoid.Parent then return end
         
-        if rightUpperLeg and rightUpperLeg.Transparency ~= 1 then
-            rightUpperLeg.Transparency = 1
-        end
-        if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then
-            rightLowerLeg.Transparency = 1
-        end
-        if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then
-            rightFoot.Transparency = 1
-        end
+        -- Force real legs to stay hidden
+        if rightUpperLeg.Transparency ~= 1 then rightUpperLeg.Transparency = 1 end
+        if rightLowerLeg and rightLowerLeg.Transparency ~= 1 then rightLowerLeg.Transparency = 1 end
+        if rightFoot and rightFoot.Transparency ~= 1 then rightFoot.Transparency = 1 end
         
-        -- Dynamically calculate current leg height
         local currentLegHeight = rightUpperLeg.Size.Y
-        if rightLowerLeg and rightLowerLeg.Parent then currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y end
-        if rightFoot and rightFoot.Parent then currentLegHeight = currentLegHeight + rightFoot.Size.Y end
+        if rightLowerLeg then currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y end
+        if rightFoot then currentLegHeight = currentLegHeight + rightFoot.Size.Y end
         
         if currentLegHeight > 0.1 then
             local curW = getScaleProp(humanoid, "BodyWidthScale")
             local curD = getScaleProp(humanoid, "BodyDepthScale")
             mesh.Scale = Vector3.new(curW, currentLegHeight / 2.0, curD)
+            
+            -- Accurately track the hip joint and point straight down (stiff like real Korblox)
+            local topPos = (rightUpperLeg.CFrame * CFrame.new(0, rightUpperLeg.Size.Y / 2, 0)).Position
+            local flatCFrame = CFrame.new(topPos) * hrp.CFrame.Rotation
+            korbloxLeg.CFrame = flatCFrame * CFrame.new(0, -currentLegHeight / 2, 0)
         end
     end))
 end
@@ -308,6 +323,17 @@ local function applyCharacter(character)
         if child.Name == "Head" then
             task.wait(0.1)
             applyHeadless(child)
+        -- Re-apply Korblox if the game/animation resets your leg parts dynamically
+        elseif child.Name == "RightUpperLeg" or child.Name == "Right Leg" then
+            task.wait(0.1)
+            local hum = character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                if hum.RigType == Enum.HumanoidRigType.R15 then
+                    applyKorbloxR15(character)
+                elseif hum.RigType == Enum.HumanoidRigType.R6 then
+                    applyKorbloxR6(character)
+                end
+            end
         end
     end))
 end
