@@ -8,6 +8,10 @@ local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
+-- [!] ADJUST THIS NUMBER TO LIFT THE KORBLOX LEG UP OR DOWN [!]
+-- 0.2 is a slight lift. Change to 0 for default, or negative to lower it.
+local KORBLOX_Y_LIFT = 0.2 
+
 local activeConnections = {}
 local heartbeatConns = {}
 local applied = false
@@ -163,9 +167,13 @@ local function applyKorbloxR6(character)
     korbloxMesh.MeshType = Enum.MeshType.FileMesh
     korbloxMesh.MeshId = KORBLOX_MESH_ID
     korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
+    
+    -- Apply the lift offset to the mesh directly for R6
+    korbloxMesh.Offset = Vector3.new(0, KORBLOX_Y_LIFT, 0)
+    
     korbloxMesh.Parent = rightLeg
 
-    -- ADDED: Dynamically scale R6 Korblox to match avatar scales
+    -- Dynamically scale R6 Korblox to match avatar scales
     trackHeartbeat(RunService.Heartbeat:Connect(function()
         if not rightLeg or not rightLeg.Parent or not korbloxMesh or not korbloxMesh.Parent then return end
         local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -227,7 +235,7 @@ local function applyKorbloxR15(character)
     mesh.MeshId    = KORBLOX_MESH_ID
     mesh.TextureId = KORBLOX_TEXTURE_ID
     
-    -- FIXED: Use the avatar's actual scale properties instead of legHeight / 2.0
+    -- Use the avatar's actual scale properties
     local wScale = getScaleProp(humanoid, "BodyWidthScale")
     local hScale = getScaleProp(humanoid, "BodyHeightScale")
     local dScale = getScaleProp(humanoid, "BodyDepthScale")
@@ -236,7 +244,8 @@ local function applyKorbloxR15(character)
     mesh.Parent    = korbloxLeg
 
     -- Calculate offset so the top of the mesh aligns perfectly with the top of the upper leg
-    local yOffset = (rightUpperLeg.Size.Y / 2) - (legHeight / 2)
+    -- ADDED KORBLOX_Y_LIFT here to raise the part itself
+    local yOffset = (rightUpperLeg.Size.Y / 2) - (legHeight / 2) + KORBLOX_Y_LIFT
     
     -- Position the Korblox exactly on the leg before welding
     korbloxLeg.CFrame = rightUpperLeg.CFrame * CFrame.new(0, yOffset, 0)
@@ -264,13 +273,13 @@ local function applyKorbloxR15(character)
             rightFoot.Transparency = 1
         end
         
-        -- Dynamically calculate current leg height for positioning offset
+        -- Dynamically calculate current leg height for reference (if ever needed)
         local currentLegHeight = rightUpperLeg.Size.Y
         if rightLowerLeg and rightLowerLeg.Parent then currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y end
         if rightFoot and rightFoot.Parent then currentLegHeight = currentLegHeight + rightFoot.Size.Y end
         
         if currentLegHeight > 0.1 then
-            -- FIXED: Dynamically update with exact avatar scales
+            -- Dynamically update with exact avatar scales
             local curW = getScaleProp(humanoid, "BodyWidthScale")
             local curH = getScaleProp(humanoid, "BodyHeightScale")
             local curD = getScaleProp(humanoid, "BodyDepthScale")
