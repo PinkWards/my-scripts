@@ -73,7 +73,7 @@ local Config = {
 
 local BounceConfig = {
     Power = 90,
-    Cooldown = 0.05,
+    Cooldown = 0,
     MaxSpeed = 1000,
 }
 
@@ -122,6 +122,7 @@ local CachedGame = nil
 local StateChangedConn = nil
 local BounceStateConn = nil
 local BhopHeartbeatConn = nil
+local BounceHeartbeatConn = nil
 
 local SliderTrack, SliderFill, SliderThumb, SliderLabel
 local SliderMin, SliderMax = 1.4, 3.0
@@ -138,6 +139,9 @@ local WasInAir = false
 local WasGrounded = false
 local LastJumpTime = 0
 local JUMP_COOLDOWN = 0.1
+
+local BounceWasGrounded = false
+local BounceTriggeredThisLanding = false
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -301,6 +305,7 @@ local function CleanupAll()
     if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
     if BounceStateConn then SafeCall(function() BounceStateConn:Disconnect() end) BounceStateConn = nil end
     if BhopHeartbeatConn then SafeCall(function() BhopHeartbeatConn:Disconnect() end) BhopHeartbeatConn = nil end
+    if BounceHeartbeatConn then SafeCall(function() BounceHeartbeatConn:Disconnect() end) BounceHeartbeatConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
     table.clear(CachedBots)
@@ -379,14 +384,15 @@ local function OnBhopHeartbeat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM
+-- BOUNCE SYSTEM (ZERO COOLDOWN, HEARTBEAT-DRIVEN)
 -- ═══════════════════════════════════════════════════════════════
 
 local function ExecuteBounce()
-    local now = tick()
-    if now - LastBounce < BounceConfig.Cooldown then return end
+    if BounceTriggeredThisLanding then return end
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
+
+    BounceTriggeredThisLanding = true
 
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
@@ -421,7 +427,8 @@ local function ExecuteBounce()
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 
     IsBouncing = true
-    LastBounce = now
+    BounceWasGrounded = false
+    LastBounce = tick()
 end
 
 local function OnBounceStateChanged(old, new)
@@ -429,14 +436,41 @@ local function OnBounceStateChanged(old, new)
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
 
-    if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then
+    if new == Enum.HumanoidStateType.Landed or 
+       new == Enum.HumanoidStateType.Running or 
+       new == Enum.HumanoidStateType.RunningNoPhysics then
         local character = LocalPlayer.Character
         if character then
             local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
             if isDowned then return end
         end
 
+        BounceWasGrounded = true
         ExecuteBounce()
+    elseif new == Enum.HumanoidStateType.Freefall or 
+           new == Enum.HumanoidStateType.Jumping then
+        BounceWasGrounded = false
+        BounceTriggeredThisLanding = false
+    end
+end
+
+local function OnBounceHeartbeat()
+    if not holdLeftShift or not Humanoid then return end
+
+    local character = LocalPlayer.Character
+    if character then
+        local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+        if isDowned then return end
+    end
+
+    local isCurrentlyGrounded = IsGrounded()
+
+    if isCurrentlyGrounded and not BounceWasGrounded then
+        BounceWasGrounded = true
+        ExecuteBounce()
+    elseif not isCurrentlyGrounded then
+        BounceWasGrounded = false
+        BounceTriggeredThisLanding = false
     end
 end
 
@@ -462,7 +496,7 @@ local function UpdateBounceAirSpeed()
         local state = Humanoid:GetState()
         if state == Enum.HumanoidStateType.Freefall then
             local currentHSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-            if currentHSpeed > 1 and currentHSpeed < RecordedSpeed * 0.85 then
+            if currentHSpeed > 1 and currentHSpeed < RecordedSpeed * 0.95 then
                 local dir = Vector3.new(vel.X, 0, vel.Z).Unit
                 RootPart.AssemblyLinearVelocity = Vector3.new(
                     dir.X * RecordedSpeed,
@@ -1462,16 +1496,14 @@ local function CreateTimerGUI()
     TimerGUI.ResetOnSpawn = false 
     TimerGUI.Parent = PlayerGui
     
-    -- Container positioned tight in lower right corner
     local container = Instance.new("Frame", TimerGUI) 
     container.Name = "Timer" 
-    container.AnchorPoint = Vector2.new(1, 1)  -- Anchor to bottom right
-    container.Position = UDim2.new(1, -5, 1, -5)  -- Very tight corner placement (5px margin)
-    container.Size = UDim2.new(0, 80, 0, 35)  -- Much smaller size
-    container.BackgroundTransparency = 1  -- No background
+    container.AnchorPoint = Vector2.new(1, 1)
+    container.Position = UDim2.new(1, -5, 1, -5)
+    container.Size = UDim2.new(0, 80, 0, 35)
+    container.BackgroundTransparency = 1
     container.BorderSizePixel = 0
     
-    -- Status label (small text above timer)
     StatusLabel = Instance.new("TextLabel", container) 
     StatusLabel.Position = UDim2.new(0.5, 0, 0, 0) 
     StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
@@ -1479,22 +1511,21 @@ local function CreateTimerGUI()
     StatusLabel.BackgroundTransparency = 1 
     StatusLabel.Font = Enum.Font.GothamBold
     StatusLabel.Text = "WAITING" 
-    StatusLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
+    StatusLabel.TextColor3 = Color3.fromRGB(0, 0, 0)
     StatusLabel.TextSize = 8
-    StatusLabel.TextStrokeTransparency = 0.8  -- Slight stroke for visibility
+    StatusLabel.TextStrokeTransparency = 0.8
     StatusLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
     
-    -- Timer label with NBA shot clock style
     TimerLabel = Instance.new("TextLabel", container) 
     TimerLabel.Position = UDim2.new(0.5, 0, 0, 10) 
     TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
     TimerLabel.Size = UDim2.new(1, 0, 0, 25) 
     TimerLabel.BackgroundTransparency = 1 
-    TimerLabel.Font = Enum.Font.Code  -- Monospace font (closest to 7-segment)
+    TimerLabel.Font = Enum.Font.Code
     TimerLabel.Text = "0:00" 
-    TimerLabel.TextColor3 = Color3.fromRGB(0, 0, 0)  -- Black text
-    TimerLabel.TextSize = 24  -- Smaller but still readable
-    TimerLabel.TextStrokeTransparency = 0.8  -- Slight stroke for better visibility
+    TimerLabel.TextColor3 = Color3.fromRGB(0, 0, 0)
+    TimerLabel.TextSize = 24
+    TimerLabel.TextStrokeTransparency = 0.8
     TimerLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
 end
 
@@ -1547,6 +1578,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         UpdateGUI()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
+        BounceWasGrounded = false
+        BounceTriggeredThisLanding = false
         if RootPart and Humanoid and Humanoid.Health > 0 then
             local vel = RootPart.AssemblyLinearVelocity
             local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
@@ -1581,6 +1614,8 @@ UserInputService.InputEnded:Connect(function(input)
         holdLeftShift = false
         IsBouncing = false
         RecordedSpeed = 16
+        BounceWasGrounded = false
+        BounceTriggeredThisLanding = false
     end
 end)
 
@@ -1592,6 +1627,7 @@ local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
     if BounceStateConn then BounceStateConn:Disconnect() BounceStateConn = nil end
     if BhopHeartbeatConn then BhopHeartbeatConn:Disconnect() BhopHeartbeatConn = nil end
+    if BounceHeartbeatConn then BounceHeartbeatConn:Disconnect() BounceHeartbeatConn = nil end
     
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
@@ -1604,12 +1640,15 @@ local function SetupCharacter(character)
     IsBouncing = false
     RecordedSpeed = 16
     WasGrounded = false
+    BounceWasGrounded = false
+    BounceTriggeredThisLanding = false
     table.clear(CachedBots) table.clear(CachedItems)
     
     if Humanoid then 
         StateChangedConn = Humanoid.StateChanged:Connect(OnBhopStateChanged)
         BhopHeartbeatConn = RunService.Heartbeat:Connect(OnBhopHeartbeat)
         BounceStateConn = Humanoid.StateChanged:Connect(OnBounceStateChanged)
+        BounceHeartbeatConn = RunService.Heartbeat:Connect(OnBounceHeartbeat)
     end
 end
 
@@ -1672,6 +1711,8 @@ Workspace.ChildAdded:Connect(function(child)
         IsBouncing = false
         RecordedSpeed = 16
         WasGrounded = false
+        BounceWasGrounded = false
+        BounceTriggeredThisLanding = false
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1685,4 +1726,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Fixed bhop - no spam jumping!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Bounce: zero cooldown, heartbeat-driven!")
