@@ -73,7 +73,6 @@ local Config = {
 
 local BounceConfig = {
     Power = 90,
-    Cooldown = 0,
     MaxSpeed = 1000,
 }
 
@@ -120,7 +119,6 @@ local EdgeTouchConnections = {}
 local ExchangeConnections = {}
 local CachedGame = nil
 local StateChangedConn = nil
-local BounceStateConn = nil
 local BhopHeartbeatConn = nil
 local BounceHeartbeatConn = nil
 
@@ -140,8 +138,19 @@ local WasGrounded = false
 local LastJumpTime = 0
 local JUMP_COOLDOWN = 0.1
 
-local BounceWasGrounded = false
-local BounceTriggeredThisLanding = false
+-- ═══════════════════════════════════════════════════════════════
+-- BOUNCE STATE (rewritten for zero-delay)
+-- ═══════════════════════════════════════════════════════════════
+local BounceInAir = false
+local BounceWaitingForAir = false
+local BounceJustPressed = false
+local BounceGroundStuckFrames = 0
+local BOUNCE_STUCK_THRESHOLD = 6
+
+local BounceRayParams = RaycastParams.new()
+BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
+BounceRayParams.IgnoreWater = true
+BounceRayParams.RespectCanCollide = true
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -215,6 +224,7 @@ local function UpdateRayFilter()
         if gamePlayers then filterList[#filterList + 1] = gamePlayers end
     end
     EdgeRayParams.FilterDescendantsInstances = filterList
+    BounceRayParams.FilterDescendantsInstances = filterList
 end
 
 local function ForceUpdateRayFilter()
@@ -303,7 +313,6 @@ local function CleanupAll()
     table.clear(ExchangeConnections)
     getgenv().var156_upvw_arg1 = nil
     if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
-    if BounceStateConn then SafeCall(function() BounceStateConn:Disconnect() end) BounceStateConn = nil end
     if BhopHeartbeatConn then SafeCall(function() BhopHeartbeatConn:Disconnect() end) BhopHeartbeatConn = nil end
     if BounceHeartbeatConn then SafeCall(function() BounceHeartbeatConn:Disconnect() end) BounceHeartbeatConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
@@ -325,7 +334,7 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- FIXED BHOP SYSTEM
+-- BHOP SYSTEM
 -- ═══════════════════════════════════════════════════════════════
 
 local function IsGrounded()
@@ -384,15 +393,30 @@ local function OnBhopHeartbeat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM (ZERO COOLDOWN, HEARTBEAT-DRIVEN)
+-- BOUNCE SYSTEM (ZERO DELAY - RAYCAST + HEARTBEAT)
 -- ═══════════════════════════════════════════════════════════════
 
+local function IsOnGround()
+    if not Humanoid or not RootPart then return false end
+    
+    local state = Humanoid:GetState()
+    if state == Enum.HumanoidStateType.Landed or 
+       state == Enum.HumanoidStateType.Running or 
+       state == Enum.HumanoidStateType.RunningNoPhysics or
+       state == Enum.HumanoidStateType.StrafingNoPhysics then
+        return true
+    end
+    
+    -- Raycast backup: detects ground even when state hasn't updated yet
+    local hipH = Humanoid.HipHeight or 2
+    local origin = RootPart.Position
+    local result = Workspace:Raycast(origin, Vector3.new(0, -(hipH + 2), 0), BounceRayParams)
+    return result ~= nil
+end
+
 local function ExecuteBounce()
-    if BounceTriggeredThisLanding then return end
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
-
-    BounceTriggeredThisLanding = true
 
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
@@ -427,35 +451,13 @@ local function ExecuteBounce()
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 
     IsBouncing = true
-    BounceWasGrounded = false
-    LastBounce = tick()
-end
-
-local function OnBounceStateChanged(old, new)
-    if not holdLeftShift then return end
-    if not RootPart or not Humanoid then return end
-    if Humanoid.Health <= 0 then return end
-
-    if new == Enum.HumanoidStateType.Landed or 
-       new == Enum.HumanoidStateType.Running or 
-       new == Enum.HumanoidStateType.RunningNoPhysics then
-        local character = LocalPlayer.Character
-        if character then
-            local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-            if isDowned then return end
-        end
-
-        BounceWasGrounded = true
-        ExecuteBounce()
-    elseif new == Enum.HumanoidStateType.Freefall or 
-           new == Enum.HumanoidStateType.Jumping then
-        BounceWasGrounded = false
-        BounceTriggeredThisLanding = false
-    end
+    BounceWaitingForAir = true
+    BounceGroundStuckFrames = 0
 end
 
 local function OnBounceHeartbeat()
-    if not holdLeftShift or not Humanoid then return end
+    if not holdLeftShift or not Humanoid or not RootPart then return end
+    if Humanoid.Health <= 0 then return end
 
     local character = LocalPlayer.Character
     if character then
@@ -463,14 +465,36 @@ local function OnBounceHeartbeat()
         if isDowned then return end
     end
 
-    local isCurrentlyGrounded = IsGrounded()
+    local onGround = IsOnGround()
 
-    if isCurrentlyGrounded and not BounceWasGrounded then
-        BounceWasGrounded = true
-        ExecuteBounce()
-    elseif not isCurrentlyGrounded then
-        BounceWasGrounded = false
-        BounceTriggeredThisLanding = false
+    if not onGround then
+        -- We're airborne — reset flags so next landing triggers bounce
+        BounceInAir = true
+        BounceWaitingForAir = false
+        BounceJustPressed = false
+        BounceGroundStuckFrames = 0
+    else
+        -- We're on ground
+        if BounceWaitingForAir then
+            -- Just bounced but haven't left ground yet — count stuck frames
+            BounceGroundStuckFrames = BounceGroundStuckFrames + 1
+            if BounceGroundStuckFrames >= BOUNCE_STUCK_THRESHOLD then
+                -- Stuck on ground after bounce, retry
+                BounceWaitingForAir = false
+                BounceGroundStuckFrames = 0
+                BounceInAir = false
+                ExecuteBounce()
+            end
+        elseif BounceJustPressed then
+            -- Shift was just pressed while on ground — bounce immediately
+            BounceJustPressed = false
+            BounceInAir = false
+            ExecuteBounce()
+        elseif BounceInAir then
+            -- Was in air, just landed — bounce!
+            BounceInAir = false
+            ExecuteBounce()
+        end
     end
 end
 
@@ -1578,8 +1602,10 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         UpdateGUI()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
-        BounceWasGrounded = false
-        BounceTriggeredThisLanding = false
+        BounceJustPressed = true
+        BounceInAir = false
+        BounceWaitingForAir = false
+        BounceGroundStuckFrames = 0
         if RootPart and Humanoid and Humanoid.Health > 0 then
             local vel = RootPart.AssemblyLinearVelocity
             local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
@@ -1614,8 +1640,10 @@ UserInputService.InputEnded:Connect(function(input)
         holdLeftShift = false
         IsBouncing = false
         RecordedSpeed = 16
-        BounceWasGrounded = false
-        BounceTriggeredThisLanding = false
+        BounceInAir = false
+        BounceWaitingForAir = false
+        BounceJustPressed = false
+        BounceGroundStuckFrames = 0
     end
 end)
 
@@ -1625,7 +1653,6 @@ end)
 
 local function SetupCharacter(character)
     if StateChangedConn then StateChangedConn:Disconnect() StateChangedConn = nil end
-    if BounceStateConn then BounceStateConn:Disconnect() BounceStateConn = nil end
     if BhopHeartbeatConn then BhopHeartbeatConn:Disconnect() BhopHeartbeatConn = nil end
     if BounceHeartbeatConn then BounceHeartbeatConn:Disconnect() BounceHeartbeatConn = nil end
     
@@ -1640,14 +1667,15 @@ local function SetupCharacter(character)
     IsBouncing = false
     RecordedSpeed = 16
     WasGrounded = false
-    BounceWasGrounded = false
-    BounceTriggeredThisLanding = false
+    BounceInAir = false
+    BounceWaitingForAir = false
+    BounceJustPressed = false
+    BounceGroundStuckFrames = 0
     table.clear(CachedBots) table.clear(CachedItems)
     
     if Humanoid then 
         StateChangedConn = Humanoid.StateChanged:Connect(OnBhopStateChanged)
         BhopHeartbeatConn = RunService.Heartbeat:Connect(OnBhopHeartbeat)
-        BounceStateConn = Humanoid.StateChanged:Connect(OnBounceStateChanged)
         BounceHeartbeatConn = RunService.Heartbeat:Connect(OnBounceHeartbeat)
     end
 end
@@ -1711,8 +1739,10 @@ Workspace.ChildAdded:Connect(function(child)
         IsBouncing = false
         RecordedSpeed = 16
         WasGrounded = false
-        BounceWasGrounded = false
-        BounceTriggeredThisLanding = false
+        BounceInAir = false
+        BounceWaitingForAir = false
+        BounceJustPressed = false
+        BounceGroundStuckFrames = 0
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1726,4 +1756,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Bounce: zero cooldown, heartbeat-driven!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Bounce: raycast+heartbeat, zero delay!")
