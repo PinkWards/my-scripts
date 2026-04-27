@@ -74,6 +74,12 @@ local Config = {
 local BounceConfig = {
     Power = 90,
     MaxSpeed = 1000,
+    PredictDistance = 2.5,  -- how far below hipheight to raycast for prediction
+}
+
+local AirStrafeConfig = {
+    Acceleration = 0.6,    -- air acceleration per frame (tunable)
+    Enabled = true,        -- air strafe while holding shift
 }
 
 local ColaSettings = {
@@ -98,6 +104,9 @@ local GUI, VIPPanel, TimerGUI = nil, nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
+
+-- WASD key tracking for air strafe
+local keysDown = { W = false, A = false, S = false, D = false }
 
 local LastAntiCheck, LastCarry, LastBounce = 0, 0, 0
 local LastVoteMap, LastVoteMode = 0, 0
@@ -138,14 +147,14 @@ local WasGrounded = false
 local LastJumpTime = 0
 local JUMP_COOLDOWN = 0.1
 
--- ═══════════════════════════════════════════════════════════════
--- BOUNCE STATE (rewritten for zero-delay)
--- ═══════════════════════════════════════════════════════════════
+-- Bounce state
 local BounceInAir = false
 local BounceWaitingForAir = false
 local BounceJustPressed = false
 local BounceGroundStuckFrames = 0
 local BOUNCE_STUCK_THRESHOLD = 6
+local BounceFramesSinceBounce = 0
+local BOUNCE_SPEED_LOCK_FRAMES = 15 -- frames after bounce to aggressively preserve speed
 
 local BounceRayParams = RaycastParams.new()
 BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -393,59 +402,31 @@ local function OnBhopHeartbeat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM (ZERO DELAY - RAYCAST + HEARTBEAT)
+-- BOUNCE SYSTEM (PREDICTIVE RAYCAST + SPEED LOCK)
 -- ═══════════════════════════════════════════════════════════════
 
-local function IsOnGround()
-    if not Humanoid or not RootPart then return false end
-    
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Landed or 
-       state == Enum.HumanoidStateType.Running or 
-       state == Enum.HumanoidStateType.RunningNoPhysics or
-       state == Enum.HumanoidStateType.StrafingNoPhysics then
-        return true
+local function GetBounceDirection(hVel, hSpeed)
+    if hSpeed > 1 then
+        return hVel.Unit
     end
-    
-    -- Raycast backup: detects ground even when state hasn't updated yet
-    local hipH = Humanoid.HipHeight or 2
-    local origin = RootPart.Position
-    local result = Workspace:Raycast(origin, Vector3.new(0, -(hipH + 2), 0), BounceRayParams)
-    return result ~= nil
+    local cam = Workspace.CurrentCamera
+    if cam then
+        local look = cam.CFrame.LookVector
+        local dir = Vector3.new(look.X, 0, look.Z)
+        if dir.Magnitude > 0.01 then return dir.Unit end
+    end
+    return Vector3.new(0, 0, -1)
 end
 
-local function ExecuteBounce()
+local function FireBounce(hVel, hSpeed)
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
 
-    local vel = RootPart.AssemblyLinearVelocity
-    local hVel = Vector3.new(vel.X, 0, vel.Z)
-    local hSpeed = hVel.Magnitude
-
-    if hSpeed > RecordedSpeed then
-        RecordedSpeed = hSpeed
-    end
-
+    -- Always use the HIGHEST recorded speed, never reduce
     local useSpeed = math.max(RecordedSpeed, hSpeed)
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
 
-    local dir
-    if hSpeed > 1 then
-        dir = hVel.Unit
-    else
-        local cam = Workspace.CurrentCamera
-        if cam then
-            local look = cam.CFrame.LookVector
-            dir = Vector3.new(look.X, 0, look.Z)
-            if dir.Magnitude > 0.01 then
-                dir = dir.Unit
-            else
-                dir = Vector3.new(0, 0, -1)
-            end
-        else
-            dir = Vector3.new(0, 0, -1)
-        end
-    end
+    local dir = GetBounceDirection(hVel, hSpeed)
 
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
@@ -453,6 +434,7 @@ local function ExecuteBounce()
     IsBouncing = true
     BounceWaitingForAir = true
     BounceGroundStuckFrames = 0
+    BounceFramesSinceBounce = 0
 end
 
 local function OnBounceHeartbeat()
@@ -465,44 +447,87 @@ local function OnBounceHeartbeat()
         if isDowned then return end
     end
 
-    local onGround = IsOnGround()
+    local vel = RootPart.AssemblyLinearVelocity
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    local hSpeed = hVel.Magnitude
+    local state = Humanoid:GetState()
+    local isAirborne = state == Enum.HumanoidStateType.Freefall or 
+                       state == Enum.HumanoidStateType.Jumping
+
+    -- Track max speed every frame
+    if hSpeed > RecordedSpeed then
+        RecordedSpeed = hSpeed
+    end
+
+    -- Count frames since last bounce for speed lock
+    if BounceWaitingForAir then
+        BounceFramesSinceBounce = BounceFramesSinceBounce + 1
+    end
+
+    -- ─── PREDICTIVE RAYCAST: bounce BEFORE touching ground ───
+    if isAirborne and vel.Y < -0.5 then
+        local hipH = Humanoid.HipHeight or 2
+        local origin = RootPart.Position
+        local rayDist = hipH + BounceConfig.PredictDistance
+
+        local result = Workspace:Raycast(origin, Vector3.new(0, -rayDist, 0), BounceRayParams)
+
+        if result then
+            -- Ground detected ahead of time — bounce NOW, no friction applied
+            FireBounce(hVel, hSpeed)
+            return
+        end
+    end
+
+    -- ─── FALLBACK: state-based detection ───
+    local onGround = state == Enum.HumanoidStateType.Landed or 
+                     state == Enum.HumanoidStateType.Running or 
+                     state == Enum.HumanoidStateType.RunningNoPhysics
 
     if not onGround then
-        -- We're airborne — reset flags so next landing triggers bounce
         BounceInAir = true
         BounceWaitingForAir = false
         BounceJustPressed = false
         BounceGroundStuckFrames = 0
     else
-        -- We're on ground
         if BounceWaitingForAir then
-            -- Just bounced but haven't left ground yet — count stuck frames
             BounceGroundStuckFrames = BounceGroundStuckFrames + 1
             if BounceGroundStuckFrames >= BOUNCE_STUCK_THRESHOLD then
-                -- Stuck on ground after bounce, retry
                 BounceWaitingForAir = false
                 BounceGroundStuckFrames = 0
                 BounceInAir = false
-                ExecuteBounce()
+                FireBounce(hVel, hSpeed)
             end
         elseif BounceJustPressed then
-            -- Shift was just pressed while on ground — bounce immediately
             BounceJustPressed = false
             BounceInAir = false
-            ExecuteBounce()
+            FireBounce(hVel, hSpeed)
         elseif BounceInAir then
-            -- Was in air, just landed — bounce!
+            -- Landed after being in air — bounce with recorded speed (not reduced)
             BounceInAir = false
-            ExecuteBounce()
+            -- Override: use RecordedSpeed because ground friction already reduced hSpeed
+            if RootPart and Humanoid and Humanoid.Health > 0 then
+                local useSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
+                local dir = GetBounceDirection(hVel, hSpeed)
+                RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
+                Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                IsBouncing = true
+                BounceWaitingForAir = true
+                BounceGroundStuckFrames = 0
+                BounceFramesSinceBounce = 0
+            end
         end
     end
 end
 
+-- ═══════════════════════════════════════════════════════════════
+-- AIR SPEED PRESERVATION (aggressive — any loss is corrected)
+-- ═══════════════════════════════════════════════════════════════
+
 local function UpdateBounceAirSpeed()
     if not holdLeftShift then
-        if IsBouncing then
-            IsBouncing = false
-        end
+        if IsBouncing then IsBouncing = false end
+        BounceFramesSinceBounce = 0
         return
     end
 
@@ -510,18 +535,19 @@ local function UpdateBounceAirSpeed()
     if Humanoid.Health <= 0 then return end
 
     local vel = RootPart.AssemblyLinearVelocity
-    local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    local hSpeed = hVel.Magnitude
 
-    if IsBouncing and hSpeed > RecordedSpeed then
+    if hSpeed > RecordedSpeed then
         RecordedSpeed = hSpeed
     end
 
     if IsBouncing then
         local state = Humanoid:GetState()
-        if state == Enum.HumanoidStateType.Freefall then
-            local currentHSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-            if currentHSpeed > 1 and currentHSpeed < RecordedSpeed * 0.95 then
-                local dir = Vector3.new(vel.X, 0, vel.Z).Unit
+        if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
+            -- Aggressively preserve speed: ANY drop from recorded is corrected
+            if hSpeed > 1 and hSpeed < RecordedSpeed then
+                local dir = hVel.Unit
                 RootPart.AssemblyLinearVelocity = Vector3.new(
                     dir.X * RecordedSpeed,
                     vel.Y,
@@ -529,6 +555,74 @@ local function UpdateBounceAirSpeed()
                 )
             end
         end
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- AIR STRAFE (source-engine style — gain speed by strafing + turning)
+-- ═══════════════════════════════════════════════════════════════
+
+local function AirStrafe()
+    if not AirStrafeConfig.Enabled then return end
+    if not holdLeftShift or not RootPart or not Humanoid then return end
+    if Humanoid.Health <= 0 then return end
+
+    local state = Humanoid:GetState()
+    if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then return end
+
+    -- Get camera directions (XZ plane only)
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+
+    local cf = cam.CFrame
+    local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+    local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+
+    if forward.Magnitude < 0.01 or right.Magnitude < 0.01 then return end
+    forward = forward.Unit
+    right = right.Unit
+
+    -- Build wish direction from WASD
+    local wishDir = Vector3.zero
+    if keysDown.W then wishDir = wishDir + forward end
+    if keysDown.S then wishDir = wishDir - forward end
+    if keysDown.D then wishDir = wishDir + right end
+    if keysDown.A then wishDir = wishDir - right end
+
+    if wishDir.Magnitude < 0.01 then return end
+    wishDir = wishDir.Unit
+
+    local vel = RootPart.AssemblyLinearVelocity
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    local hSpeed = hVel.Magnitude
+
+    -- Source-engine air strafe math:
+    -- Calculate how much speed we already have in the wish direction
+    local currentSpeedInWish = hVel:Dot(wishDir)
+    -- Target speed in wish direction
+    local wishSpeed = math.max(RecordedSpeed, hSpeed, 50)
+    -- How much we can add
+    local addSpeed = wishSpeed - currentSpeedInWish
+
+    if addSpeed <= 0 then return end
+
+    -- Apply air acceleration (capped per frame)
+    local speedToAdd = math.min(addSpeed, AirStrafeConfig.Acceleration)
+
+    local newHVel = hVel + wishDir * speedToAdd
+    local newSpeed = newHVel.Magnitude
+
+    -- Hard cap at MaxSpeed
+    if newSpeed > BounceConfig.MaxSpeed then
+        newHVel = newHVel.Unit * BounceConfig.MaxSpeed
+    end
+
+    RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
+
+    -- Update recorded speed so bounces preserve the gained speed
+    local finalSpeed = newHVel.Magnitude
+    if finalSpeed > RecordedSpeed then
+        RecordedSpeed = finalSpeed
     end
 end
 
@@ -1579,7 +1673,7 @@ local function UpdateTimer()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INPUT
+-- INPUT (with WASD tracking for air strafe)
 -- ═══════════════════════════════════════════════════════════════
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
@@ -1606,6 +1700,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         BounceInAir = false
         BounceWaitingForAir = false
         BounceGroundStuckFrames = 0
+        BounceFramesSinceBounce = 0
         if RootPart and Humanoid and Humanoid.Health > 0 then
             local vel = RootPart.AssemblyLinearVelocity
             local hSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
@@ -1626,6 +1721,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if VIPPanel then VIPPanel.Visible = false end
         end
     end
+    
+    -- WASD tracking
+    if key == Enum.KeyCode.W then keysDown.W = true end
+    if key == Enum.KeyCode.A then keysDown.A = true end
+    if key == Enum.KeyCode.S then keysDown.S = true end
+    if key == Enum.KeyCode.D then keysDown.D = true end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
@@ -1644,7 +1745,14 @@ UserInputService.InputEnded:Connect(function(input)
         BounceWaitingForAir = false
         BounceJustPressed = false
         BounceGroundStuckFrames = 0
+        BounceFramesSinceBounce = 0
     end
+    
+    -- WASD tracking
+    if key == Enum.KeyCode.W then keysDown.W = false end
+    if key == Enum.KeyCode.A then keysDown.A = false end
+    if key == Enum.KeyCode.S then keysDown.S = false end
+    if key == Enum.KeyCode.D then keysDown.D = false end
 end)
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1671,6 +1779,7 @@ local function SetupCharacter(character)
     BounceWaitingForAir = false
     BounceJustPressed = false
     BounceGroundStuckFrames = 0
+    BounceFramesSinceBounce = 0
     table.clear(CachedBots) table.clear(CachedItems)
     
     if Humanoid then 
@@ -1698,6 +1807,7 @@ local function StartMainLoop()
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         UpdateBounceAirSpeed()
+        AirStrafe()
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
@@ -1743,6 +1853,7 @@ Workspace.ChildAdded:Connect(function(child)
         BounceWaitingForAir = false
         BounceJustPressed = false
         BounceGroundStuckFrames = 0
+        BounceFramesSinceBounce = 0
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) UpdateGUI() end
     end
@@ -1756,4 +1867,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Bounce: raycast+heartbeat, zero delay!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Predictive raycast bounce + air strafe!")
