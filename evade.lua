@@ -74,12 +74,12 @@ local Config = {
 local BounceConfig = {
     Power = 90,
     MaxSpeed = 1000,
-    PredictDistance = 2.0,  -- adjusted for better slope/uneven detection
+    PredictDistance = 2.0,  -- tuned for adaptive ground detection
 }
 
 local AirStrafeConfig = {
-    Acceleration = 0.15,    -- reduced to prevent strong forward push
-    Enabled = true,         -- air strafe while holding shift
+    Acceleration = 0.15,    -- keeps air control without pushing forward
+    Enabled = true,         
 }
 
 local ColaSettings = {
@@ -402,7 +402,7 @@ local function OnBhopHeartbeat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM (ADAPTIVE + DYNAMIC HEIGHT + SPEED PRESERVATION)
+-- BOUNCE SYSTEM (OLD STYLE + ADAPTIVE RAYCAST)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -418,13 +418,6 @@ local function GetBounceDirection(hVel, hSpeed)
     return Vector3.new(0, 0, -1)
 end
 
-local function GetDynamicBouncePower(useSpeed)
-    -- Dynamically scales bounce height based on horizontal speed
-    local speedRatio = math.clamp(useSpeed / BounceConfig.MaxSpeed, 0, 1)
-    -- Ranges from 30 (standing still) to 140 (max speed)
-    return math.floor(30 + (speedRatio * 110))
-end
-
 local function FireBounce(hVel, hSpeed)
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
@@ -434,9 +427,9 @@ local function FireBounce(hVel, hSpeed)
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
 
     local dir = GetBounceDirection(hVel, hSpeed)
-    local dynamicPower = GetDynamicBouncePower(useSpeed)
 
-    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, dynamicPower, 0)
+    -- Old constant bounce height (90)
+    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 
     IsBouncing = true
@@ -472,7 +465,7 @@ local function OnBounceHeartbeat()
         BounceFramesSinceBounce = BounceFramesSinceBounce + 1
     end
 
-    -- ─── PREDICTIVE RAYCAST: MULTI-POINT FOR SLOPES/UNEVEN/EDGES ───
+    -- ─── ADAPTIVE PREDICTIVE RAYCAST (FLAT/SLOPE/UNEVEN/EDGES) ───
     if isAirborne and vel.Y < -0.5 then
         local hipH = Humanoid.HipHeight or 2
         local rayDist = hipH + BounceConfig.PredictDistance
@@ -530,9 +523,8 @@ local function OnBounceHeartbeat()
             if RootPart and Humanoid and Humanoid.Health > 0 then
                 local useSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
                 local dir = GetBounceDirection(hVel, hSpeed)
-                local dynamicPower = GetDynamicBouncePower(useSpeed)
-                
-                RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, dynamicPower, 0)
+                -- Old constant bounce height (90)
+                RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
                 Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
                 IsBouncing = true
                 BounceWaitingForAir = true
@@ -582,7 +574,7 @@ local function UpdateBounceAirSpeed()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- AIR STRAFE (Fixed - No more excessive forward push)
+-- AIR STRAFE (Fixed - No excessive forward push)
 -- ═══════════════════════════════════════════════════════════════
 
 local function AirStrafe()
@@ -622,7 +614,7 @@ local function AirStrafe()
     -- Fixed Air Strafe math:
     -- Only try to maintain current speed, do NOT push forward up to RecordedSpeed
     local currentSpeedInWish = hVel:Dot(wishDir)
-    local wishSpeed = hSpeed -- This prevents adding extra speed that causes you to overshoot
+    local wishSpeed = hSpeed -- Prevents adding extra speed that causes you to overshoot
     
     -- How much we can add
     local addSpeed = wishSpeed - currentSpeedInWish
@@ -1890,4 +1882,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Adaptive bounce + dynamic height + fixed air strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Old bounce restored + adaptive ground + fixed air strafe!")
