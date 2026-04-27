@@ -74,12 +74,12 @@ local Config = {
 local BounceConfig = {
     Power = 90,
     MaxSpeed = 1000,
-    PredictDistance = 2.5,  -- how far below hipheight to raycast for prediction
+    PredictDistance = 2.0,  -- adjusted for better slope/uneven detection
 }
 
 local AirStrafeConfig = {
-    Acceleration = 0.6,    -- air acceleration per frame (tunable)
-    Enabled = true,        -- air strafe while holding shift
+    Acceleration = 0.15,    -- reduced to prevent strong forward push
+    Enabled = true,         -- air strafe while holding shift
 }
 
 local ColaSettings = {
@@ -154,7 +154,7 @@ local BounceJustPressed = false
 local BounceGroundStuckFrames = 0
 local BOUNCE_STUCK_THRESHOLD = 6
 local BounceFramesSinceBounce = 0
-local BOUNCE_SPEED_LOCK_FRAMES = 15 -- frames after bounce to aggressively preserve speed
+local BOUNCE_SPEED_LOCK_FRAMES = 15
 
 local BounceRayParams = RaycastParams.new()
 BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -402,7 +402,7 @@ local function OnBhopHeartbeat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BOUNCE SYSTEM (PREDICTIVE RAYCAST + SPEED LOCK)
+-- BOUNCE SYSTEM (ADAPTIVE + DYNAMIC HEIGHT + SPEED PRESERVATION)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -418,6 +418,13 @@ local function GetBounceDirection(hVel, hSpeed)
     return Vector3.new(0, 0, -1)
 end
 
+local function GetDynamicBouncePower(useSpeed)
+    -- Dynamically scales bounce height based on horizontal speed
+    local speedRatio = math.clamp(useSpeed / BounceConfig.MaxSpeed, 0, 1)
+    -- Ranges from 30 (standing still) to 140 (max speed)
+    return math.floor(30 + (speedRatio * 110))
+end
+
 local function FireBounce(hVel, hSpeed)
     if not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
@@ -427,8 +434,9 @@ local function FireBounce(hVel, hSpeed)
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
 
     local dir = GetBounceDirection(hVel, hSpeed)
+    local dynamicPower = GetDynamicBouncePower(useSpeed)
 
-    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
+    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, dynamicPower, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 
     IsBouncing = true
@@ -464,13 +472,26 @@ local function OnBounceHeartbeat()
         BounceFramesSinceBounce = BounceFramesSinceBounce + 1
     end
 
-    -- ─── PREDICTIVE RAYCAST: bounce BEFORE touching ground ───
+    -- ─── PREDICTIVE RAYCAST: MULTI-POINT FOR SLOPES/UNEVEN/EDGES ───
     if isAirborne and vel.Y < -0.5 then
         local hipH = Humanoid.HipHeight or 2
-        local origin = RootPart.Position
         local rayDist = hipH + BounceConfig.PredictDistance
-
+        local origin = RootPart.Position
+        
+        -- 1. Check directly below center
         local result = Workspace:Raycast(origin, Vector3.new(0, -rayDist, 0), BounceRayParams)
+        
+        -- 2. Check slightly lower (catches uneven ground/ramps early)
+        if not result then
+            local lowerOrigin = origin - Vector3.new(0, 1, 0)
+            result = Workspace:Raycast(lowerOrigin, Vector3.new(0, -rayDist, 0), BounceRayParams)
+        end
+        
+        -- 3. Check ahead in velocity direction (catches slopes/ramps you're running into)
+        if not result and hSpeed > 5 then
+            local aheadOrigin = origin + hVel.Unit * 1.5
+            result = Workspace:Raycast(aheadOrigin, Vector3.new(0, -rayDist - 1, 0), BounceRayParams)
+        end
 
         if result then
             -- Ground detected ahead of time — bounce NOW, no friction applied
@@ -509,7 +530,9 @@ local function OnBounceHeartbeat()
             if RootPart and Humanoid and Humanoid.Health > 0 then
                 local useSpeed = math.min(RecordedSpeed, BounceConfig.MaxSpeed)
                 local dir = GetBounceDirection(hVel, hSpeed)
-                RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
+                local dynamicPower = GetDynamicBouncePower(useSpeed)
+                
+                RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, dynamicPower, 0)
                 Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
                 IsBouncing = true
                 BounceWaitingForAir = true
@@ -559,7 +582,7 @@ local function UpdateBounceAirSpeed()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- AIR STRAFE (source-engine style — gain speed by strafing + turning)
+-- AIR STRAFE (Fixed - No more excessive forward push)
 -- ═══════════════════════════════════════════════════════════════
 
 local function AirStrafe()
@@ -596,11 +619,11 @@ local function AirStrafe()
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
 
-    -- Source-engine air strafe math:
-    -- Calculate how much speed we already have in the wish direction
+    -- Fixed Air Strafe math:
+    -- Only try to maintain current speed, do NOT push forward up to RecordedSpeed
     local currentSpeedInWish = hVel:Dot(wishDir)
-    -- Target speed in wish direction
-    local wishSpeed = math.max(RecordedSpeed, hSpeed, 50)
+    local wishSpeed = hSpeed -- This prevents adding extra speed that causes you to overshoot
+    
     -- How much we can add
     local addSpeed = wishSpeed - currentSpeedInWish
 
@@ -1867,4 +1890,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Predictive raycast bounce + air strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Adaptive bounce + dynamic height + fixed air strafe!")
