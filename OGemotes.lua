@@ -455,7 +455,7 @@ local function fetchAnims()
     end; State.isLoadingAnims = false
 end
 
--- ============ NEW GUI SETUP ============ --
+-- ============ GUI SETUP ============ --
 local FavoriteOff = "rbxassetid://10651060677"
 local FavoriteOn = "rbxassetid://10651061109"
 
@@ -467,7 +467,7 @@ if hiddenUI then ScreenGui.Parent = hiddenUI()
 else pcall(function() syn.protect_gui(ScreenGui) end); ScreenGui.Parent = CoreGui end
 
 local BackFrame = Instance.new("Frame")
-BackFrame.Size = UDim2.new(0.55, 0, 0.7, 0)
+BackFrame.Size = UDim2.new(0.7, 0, 0.82, 0)
 BackFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 BackFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 BackFrame.BackgroundTransparency = 1
@@ -475,110 +475,129 @@ BackFrame.BorderSizePixel = 0
 BackFrame.Parent = ScreenGui
 
 local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 8)
 
 local Frame = Instance.new("ScrollingFrame")
-Frame.Size = UDim2.new(1, 0, 0.85, 0)
+Frame.Size = UDim2.new(1, 0, 0.82, 0)
 Frame.CanvasSize = UDim2.new(0, 0, 0, 0)
 Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Frame.ScrollingDirection = Enum.ScrollingDirection.Y
 Frame.AnchorPoint = Vector2.new(0.5, 0)
 Frame.Position = UDim2.new(0.5, 0, 0, 0)
 Frame.BackgroundTransparency = 1
-Frame.ScrollBarThickness = 4
+Frame.ScrollBarThickness = 5
 Frame.BorderSizePixel = 0
 Frame.Parent = BackFrame
 
 local FramePadding = Instance.new("UIPadding", Frame)
-FramePadding.PaddingLeft = UDim.new(0, 5)
-FramePadding.PaddingRight = UDim.new(0, 8)
-FramePadding.PaddingTop = UDim.new(0, 5)
+FramePadding.PaddingLeft = UDim.new(0, 6)
+FramePadding.PaddingRight = UDim.new(0, 10)
+FramePadding.PaddingTop = UDim.new(0, 6)
 
 local Grid = Instance.new("UIGridLayout")
-Grid.CellSize = UDim2.new(0, 65, 0, 65)
-Grid.CellPadding = UDim2.new(0, 5, 0, 5)
+Grid.CellSize = UDim2.new(0, 85, 0, 85)
+Grid.CellPadding = UDim2.new(0, 6, 0, 6)
 Grid.SortOrder = Enum.SortOrder.LayoutOrder
 Grid.Parent = Frame
 
 local PageFrame = Instance.new("Frame")
 PageFrame.BackgroundTransparency = 1
-PageFrame.Size = UDim2.new(1, 0, 0.06, 0)
-PageFrame.Position = UDim2.new(0, 0, 0.87, 0)
+PageFrame.Size = UDim2.new(1, 0, 0.07, 0)
+PageFrame.Position = UDim2.new(0, 0, 0.84, 0)
 PageFrame.BorderSizePixel = 0
 PageFrame.Parent = BackFrame
 
 local PageLeft = Instance.new("TextButton")
-PageLeft.BorderSizePixel = 0; PageLeft.AnchorPoint = Vector2.new(0, 0.5); PageLeft.Position = UDim2.new(0.3, 0, 0.5, 0)
-PageLeft.Size = UDim2.new(0.1, 0, 0.9, 0); PageLeft.TextScaled = true; PageLeft.TextColor3 = Color3.new(1, 1, 1)
+PageLeft.BorderSizePixel = 0; PageLeft.AnchorPoint = Vector2.new(0, 0.5); PageLeft.Position = UDim2.new(0.28, 0, 0.5, 0)
+PageLeft.Size = UDim2.new(0.08, 0, 0.85, 0); PageLeft.TextScaled = true; PageLeft.TextColor3 = Color3.new(1, 1, 1)
+PageLeft.Font = Enum.Font.GothamBold
 PageLeft.BackgroundColor3 = Color3.new(0, 0, 0); PageLeft.BackgroundTransparency = 0.3; PageLeft.Text = "<"
 Corner:Clone().Parent = PageLeft; PageLeft.Parent = PageFrame
 
-local PageLabel = Instance.new("TextLabel")
-PageLabel.BackgroundTransparency = 1; PageLabel.AnchorPoint = Vector2.new(0.5, 0.5); PageLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
-PageLabel.Size = UDim2.new(0.2, 0, 1, 0); PageLabel.TextScaled = true; PageLabel.TextColor3 = Color3.new(1, 1, 1)
-PageLabel.Text = "1 / 1"; PageLabel.Parent = PageFrame
+local PageLabel = Instance.new("TextBox")
+PageLabel.BackgroundTransparency = 1
+PageLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+PageLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+PageLabel.Size = UDim2.new(0.25, 0, 0.85, 0)
+PageLabel.TextScaled = true
+PageLabel.Font = Enum.Font.GothamBold
+PageLabel.TextColor3 = Color3.new(1, 1, 1)
+PageLabel.Text = "1 / 1"
+PageLabel.ClearTextOnFocus = false
+PageLabel.BorderSizePixel = 0
+PageLabel.Parent = PageFrame
 
 local PageRight = Instance.new("TextButton")
-PageRight.BorderSizePixel = 0; PageRight.AnchorPoint = Vector2.new(1, 0.5); PageRight.Position = UDim2.new(0.7, 0, 0.5, 0)
-PageRight.Size = UDim2.new(0.1, 0, 0.9, 0); PageRight.TextScaled = true; PageRight.TextColor3 = Color3.new(1, 1, 1)
+PageRight.BorderSizePixel = 0; PageRight.AnchorPoint = Vector2.new(1, 0.5); PageRight.Position = UDim2.new(0.72, 0, 0.5, 0)
+PageRight.Size = UDim2.new(0.08, 0, 0.85, 0); PageRight.TextScaled = true; PageRight.TextColor3 = Color3.new(1, 1, 1)
+PageRight.Font = Enum.Font.GothamBold
 PageRight.BackgroundColor3 = Color3.new(0, 0, 0); PageRight.BackgroundTransparency = 0.3; PageRight.Text = ">"
 Corner:Clone().Parent = PageRight; PageRight.Parent = PageFrame
 
 local EmoteName = Instance.new("TextLabel")
 EmoteName.TextScaled = true
 EmoteName.AnchorPoint = Vector2.new(0.5, 0.5)
-EmoteName.Position = UDim2.new(0.5, 0, 0.96, 0)
-EmoteName.Size = UDim2.new(0.6, 0, 0.06, 0)
+EmoteName.Position = UDim2.new(0.5, 0, 0.95, 0)
+EmoteName.Size = UDim2.new(0.7, 0, 0.06, 0)
 EmoteName.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 EmoteName.TextColor3 = Color3.new(1, 1, 1)
+EmoteName.Font = Enum.Font.GothamBold
 EmoteName.BorderSizePixel = 0
 EmoteName.Text = "Select an Emote"
 EmoteName.Parent = BackFrame
 Corner:Clone().Parent = EmoteName
 
 local TopBar = Instance.new("Frame")
-TopBar.BackgroundTransparency = 1; TopBar.Size = UDim2.new(1, 0, 0.06, 0)
-TopBar.Position = UDim2.new(0, 0, -0.08, 0)
+TopBar.BackgroundTransparency = 1; TopBar.Size = UDim2.new(1, 0, 0.08, 0)
+TopBar.Position = UDim2.new(0, 0, -0.1, 0)
 TopBar.BorderSizePixel = 0; TopBar.Parent = BackFrame
 
 local CloseButton = Instance.new("TextButton")
 CloseButton.BorderSizePixel = 0; CloseButton.AnchorPoint = Vector2.new(0, 0.5); CloseButton.Position = UDim2.new(0, 0, 0.5, 0)
-CloseButton.Size = UDim2.new(0.12, 0, 0.9, 0); CloseButton.TextScaled = true; CloseButton.TextColor3 = Color3.new(1, 1, 1)
+CloseButton.Size = UDim2.new(0.10, 0, 0.9, 0); CloseButton.TextScaled = true; CloseButton.TextColor3 = Color3.new(1, 1, 1)
+CloseButton.Font = Enum.Font.GothamBold
 CloseButton.BackgroundColor3 = Color3.new(0, 0, 0); CloseButton.BackgroundTransparency = 0.3; CloseButton.Text = "Close"
 Corner:Clone().Parent = CloseButton; CloseButton.Parent = TopBar
 
 local SearchBar = Instance.new("TextBox")
-SearchBar.BorderSizePixel = 0; SearchBar.AnchorPoint = Vector2.new(0, 0.5); SearchBar.Position = UDim2.new(0.14, 0, 0.5, 0)
-SearchBar.Size = UDim2.new(0.36, 0, 0.9, 0); SearchBar.TextScaled = true; SearchBar.PlaceholderText = "Search"
+SearchBar.BorderSizePixel = 0; SearchBar.AnchorPoint = Vector2.new(0, 0.5); SearchBar.Position = UDim2.new(0.11, 0, 0.5, 0)
+SearchBar.Size = UDim2.new(0.30, 0, 0.9, 0); SearchBar.TextScaled = true; SearchBar.PlaceholderText = "Search..."
+SearchBar.Font = Enum.Font.Gotham
+SearchBar.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
 SearchBar.TextColor3 = Color3.new(1, 1, 1); SearchBar.BackgroundColor3 = Color3.new(0, 0, 0); SearchBar.BackgroundTransparency = 0.3
 Corner:Clone().Parent = SearchBar; SearchBar.Parent = TopBar
 
 local ModeButton = Instance.new("TextButton")
-ModeButton.BorderSizePixel = 0; ModeButton.AnchorPoint = Vector2.new(0, 0.5); ModeButton.Position = UDim2.new(0.52, 0, 0.5, 0)
-ModeButton.Size = UDim2.new(0.1, 0, 0.9, 0); ModeButton.TextScaled = true; ModeButton.TextColor3 = Color3.new(1, 1, 1)
+ModeButton.BorderSizePixel = 0; ModeButton.AnchorPoint = Vector2.new(0, 0.5); ModeButton.Position = UDim2.new(0.42, 0, 0.5, 0)
+ModeButton.Size = UDim2.new(0.12, 0, 0.9, 0); ModeButton.TextScaled = true; ModeButton.TextColor3 = Color3.new(1, 1, 1)
+ModeButton.Font = Enum.Font.GothamBold
 ModeButton.BackgroundColor3 = Color3.new(0, 0, 0); ModeButton.BackgroundTransparency = 0.3; ModeButton.Text = "EMO"
 Corner:Clone().Parent = ModeButton; ModeButton.Parent = TopBar
 
 local AutoButton = Instance.new("TextButton")
-AutoButton.BorderSizePixel = 0; AutoButton.AnchorPoint = Vector2.new(0, 0.5); AutoButton.Position = UDim2.new(0.64, 0, 0.5, 0)
-AutoButton.Size = UDim2.new(0.1, 0, 0.9, 0); AutoButton.TextScaled = true; AutoButton.TextColor3 = Color3.new(1, 1, 1)
+AutoButton.BorderSizePixel = 0; AutoButton.AnchorPoint = Vector2.new(0, 0.5); AutoButton.Position = UDim2.new(0.55, 0, 0.5, 0)
+AutoButton.Size = UDim2.new(0.12, 0, 0.9, 0); AutoButton.TextScaled = true; AutoButton.TextColor3 = Color3.new(1, 1, 1)
+AutoButton.Font = Enum.Font.GothamBold
 AutoButton.BackgroundColor3 = Color3.new(0, 0, 0); AutoButton.BackgroundTransparency = 0.3; AutoButton.Text = "RE"
 Corner:Clone().Parent = AutoButton; AutoButton.Parent = TopBar
 
 local CustomAnimBtn = Instance.new("TextButton")
-CustomAnimBtn.BorderSizePixel = 0; CustomAnimBtn.AnchorPoint = Vector2.new(0, 0.5); CustomAnimBtn.Position = UDim2.new(0.76, 0, 0.5, 0)
-CustomAnimBtn.Size = UDim2.new(0.1, 0, 0.9, 0); CustomAnimBtn.TextScaled = true; CustomAnimBtn.TextColor3 = Color3.new(1, 1, 1)
+CustomAnimBtn.BorderSizePixel = 0; CustomAnimBtn.AnchorPoint = Vector2.new(0, 0.5); CustomAnimBtn.Position = UDim2.new(0.68, 0, 0.5, 0)
+CustomAnimBtn.Size = UDim2.new(0.12, 0, 0.9, 0); CustomAnimBtn.TextScaled = true; CustomAnimBtn.TextColor3 = Color3.new(1, 1, 1)
+CustomAnimBtn.Font = Enum.Font.GothamBold
 CustomAnimBtn.BackgroundColor3 = Color3.new(0, 0, 0); CustomAnimBtn.BackgroundTransparency = 0.3; CustomAnimBtn.Text = "CUS"
 Corner:Clone().Parent = CustomAnimBtn; CustomAnimBtn.Parent = TopBar
 
 local SortButton = Instance.new("TextButton")
 SortButton.BorderSizePixel = 0; SortButton.AnchorPoint = Vector2.new(1, 0.5); SortButton.Position = UDim2.new(1, 0, 0.5, 0)
-SortButton.Size = UDim2.new(0.12, 0, 0.9, 0); SortButton.TextScaled = true; SortButton.TextColor3 = Color3.new(1, 1, 1)
+SortButton.Size = UDim2.new(0.14, 0, 0.9, 0); SortButton.TextScaled = true; SortButton.TextColor3 = Color3.new(1, 1, 1)
+SortButton.Font = Enum.Font.GothamBold
 SortButton.BackgroundColor3 = Color3.new(0, 0, 0); SortButton.BackgroundTransparency = 0.3; SortButton.Text = "Sort"
 Corner:Clone().Parent = SortButton; SortButton.Parent = TopBar
 
 local SortFrame = Instance.new("Frame")
-SortFrame.Visible = false; SortFrame.BorderSizePixel = 0; SortFrame.Position = UDim2.new(1, 5, -0.125, 0)
-SortFrame.Size = UDim2.new(0.4, 0, 0, 0); SortFrame.AutomaticSize = Enum.AutomaticSize.Y; SortFrame.BackgroundTransparency = 1
+SortFrame.Visible = false; SortFrame.BorderSizePixel = 0; SortFrame.Position = UDim2.new(1, 5, -0.15, 0)
+SortFrame.Size = UDim2.new(0.35, 0, 0, 0); SortFrame.AutomaticSize = Enum.AutomaticSize.Y; SortFrame.BackgroundTransparency = 1
 Corner:Clone().Parent = SortFrame; SortFrame.Parent = BackFrame
 
 local SortList = Instance.new("UIListLayout")
@@ -590,6 +609,7 @@ local function createsort(order, text, sort)
     local CreatedSort = Instance.new("TextButton"); CreatedSort.SizeConstraint = Enum.SizeConstraint.RelativeXX
     CreatedSort.Size = UDim2.new(1, 0, 0.3, 0); CreatedSort.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
     CreatedSort.LayoutOrder = order; CreatedSort.TextColor3 = Color3.new(1, 1, 1); CreatedSort.Text = text
+    CreatedSort.Font = Enum.Font.GothamBold
     CreatedSort.TextScaled = true; CreatedSort.BorderSizePixel = 0; Corner:Clone().Parent = CreatedSort; CreatedSort.Parent = SortFrame
     CreatedSort.MouseButton1Click:Connect(function() SortFrame.Visible = false; CurrentSort = sort; State.currentPage = 1; refreshGrid() end)
 end
@@ -630,7 +650,10 @@ function refreshGrid()
     local totalPages = getTotalPages()
     if State.currentPage > totalPages then State.currentPage = totalPages end
     if State.currentPage < 1 then State.currentPage = 1 end
-    PageLabel.Text = State.currentPage .. " / " .. totalPages
+    
+    if not PageLabel:IsFocused() then
+        PageLabel.Text = State.currentPage .. " / " .. totalPages
+    end
 
     local startIdx = (State.currentPage - 1) * State.itemsPerPage + 1
     local endIdx = math.min(startIdx + State.itemsPerPage - 1, #combined)
@@ -641,13 +664,13 @@ function refreshGrid()
             local btn = Instance.new("ImageButton")
             btn.Name = tostring(item.data.id); btn:SetAttribute("name", item.data.name)
             btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0); btn.BackgroundTransparency = 0.5; btn.BorderSizePixel = 0
-            btn.LayoutOrder = i; Instance.new("UICorner", btn)
+            btn.LayoutOrder = i; Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
 
             if State.mode == "animation" then btn.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.data.id .. "&w=420&h=420"
             else btn.Image = "rbxthumb://type=Asset&id=" .. item.data.id .. "&w=150&h=150" end
 
             local Favorite = Instance.new("ImageButton"); Favorite.Name = "favorite"; Favorite.Image = item.isFav and FavoriteOn or FavoriteOff
-            Favorite.AnchorPoint = Vector2.new(0.5, 0.5); Favorite.Size = UDim2.new(0.3, 0, 0.3, 0); Favorite.Position = UDim2.new(0.9, 0, 0.9, 0)
+            Favorite.AnchorPoint = Vector2.new(0.5, 0.5); Favorite.Size = UDim2.new(0.35, 0, 0.35, 0); Favorite.Position = UDim2.new(0.88, 0, 0.88, 0)
             Favorite.BorderSizePixel = 0; Favorite.BackgroundTransparency = 1; Favorite.Parent = btn
 
             Favorite.MouseButton1Click:Connect(function()
@@ -670,6 +693,7 @@ function refreshGrid()
     end
 end
 
+-- Page navigation: arrow buttons
 PageLeft.MouseButton1Click:Connect(function()
     local totalPages = getTotalPages()
     if totalPages <= 1 then return end
@@ -684,7 +708,24 @@ PageRight.MouseButton1Click:Connect(function()
     refreshGrid()
 end)
 
--- ============ CUSTOM ANIMATION EDITOR (MATCHING TRANSPARENT GUI) ============ --
+-- Page navigation: type a page number
+PageLabel.Focused:Connect(function()
+    PageLabel.Text = tostring(State.currentPage)
+    PageLabel.CursorPosition = 1
+    PageLabel.SelectionStart = #PageLabel.Text + 1
+end)
+
+PageLabel.FocusLost:Connect(function(enterPressed)
+    local text = PageLabel.Text:gsub("%s", "")
+    local pageNum = tonumber(text)
+    if pageNum then
+        local totalPages = getTotalPages()
+        State.currentPage = math.clamp(math.floor(pageNum), 1, totalPages)
+    end
+    refreshGrid()
+end)
+
+-- ============ CUSTOM ANIMATION EDITOR ============ --
 local customFrame = nil
 local function closeCustomAnimEditor()
     if customFrame then customFrame.Visible = false end
@@ -701,26 +742,26 @@ local function openCustomAnimEditor()
         customFrame = Instance.new("Frame", ScreenGui)
         customFrame.Name = "CustomAnimFrame"
         customFrame.BackgroundColor3 = Color3.new(0, 0, 0); customFrame.BackgroundTransparency = 0.2; customFrame.BorderSizePixel = 0
-        customFrame.Size = UDim2.new(0.4, 0, 0.55, 0); customFrame.AnchorPoint = Vector2.new(0.5, 0.5); customFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+        customFrame.Size = UDim2.new(0.5, 0, 0.65, 0); customFrame.AnchorPoint = Vector2.new(0.5, 0.5); customFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
         customFrame.ClipsDescendants = true; customFrame.ZIndex = 50
-        Instance.new("UICorner", customFrame).CornerRadius = UDim.new(0, 10)
+        Instance.new("UICorner", customFrame).CornerRadius = UDim.new(0, 12)
 
-        local titleBar = Instance.new("Frame", customFrame); titleBar.BackgroundTransparency = 1; titleBar.Size = UDim2.new(1, 0, 0, 35); titleBar.ZIndex = 51
-        local titleLabel = Instance.new("TextLabel", titleBar); titleLabel.BackgroundTransparency = 1; titleLabel.Size = UDim2.new(0.8, 0, 1, 0); titleLabel.Position = UDim2.fromOffset(10, 0); titleLabel.Font = Enum.Font.GothamBold; titleLabel.Text = "Custom Animation Slots"; titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255); titleLabel.TextSize = 14; titleLabel.TextXAlignment = Enum.TextXAlignment.Left; titleLabel.ZIndex = 52
-        local closeBtn = Instance.new("TextButton", titleBar); closeBtn.BackgroundTransparency = 1; closeBtn.Size = UDim2.fromOffset(35, 35); closeBtn.Position = UDim2.new(1, -35, 0, 0); closeBtn.Font = Enum.Font.GothamBold; closeBtn.Text = "X"; closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200); closeBtn.TextSize = 16; closeBtn.ZIndex = 52; closeBtn.MouseButton1Click:Connect(closeCustomAnimEditor)
+        local titleBar = Instance.new("Frame", customFrame); titleBar.BackgroundTransparency = 1; titleBar.Size = UDim2.new(1, 0, 0, 42); titleBar.ZIndex = 51
+        local titleLabel = Instance.new("TextLabel", titleBar); titleLabel.BackgroundTransparency = 1; titleLabel.Size = UDim2.new(0.8, 0, 1, 0); titleLabel.Position = UDim2.fromOffset(12, 0); titleLabel.Font = Enum.Font.GothamBold; titleLabel.Text = "Custom Animation Slots"; titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255); titleLabel.TextSize = 16; titleLabel.TextXAlignment = Enum.TextXAlignment.Left; titleLabel.ZIndex = 52
+        local closeBtn = Instance.new("TextButton", titleBar); closeBtn.BackgroundTransparency = 1; closeBtn.Size = UDim2.fromOffset(42, 42); closeBtn.Position = UDim2.new(1, -42, 0, 0); closeBtn.Font = Enum.Font.GothamBold; closeBtn.Text = "X"; closeBtn.TextColor3 = Color3.fromRGB(200, 200, 200); closeBtn.TextSize = 18; closeBtn.ZIndex = 52; closeBtn.MouseButton1Click:Connect(closeCustomAnimEditor)
 
-        local contentArea = Instance.new("Frame", customFrame); contentArea.BackgroundTransparency = 1; contentArea.Position = UDim2.fromOffset(0, 38); contentArea.Size = UDim2.new(1, 0, 1, -38); contentArea.ZIndex = 51; contentArea.ClipsDescendants = true
+        local contentArea = Instance.new("Frame", customFrame); contentArea.BackgroundTransparency = 1; contentArea.Position = UDim2.fromOffset(0, 44); contentArea.Size = UDim2.new(1, 0, 1, -44); contentArea.ZIndex = 51; contentArea.ClipsDescendants = true
         local slotPage = Instance.new("Frame", contentArea); slotPage.Name = "SlotPage"; slotPage.BackgroundTransparency = 1; slotPage.Size = UDim2.fromScale(1, 1); slotPage.ZIndex = 52; slotPage.Visible = true
-        local scrollFrame = Instance.new("ScrollingFrame", slotPage); scrollFrame.BackgroundTransparency = 1; scrollFrame.Position = UDim2.fromOffset(0, 0); scrollFrame.Size = UDim2.new(1, 0, 1, -44); scrollFrame.ScrollBarThickness = 4; scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); scrollFrame.CanvasSize = UDim2.fromOffset(0, 0); scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y; scrollFrame.BorderSizePixel = 0; scrollFrame.ZIndex = 53
-        local ll = Instance.new("UIListLayout", scrollFrame); ll.Padding = UDim.new(0, 4); ll.SortOrder = Enum.SortOrder.LayoutOrder
-        local padUI = Instance.new("UIPadding", scrollFrame); padUI.PaddingLeft = UDim.new(0, 8); padUI.PaddingRight = UDim.new(0, 8); padUI.PaddingTop = UDim.new(0, 4)
+        local scrollFrame = Instance.new("ScrollingFrame", slotPage); scrollFrame.BackgroundTransparency = 1; scrollFrame.Position = UDim2.fromOffset(0, 0); scrollFrame.Size = UDim2.new(1, 0, 1, -50); scrollFrame.ScrollBarThickness = 5; scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); scrollFrame.CanvasSize = UDim2.fromOffset(0, 0); scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y; scrollFrame.BorderSizePixel = 0; scrollFrame.ZIndex = 53
+        local ll = Instance.new("UIListLayout", scrollFrame); ll.Padding = UDim.new(0, 5); ll.SortOrder = Enum.SortOrder.LayoutOrder
+        local padUI = Instance.new("UIPadding", scrollFrame); padUI.PaddingLeft = UDim.new(0, 10); padUI.PaddingRight = UDim.new(0, 10); padUI.PaddingTop = UDim.new(0, 5)
 
         local pickerPage = Instance.new("Frame", contentArea); pickerPage.Name = "PickerPage"; pickerPage.BackgroundTransparency = 1; pickerPage.Size = UDim2.fromScale(1, 1); pickerPage.ZIndex = 52; pickerPage.Visible = false
-        local pickerTitle = Instance.new("TextLabel", pickerPage); pickerTitle.BackgroundTransparency = 1; pickerTitle.Size = UDim2.new(1, -60, 0, 28); pickerTitle.Position = UDim2.fromOffset(8, 2); pickerTitle.Font = Enum.Font.GothamBold; pickerTitle.Text = "Pick bundle for: idle"; pickerTitle.TextColor3 = Color3.fromRGB(255, 255, 255); pickerTitle.TextSize = 12; pickerTitle.TextXAlignment = Enum.TextXAlignment.Left; pickerTitle.ZIndex = 53
-        local pickerBack = Instance.new("TextButton", pickerPage); pickerBack.BackgroundColor3 = Color3.new(0, 0, 0); pickerBack.BackgroundTransparency = 0.3; pickerBack.Size = UDim2.fromOffset(50, 24); pickerBack.Position = UDim2.new(1, -58, 0, 4); pickerBack.Font = Enum.Font.GothamBold; pickerBack.Text = "Back"; pickerBack.TextColor3 = Color3.fromRGB(220, 220, 220); pickerBack.TextSize = 11; pickerBack.BorderSizePixel = 0; pickerBack.ZIndex = 53; Instance.new("UICorner", pickerBack).CornerRadius = UDim.new(0, 4)
-        local pickerSearch = Instance.new("TextBox", pickerPage); pickerSearch.BackgroundColor3 = Color3.new(0, 0, 0); pickerSearch.BackgroundTransparency = 0.3; pickerSearch.Position = UDim2.fromOffset(5, 32); pickerSearch.Size = UDim2.new(1, -10, 0, 26); pickerSearch.Font = Enum.Font.Gotham; pickerSearch.PlaceholderText = "Search bundles..."; pickerSearch.PlaceholderColor3 = Color3.fromRGB(100, 100, 100); pickerSearch.Text = ""; pickerSearch.TextColor3 = Color3.fromRGB(255, 255, 255); pickerSearch.TextSize = 12; pickerSearch.ClearTextOnFocus = false; pickerSearch.BorderSizePixel = 0; pickerSearch.ZIndex = 53; Instance.new("UICorner", pickerSearch).CornerRadius = UDim.new(0, 4)
-        local pickerScroll = Instance.new("ScrollingFrame", pickerPage); pickerScroll.BackgroundTransparency = 1; pickerScroll.Position = UDim2.fromOffset(0, 62); pickerScroll.Size = UDim2.new(1, 0, 1, -62); pickerScroll.ScrollBarThickness = 4; pickerScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); pickerScroll.CanvasSize = UDim2.fromOffset(0, 0); pickerScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; pickerScroll.BorderSizePixel = 0; pickerScroll.ZIndex = 53
-        local pll = Instance.new("UIListLayout", pickerScroll); pll.Padding = UDim.new(0, 2); pll.SortOrder = Enum.SortOrder.LayoutOrder
+        local pickerTitle = Instance.new("TextLabel", pickerPage); pickerTitle.BackgroundTransparency = 1; pickerTitle.Size = UDim2.new(1, -70, 0, 32); pickerTitle.Position = UDim2.fromOffset(10, 2); pickerTitle.Font = Enum.Font.GothamBold; pickerTitle.Text = "Pick bundle for: idle"; pickerTitle.TextColor3 = Color3.fromRGB(255, 255, 255); pickerTitle.TextSize = 14; pickerTitle.TextXAlignment = Enum.TextXAlignment.Left; pickerTitle.ZIndex = 53
+        local pickerBack = Instance.new("TextButton", pickerPage); pickerBack.BackgroundColor3 = Color3.new(0, 0, 0); pickerBack.BackgroundTransparency = 0.3; pickerBack.Size = UDim2.fromOffset(55, 28); pickerBack.Position = UDim2.new(1, -65, 0, 4); pickerBack.Font = Enum.Font.GothamBold; pickerBack.Text = "Back"; pickerBack.TextColor3 = Color3.fromRGB(220, 220, 220); pickerBack.TextSize = 12; pickerBack.BorderSizePixel = 0; pickerBack.ZIndex = 53; Instance.new("UICorner", pickerBack).CornerRadius = UDim.new(0, 6)
+        local pickerSearch = Instance.new("TextBox", pickerPage); pickerSearch.BackgroundColor3 = Color3.new(0, 0, 0); pickerSearch.BackgroundTransparency = 0.3; pickerSearch.Position = UDim2.fromOffset(6, 38); pickerSearch.Size = UDim2.new(1, -12, 0, 30); pickerSearch.Font = Enum.Font.Gotham; pickerSearch.PlaceholderText = "Search bundles..."; pickerSearch.PlaceholderColor3 = Color3.fromRGB(100, 100, 100); pickerSearch.Text = ""; pickerSearch.TextColor3 = Color3.fromRGB(255, 255, 255); pickerSearch.TextSize = 13; pickerSearch.ClearTextOnFocus = false; pickerSearch.BorderSizePixel = 0; pickerSearch.ZIndex = 53; Instance.new("UICorner", pickerSearch).CornerRadius = UDim.new(0, 6)
+        local pickerScroll = Instance.new("ScrollingFrame", pickerPage); pickerScroll.BackgroundTransparency = 1; pickerScroll.Position = UDim2.fromOffset(0, 74); pickerScroll.Size = UDim2.new(1, 0, 1, -74); pickerScroll.ScrollBarThickness = 5; pickerScroll.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100); pickerScroll.CanvasSize = UDim2.fromOffset(0, 0); pickerScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y; pickerScroll.BorderSizePixel = 0; pickerScroll.ZIndex = 53
+        local pll = Instance.new("UIListLayout", pickerScroll); pll.Padding = UDim.new(0, 3); pll.SortOrder = Enum.SortOrder.LayoutOrder
 
         local currentPickerSlot = ""; local pickerApplying = false
         pickerBack.MouseButton1Click:Connect(function() pickerPage.Visible = false; slotPage.Visible = true end)
@@ -735,7 +776,7 @@ local function openCustomAnimEditor()
                 if filterTerm == "" or item.name:lower():find(filterTerm, 1, true) or tostring(item.id) == filterTerm then matches[#matches + 1] = item end
             end
             for _, item in ipairs(matches) do
-                local btn = Instance.new("TextButton"); btn.BackgroundColor3 = Color3.new(0, 0, 0); btn.BackgroundTransparency = 0.4; btn.Size = UDim2.new(1, -4, 0, 30); btn.Font = Enum.Font.Gotham; btn.Text = "  " .. item.name; btn.TextColor3 = Color3.fromRGB(220, 220, 220); btn.TextSize = 11; btn.TextXAlignment = Enum.TextXAlignment.Left; btn.BorderSizePixel = 0; btn.ZIndex = 54; btn.AutoButtonColor = true; Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4); btn.Parent = pickerScroll
+                local btn = Instance.new("TextButton"); btn.BackgroundColor3 = Color3.new(0, 0, 0); btn.BackgroundTransparency = 0.4; btn.Size = UDim2.new(1, -6, 0, 34); btn.Font = Enum.Font.Gotham; btn.Text = "  " .. item.name; btn.TextColor3 = Color3.fromRGB(220, 220, 220); btn.TextSize = 12; btn.TextXAlignment = Enum.TextXAlignment.Left; btn.BorderSizePixel = 0; btn.ZIndex = 54; btn.AutoButtonColor = true; Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6); btn.Parent = pickerScroll
                 btn.MouseButton1Click:Connect(function()
                     if pickerApplying then return end; pickerApplying = true
                     task.spawn(function()
@@ -755,31 +796,30 @@ local function openCustomAnimEditor()
         end)
 
         for idx, slotName in ipairs(ANIM_SLOT_NAMES) do
-            local row = Instance.new("Frame", scrollFrame); row.Name = "Row_" .. slotName; row.BackgroundColor3 = Color3.new(0, 0, 0); row.BackgroundTransparency = 0.4; row.Size = UDim2.new(1, 0, 0, 38); row.LayoutOrder = idx; row.BorderSizePixel = 0; row.ZIndex = 54; Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
-            local slotLabel = Instance.new("TextLabel", row); slotLabel.BackgroundTransparency = 1; slotLabel.Position = UDim2.fromOffset(8, 0); slotLabel.Size = UDim2.new(0.18, 0, 1, 0); slotLabel.Font = Enum.Font.GothamBold; slotLabel.Text = slotName; slotLabel.TextColor3 = Color3.fromRGB(220, 220, 220); slotLabel.TextSize = 12; slotLabel.TextXAlignment = Enum.TextXAlignment.Left; slotLabel.ZIndex = 55
-            local currentLabel = Instance.new("TextLabel", row); currentLabel.Name = "CurrentLabel"; currentLabel.BackgroundTransparency = 1; currentLabel.Position = UDim2.new(0.20, 0, 0, 0); currentLabel.Size = UDim2.new(0.36, 0, 1, 0); currentLabel.Font = Enum.Font.Gotham; currentLabel.Text = "None"; currentLabel.TextColor3 = Color3.fromRGB(150, 150, 150); currentLabel.TextSize = 10; currentLabel.TextTruncate = Enum.TextTruncate.AtEnd; currentLabel.TextXAlignment = Enum.TextXAlignment.Left; currentLabel.ZIndex = 55
-            local removeBtn = Instance.new("TextButton", row); removeBtn.Name = "RemoveBtn"; removeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); removeBtn.Position = UDim2.new(0.57, 0, 0.1, 0); removeBtn.Size = UDim2.new(0.18, -2, 0.8, 0); removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"; removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255); removeBtn.TextSize = 12; removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55; Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0, 4)
+            local row = Instance.new("Frame", scrollFrame); row.Name = "Row_" .. slotName; row.BackgroundColor3 = Color3.new(0, 0, 0); row.BackgroundTransparency = 0.4; row.Size = UDim2.new(1, 0, 0, 44); row.LayoutOrder = idx; row.BorderSizePixel = 0; row.ZIndex = 54; Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+            local slotLabel = Instance.new("TextLabel", row); slotLabel.BackgroundTransparency = 1; slotLabel.Position = UDim2.fromOffset(10, 0); slotLabel.Size = UDim2.new(0.18, 0, 1, 0); slotLabel.Font = Enum.Font.GothamBold; slotLabel.Text = slotName; slotLabel.TextColor3 = Color3.fromRGB(220, 220, 220); slotLabel.TextSize = 13; slotLabel.TextXAlignment = Enum.TextXAlignment.Left; slotLabel.ZIndex = 55
+            local currentLabel = Instance.new("TextLabel", row); currentLabel.Name = "CurrentLabel"; currentLabel.BackgroundTransparency = 1; currentLabel.Position = UDim2.new(0.20, 0, 0, 0); currentLabel.Size = UDim2.new(0.36, 0, 1, 0); currentLabel.Font = Enum.Font.Gotham; currentLabel.Text = "None"; currentLabel.TextColor3 = Color3.fromRGB(150, 150, 150); currentLabel.TextSize = 12; currentLabel.TextTruncate = Enum.TextTruncate.AtEnd; currentLabel.TextXAlignment = Enum.TextXAlignment.Left; currentLabel.ZIndex = 55
+            local removeBtn = Instance.new("TextButton", row); removeBtn.Name = "RemoveBtn"; removeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); removeBtn.Position = UDim2.new(0.57, 0, 0.1, 0); removeBtn.Size = UDim2.new(0.18, -2, 0.8, 0); removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"; removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255); removeBtn.TextSize = 13; removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55; Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0, 6)
             removeBtn.MouseButton1Click:Connect(function()
                 if State.applyingAnim then return end; State.config.CustomAnimSlots[slotName] = nil; SaveConfig(); captureOriginalAnims(); revertSlotWithFreeze(slotName); currentLabel.Text = "None"
             end)
-            local selectBtn = Instance.new("TextButton", row); selectBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 220); selectBtn.Position = UDim2.new(0.76, 0, 0.1, 0); selectBtn.Size = UDim2.new(0.22, -4, 0.8, 0); selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"; selectBtn.TextColor3 = Color3.fromRGB(255, 255, 255); selectBtn.TextSize = 11; selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55; Instance.new("UICorner", selectBtn).CornerRadius = UDim.new(0, 4)
+            local selectBtn = Instance.new("TextButton", row); selectBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 220); selectBtn.Position = UDim2.new(0.76, 0, 0.1, 0); selectBtn.Size = UDim2.new(0.22, -4, 0.8, 0); selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"; selectBtn.TextColor3 = Color3.fromRGB(255, 255, 255); selectBtn.TextSize = 12; selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55; Instance.new("UICorner", selectBtn).CornerRadius = UDim.new(0, 6)
             selectBtn.MouseButton1Click:Connect(function()
                 currentPickerSlot = slotName; pickerTitle.Text = "Pick bundle for: " .. slotName; pickerSearch.Text = ""; populatePickerList(""); slotPage.Visible = false; pickerPage.Visible = true
             end)
         end
 
-        local bottomBar = Instance.new("Frame", slotPage); bottomBar.BackgroundTransparency = 1; bottomBar.BorderSizePixel = 0; bottomBar.Size = UDim2.new(1, 0, 0, 36); bottomBar.Position = UDim2.new(0, 0, 1, -38); bottomBar.ZIndex = 54
-        local bottomLayout = Instance.new("UIListLayout", bottomBar); bottomLayout.FillDirection = Enum.FillDirection.Horizontal; bottomLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center; bottomLayout.VerticalAlignment = Enum.VerticalAlignment.Center; bottomLayout.Padding = UDim.new(0, 10)
-        local applyAllBtn = Instance.new("TextButton", bottomBar); applyAllBtn.LayoutOrder = 1; applyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 60); applyAllBtn.Size = UDim2.new(0, 130, 0, 28); applyAllBtn.Font = Enum.Font.GothamBold; applyAllBtn.Text = "Apply All"; applyAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255); applyAllBtn.TextSize = 12; applyAllBtn.BorderSizePixel = 0; applyAllBtn.ZIndex = 55; Instance.new("UICorner", applyAllBtn).CornerRadius = UDim.new(0, 6)
+        local bottomBar = Instance.new("Frame", slotPage); bottomBar.BackgroundTransparency = 1; bottomBar.BorderSizePixel = 0; bottomBar.Size = UDim2.new(1, 0, 0, 42); bottomBar.Position = UDim2.new(0, 0, 1, -44); bottomBar.ZIndex = 54
+        local bottomLayout = Instance.new("UIListLayout", bottomBar); bottomLayout.FillDirection = Enum.FillDirection.Horizontal; bottomLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center; bottomLayout.VerticalAlignment = Enum.VerticalAlignment.Center; bottomLayout.Padding = UDim.new(0, 12)
+        local applyAllBtn = Instance.new("TextButton", bottomBar); applyAllBtn.LayoutOrder = 1; applyAllBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 60); applyAllBtn.Size = UDim2.new(0, 150, 0, 32); applyAllBtn.Font = Enum.Font.GothamBold; applyAllBtn.Text = "Apply All"; applyAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255); applyAllBtn.TextSize = 13; applyAllBtn.BorderSizePixel = 0; applyAllBtn.ZIndex = 55; Instance.new("UICorner", applyAllBtn).CornerRadius = UDim.new(0, 8)
         applyAllBtn.MouseButton1Click:Connect(function() task.spawn(applyAllCustomSlots) end)
-        local clearAllBtn = Instance.new("TextButton", bottomBar); clearAllBtn.LayoutOrder = 2; clearAllBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); clearAllBtn.Size = UDim2.new(0, 130, 0, 28); clearAllBtn.Font = Enum.Font.GothamBold; clearAllBtn.Text = "Clear All"; clearAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255); clearAllBtn.TextSize = 12; clearAllBtn.BorderSizePixel = 0; clearAllBtn.ZIndex = 55; Instance.new("UICorner", clearAllBtn).CornerRadius = UDim.new(0, 6)
+        local clearAllBtn = Instance.new("TextButton", bottomBar); clearAllBtn.LayoutOrder = 2; clearAllBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); clearAllBtn.Size = UDim2.new(0, 150, 0, 32); clearAllBtn.Font = Enum.Font.GothamBold; clearAllBtn.Text = "Clear All"; clearAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255); clearAllBtn.TextSize = 13; clearAllBtn.BorderSizePixel = 0; clearAllBtn.ZIndex = 55; Instance.new("UICorner", clearAllBtn).CornerRadius = UDim.new(0, 8)
         clearAllBtn.MouseButton1Click:Connect(function()
             State.config.CustomAnimSlots = {}; SaveConfig(); captureOriginalAnims(); revertAllSlotsWithFreeze()
             for _, child in pairs(scrollFrame:GetChildren()) do if child:IsA("Frame") then local cl = child:FindFirstChild("CurrentLabel"); if cl then cl.Text = "None" end end end
         end)
     end
 
-    -- Update dynamic labels
     for _, slotName in ipairs(ANIM_SLOT_NAMES) do
         local row = customFrame:FindFirstChild("Row_" .. slotName, true)
         if row then
@@ -833,7 +873,14 @@ ScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
         EmoteName.Text = "Select an Emote"
         SortFrame.Visible = false; GuiService:SetEmotesMenuOpen(false); refreshGrid()
         inputconnect = UserInputService.InputBegan:Connect(function(input, processed)
-            if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then ScreenGui.Enabled = false end
+            if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then
+                local mousePos = UserInputService.GetMouseLocation and UserInputService:GetMouseLocation() or input.Position
+                local framePos = BackFrame.AbsolutePosition
+                local frameSize = BackFrame.AbsoluteSize
+                if mousePos.X < framePos.X or mousePos.X > framePos.X + frameSize.X or mousePos.Y < framePos.Y or mousePos.Y > framePos.Y + frameSize.Y then
+                    ScreenGui.Enabled = false
+                end
+            end
         end)
     else
         if customFrame then customFrame.Visible = false; BackFrame.Visible = true end
