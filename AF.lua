@@ -4,11 +4,12 @@ local PhysicsService = game:GetService("PhysicsService")
 local LP             = Players.LocalPlayer
 
 local V3ZERO    = Vector3.zero
-local ANG_CAP   = 15
-local HORIZ_CAP = 130
-local UP_CAP    = 100
-local DOWN_CAP  = 180
-local SCAN_RAD  = 30
+local ANG_CAP   = 12
+local HORIZ_CAP = 110
+local UP_CAP    = 90
+local DOWN_CAP  = 160
+local SCAN_RAD  = 35
+local EMERGENCY_VEL = 300
 
 local trackedPlayers   = {}
 local trackedCharConns = {}
@@ -23,6 +24,7 @@ pcall(function()
     PhysicsService:RegisterCollisionGroup("_af_them")
     PhysicsService:CollisionGroupSetCollidable("_af_me", "_af_them", false)
     PhysicsService:CollisionGroupSetCollidable("_af_them", "_af_them", false)
+    PhysicsService:CollisionGroupSetCollidable("_af_me", "_af_me", true)
     cgWork = true
 end)
 
@@ -127,9 +129,6 @@ Players.PlayerRemoving:Connect(function(plr)
     end
 end)
 
--- Note: The laggy "while wait(0.3)" loop was removed entirely. 
--- The property signal hooks above enforce the rules lag-free.
-
 -- ═══════════════════════════════════════════════
 -- CHARACTER PROTECTION
 -- ═══════════════════════════════════════════════
@@ -154,11 +153,12 @@ local function protect(char)
     overlapParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════
-    -- OUR COLLISION GROUP
+    -- OUR COLLISION GROUP + CANCOLLIDE FORTIFY
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
+        safeSet(p, "CanCollide", false)
     end
 
     for _, p in ipairs(char:GetDescendants()) do fortify(p) end
@@ -167,10 +167,17 @@ local function protect(char)
     end))
 
     local function hookOwnPart(p)
-        if not p:IsA("BasePart") or not cgWork then return end
-        reg(p:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
-            if p.CollisionGroup ~= "_af_me" then
-                safeSet(p, "CollisionGroup", "_af_me")
+        if not p:IsA("BasePart") then return end
+        if cgWork then
+            reg(p:GetPropertyChangedSignal("CollisionGroup"):Connect(function()
+                if p.CollisionGroup ~= "_af_me" then
+                    safeSet(p, "CollisionGroup", "_af_me")
+                end
+            end))
+        end
+        reg(p:GetPropertyChangedSignal("CanCollide"):Connect(function()
+            if p.CanCollide then
+                safeSet(p, "CanCollide", false)
             end
         end))
     end
@@ -179,16 +186,17 @@ local function protect(char)
     reg(char.DescendantAdded:Connect(function(p) task.defer(function() hookOwnPart(p) end) end))
 
     -- ═══════════════════════════════════
-    -- VELOCITY CLAMPING
-    -- Runs strictly on Stepped (before physics calculates) to save CPU while staying perfectly safe
+    -- VELOCITY CLAMPING (STEPPED — before physics)
     -- ═══════════════════════════════════
-    local function clampVelocity()
+    local function clampAllCharVelocity()
         if not char.Parent or not hrp.Parent then return end
 
+        -- Clamp HRP angular
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
-            hrp.AssemblyAngularVelocity = V3ZERO
+            safeSet(hrp, "AssemblyAngularVelocity", V3ZERO)
         end
 
+        -- Clamp HRP linear
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
@@ -209,15 +217,68 @@ local function protect(char)
         end
 
         if dirty then
-            hrp.AssemblyLinearVelocity = Vector3.new(vx, vy, vz)
+            safeSet(hrp, "AssemblyLinearVelocity", Vector3.new(vx, vy, vz))
+        end
+
+        -- Clamp ALL our parts' angular velocity (prevents internal fling)
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") and p ~= hrp then
+                if p.AssemblyAngularVelocity.Magnitude > ANG_CAP then
+                    safeSet(p, "AssemblyAngularVelocity", V3ZERO)
+                end
+            end
         end
     end
 
-    reg(RunService.Stepped:Connect(clampVelocity))
+    reg(RunService.Stepped:Connect(clampAllCharVelocity))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN
-    -- Optimized: Replaced O(N*P) player loop with an O(1) CollisionGroup check
+    -- VELOCITY CLAMPING (HEARTBEAT — after physics, catches fling forces)
+    -- ═══════════════════════════════════
+    reg(RunService.Heartbeat:Connect(function()
+        if not char.Parent or not hrp.Parent then return end
+
+        local vel = hrp.AssemblyLinearVelocity
+        local angVel = hrp.AssemblyAngularVelocity
+
+        -- Emergency: if something broke through, zero everything
+        if vel.Magnitude > EMERGENCY_VEL or angVel.Magnitude > ANG_CAP * 2 then
+            safeSet(hrp, "AssemblyLinearVelocity", V3ZERO)
+            safeSet(hrp, "AssemblyAngularVelocity", V3ZERO)
+            -- Also zero all other parts
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    safeSet(p, "AssemblyLinearVelocity", V3ZERO)
+                    safeSet(p, "AssemblyAngularVelocity", V3ZERO)
+                end
+            end
+            return
+        end
+
+        -- Normal clamp after physics
+        local vx, vy, vz = vel.X, vel.Y, vel.Z
+        local hMag = math.sqrt(vx * vx + vz * vz)
+        local dirty = false
+
+        if hMag > HORIZ_CAP then
+            local s = HORIZ_CAP / hMag
+            vx, vz = vx * s, vz * s
+            dirty = true
+        end
+        if vy > UP_CAP then vy = UP_CAP dirty = true
+        elseif vy < -DOWN_CAP then vy = -DOWN_CAP dirty = true end
+
+        if dirty then
+            safeSet(hrp, "AssemblyLinearVelocity", Vector3.new(vx, vy, vz))
+        end
+
+        if angVel.Magnitude > ANG_CAP then
+            safeSet(hrp, "AssemblyAngularVelocity", V3ZERO)
+        end
+    end))
+
+    -- ═══════════════════════════════════
+    -- NEARBY PART SCAN (more aggressive)
     -- ═══════════════════════════════════
     reg(RunService.Stepped:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -230,16 +291,27 @@ local function protect(char)
             if not part.Anchored and part.Parent then
                 if not part:IsDescendantOf(char) then
                     pcall(function()
-                        -- Instantly identify if it's a player part without looping through players!
                         local isPlayer = (cgWork and part.CollisionGroup == "_af_them")
-                        
+
                         if isPlayer then
-                            if part.AssemblyAngularVelocity.Magnitude > 10 or part.AssemblyLinearVelocity.Magnitude > 200 then
+                            -- Much lower threshold for spinning players
+                            local angMag = part.AssemblyAngularVelocity.Magnitude
+                            local linMag = part.AssemblyLinearVelocity.Magnitude
+                            if angMag > 3 or linMag > 80 then
                                 killPart(part)
                                 killPartVelocity(part)
+                                -- Also kill the entire assembly root
+                                local root = part.AssemblyRootPart
+                                if root and root ~= part then
+                                    killPartVelocity(root)
+                                end
+                            end
+                            -- Backup: force CanCollide off regardless
+                            if part.CanCollide then
+                                safeSet(part, "CanCollide", false)
                             end
                         else
-                            if part.AssemblyAngularVelocity.Magnitude > 5 or part.AssemblyLinearVelocity.Magnitude > 20 then
+                            if part.AssemblyAngularVelocity.Magnitude > 3 or part.AssemblyLinearVelocity.Magnitude > 15 then
                                 killPart(part)
                                 killPartVelocity(part)
                             end
@@ -302,18 +374,17 @@ local function protect(char)
         local seat = hum.SeatPart
         if not seat then return end
         if seat.Anchored or seat:IsDescendantOf(char) then return end
-        
+
         pcall(function()
             local isPlayer = (cgWork and seat.CollisionGroup == "_af_them")
-            if isPlayer or seat.AssemblyAngularVelocity.Magnitude > 8 or seat.AssemblyLinearVelocity.Magnitude > 40 then
+            if isPlayer or seat.AssemblyAngularVelocity.Magnitude > 5 or seat.AssemblyLinearVelocity.Magnitude > 30 then
                 hum.Sit = false
             end
         end)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD
-    -- Optimized: Removed redundant task.defer clamp since Stepped covers it seamlessly
+    -- TOUCH GUARD (more aggressive)
     -- ═══════════════════════════════════
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
@@ -321,9 +392,22 @@ local function protect(char)
             if not hit or not hit.Parent or hit.Anchored or hit:IsDescendantOf(char) then return end
 
             pcall(function()
-                if hit.AssemblyAngularVelocity.Magnitude > 5 or hit.AssemblyLinearVelocity.Magnitude > 20 then
+                local angMag = hit.AssemblyAngularVelocity.Magnitude
+                local linMag = hit.AssemblyLinearVelocity.Magnitude
+
+                if angMag > 3 or linMag > 15 then
                     killPart(hit)
                     killPartVelocity(hit)
+                    -- Kill the whole assembly
+                    local root = hit.AssemblyRootPart
+                    if root and root ~= hit then
+                        killPartVelocity(root)
+                    end
+                end
+
+                -- Backup CanCollide enforcement
+                if hit.CanCollide then
+                    safeSet(hit, "CanCollide", false)
                 end
             end)
         end))
@@ -340,6 +424,33 @@ local function protect(char)
             task.defer(function()
                 if hum.Parent then
                     hum.PlatformStand = false
+                end
+            end)
+        end
+    end))
+
+    -- ═══════════════════════════════════
+    -- SIT GUARD (prevent forced sit)
+    -- ═══════════════════════════════════
+    reg(hum:GetPropertyChangedSignal("Sit"):Connect(function()
+        if hum.Sit and not hum.SeatPart then
+            task.defer(function()
+                if hum.Parent then
+                    hum.Sit = false
+                end
+            end)
+        end
+    end))
+
+    -- ═══════════════════════════════════
+    -- STATE GUARD (prevent ragdoll/falling states that enable flinging)
+    -- ═══════════════════════════════════
+    reg(hum.StateChanged:Connect(function(_, newState)
+        if newState == Enum.HumanoidStateType.FallingDown
+        or newState == Enum.HumanoidStateType.Ragdoll then
+            task.defer(function()
+                if hum.Parent then
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
                 end
             end)
         end
