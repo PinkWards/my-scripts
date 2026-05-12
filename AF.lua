@@ -153,12 +153,14 @@ local function protect(char)
     overlapParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════
-    -- OUR COLLISION GROUP + CANCOLLIDE FORTIFY
+    -- OUR COLLISION GROUP ONLY (no CanCollide = false!)
+    -- The _af_me group blocks _af_them (other players)
+    -- but still collides with default/anchored parts normally
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
-        safeSet(p, "CanCollide", false)
+        -- DO NOT set CanCollide = false here — that's what caused phasing through walls
     end
 
     for _, p in ipairs(char:GetDescendants()) do fortify(p) end
@@ -175,11 +177,7 @@ local function protect(char)
                 end
             end))
         end
-        reg(p:GetPropertyChangedSignal("CanCollide"):Connect(function()
-            if p.CanCollide then
-                safeSet(p, "CanCollide", false)
-            end
-        end))
+        -- Removed CanCollide listener — we WANT to collide with anchored/default parts
     end
 
     for _, p in ipairs(char:GetDescendants()) do hookOwnPart(p) end
@@ -191,12 +189,10 @@ local function protect(char)
     local function clampAllCharVelocity()
         if not char.Parent or not hrp.Parent then return end
 
-        -- Clamp HRP angular
         if hrp.AssemblyAngularVelocity.Magnitude > ANG_CAP then
             safeSet(hrp, "AssemblyAngularVelocity", V3ZERO)
         end
 
-        -- Clamp HRP linear
         local vel = hrp.AssemblyLinearVelocity
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
@@ -220,7 +216,6 @@ local function protect(char)
             safeSet(hrp, "AssemblyLinearVelocity", Vector3.new(vx, vy, vz))
         end
 
-        -- Clamp ALL our parts' angular velocity (prevents internal fling)
         for _, p in ipairs(char:GetDescendants()) do
             if p:IsA("BasePart") and p ~= hrp then
                 if p.AssemblyAngularVelocity.Magnitude > ANG_CAP then
@@ -241,11 +236,9 @@ local function protect(char)
         local vel = hrp.AssemblyLinearVelocity
         local angVel = hrp.AssemblyAngularVelocity
 
-        -- Emergency: if something broke through, zero everything
         if vel.Magnitude > EMERGENCY_VEL or angVel.Magnitude > ANG_CAP * 2 then
             safeSet(hrp, "AssemblyLinearVelocity", V3ZERO)
             safeSet(hrp, "AssemblyAngularVelocity", V3ZERO)
-            -- Also zero all other parts
             for _, p in ipairs(char:GetDescendants()) do
                 if p:IsA("BasePart") then
                     safeSet(p, "AssemblyLinearVelocity", V3ZERO)
@@ -255,7 +248,6 @@ local function protect(char)
             return
         end
 
-        -- Normal clamp after physics
         local vx, vy, vz = vel.X, vel.Y, vel.Z
         local hMag = math.sqrt(vx * vx + vz * vz)
         local dirty = false
@@ -278,7 +270,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- NEARBY PART SCAN (more aggressive)
+    -- NEARBY PART SCAN (skip anchored parts, kill spinning unanchored)
     -- ═══════════════════════════════════
     reg(RunService.Stepped:Connect(function()
         if not char.Parent or not hrp.Parent then return end
@@ -288,32 +280,35 @@ local function protect(char)
 
         for i = 1, #nearby do
             local part = nearby[i]
+            -- SKIP anchored parts — we want to collide with walls/floors normally
             if not part.Anchored and part.Parent then
                 if not part:IsDescendantOf(char) then
                     pcall(function()
                         local isPlayer = (cgWork and part.CollisionGroup == "_af_them")
 
                         if isPlayer then
-                            -- Much lower threshold for spinning players
                             local angMag = part.AssemblyAngularVelocity.Magnitude
                             local linMag = part.AssemblyLinearVelocity.Magnitude
                             if angMag > 3 or linMag > 80 then
                                 killPart(part)
                                 killPartVelocity(part)
-                                -- Also kill the entire assembly root
                                 local root = part.AssemblyRootPart
                                 if root and root ~= part then
                                     killPartVelocity(root)
                                 end
                             end
-                            -- Backup: force CanCollide off regardless
                             if part.CanCollide then
                                 safeSet(part, "CanCollide", false)
                             end
                         else
+                            -- Unanchored non-player parts (super rings, tp parts, etc.)
                             if part.AssemblyAngularVelocity.Magnitude > 3 or part.AssemblyLinearVelocity.Magnitude > 15 then
                                 killPart(part)
                                 killPartVelocity(part)
+                                local root = part.AssemblyRootPart
+                                if root and root ~= part then
+                                    killPartVelocity(root)
+                                end
                             end
                         end
                     end)
@@ -384,12 +379,14 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- TOUCH GUARD (more aggressive)
+    -- TOUCH GUARD (skip anchored parts)
     -- ═══════════════════════════════════
     local function hookTouch(bp)
         if not bp:IsA("BasePart") then return end
         reg(bp.Touched:Connect(function(hit)
-            if not hit or not hit.Parent or hit.Anchored or hit:IsDescendantOf(char) then return end
+            if not hit or not hit.Parent or hit:IsDescendantOf(char) then return end
+            -- Skip anchored — we want normal wall/floor collision
+            if hit.Anchored then return end
 
             pcall(function()
                 local angMag = hit.AssemblyAngularVelocity.Magnitude
@@ -398,15 +395,14 @@ local function protect(char)
                 if angMag > 3 or linMag > 15 then
                     killPart(hit)
                     killPartVelocity(hit)
-                    -- Kill the whole assembly
                     local root = hit.AssemblyRootPart
                     if root and root ~= hit then
                         killPartVelocity(root)
                     end
                 end
 
-                -- Backup CanCollide enforcement
-                if hit.CanCollide then
+                -- For player parts only, enforce CanCollide off
+                if cgWork and hit.CollisionGroup == "_af_them" and hit.CanCollide then
                     safeSet(hit, "CanCollide", false)
                 end
             end)
@@ -430,7 +426,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- SIT GUARD (prevent forced sit)
+    -- SIT GUARD
     -- ═══════════════════════════════════
     reg(hum:GetPropertyChangedSignal("Sit"):Connect(function()
         if hum.Sit and not hum.SeatPart then
@@ -443,7 +439,7 @@ local function protect(char)
     end))
 
     -- ═══════════════════════════════════
-    -- STATE GUARD (prevent ragdoll/falling states that enable flinging)
+    -- STATE GUARD
     -- ═══════════════════════════════════
     reg(hum.StateChanged:Connect(function(_, newState)
         if newState == Enum.HumanoidStateType.FallingDown
