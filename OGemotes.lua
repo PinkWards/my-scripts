@@ -32,6 +32,8 @@ local State = {
     favLookupEmote = {},
     favLookupAnim = {},
     applyingAnim = false,
+    cacheDirty = true,
+    cachedCombined = {},
     config = {
         NotifyEnabled = true,
         AutoReapplyEnabled = false,
@@ -41,7 +43,6 @@ local State = {
 
 getgenv().lastAnim = getgenv().lastAnim or nil
 local ConfigPath = "PinkWards/Config.json"
-local lastEmotePlay = 0
 
 local function SaveConfig()
     if not isfolder then return end
@@ -122,9 +123,6 @@ local function getBundled(id)
 end
 
 local function playEmote(name, id)
-    if tick() - lastEmotePlay < 0.5 then return end
-    lastEmotePlay = tick()
-    
     local char = player.Character
     if not char then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
@@ -132,13 +130,10 @@ local function playEmote(name, id)
     if not humanoid or not description then return end
 
     if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
-        local succ, err = pcall(function()
-            humanoid:PlayEmoteAndGetAnimTrackById(id)
-        end)
-        if not succ then
+        task.spawn(function()
             pcall(function() description:AddEmote(name, id) end)
             pcall(function() humanoid:PlayEmoteAndGetAnimTrackById(id) end)
-        end
+        end)
     else
         notify("R6?", "You gotta be R15 dude", 3)
     end
@@ -419,6 +414,8 @@ function toggleFav(id, name, bundled)
     end
     saveFile(State.mode == "animation" and State.favAnimFileName or State.favFileName, list)
     rebuildFavLookup()
+    State.cacheDirty = true
+    refreshGrid()
 end
 
 local function searchItems(term)
@@ -433,6 +430,7 @@ local function searchItems(term)
         if State.mode == "animation" then State.filteredAnims = result else State.filteredEmotes = result end
     end
     State.currentPage = 1
+    State.cacheDirty = true
 end
 
 local function fetchEmotes()
@@ -442,7 +440,7 @@ local function fetchEmotes()
         local rawList = result.data or result; local data = {}
         for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id > 0 then data[#data + 1] = {id = id, name = item.name or ("Emote_" .. id)} end end
         State.emotesData = data; State.filteredEmotes = data
-    end; State.isLoadingEmotes = false
+    end; State.isLoadingEmotes = false; State.cacheDirty = true
 end
 
 local function fetchAnims()
@@ -452,7 +450,7 @@ local function fetchAnims()
         local rawList = result.data or result; local data = {}
         for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id > 0 then data[#data + 1] = {id = id, name = item.name or ("Anim_" .. id), bundledItems = item.bundledItems} end end
         State.animsData = data; State.filteredAnims = data
-    end; State.isLoadingAnims = false
+    end; State.isLoadingAnims = false; State.cacheDirty = true
 end
 
 -- ============ GUI SETUP ============ --
@@ -625,43 +623,102 @@ local function createsort(order, text, sort)
     CreatedSort.BorderSizePixel = 0
     CreatedSort.ZIndex = 101
     Corner:Clone().Parent = CreatedSort; CreatedSort.Parent = SortFrame
-    CreatedSort.MouseButton1Click:Connect(function() SortFrame.Visible = false; CurrentSort = sort; State.currentPage = 1; refreshGrid() end)
+    CreatedSort.MouseButton1Click:Connect(function() SortFrame.Visible = false; CurrentSort = sort; State.currentPage = 1; State.cacheDirty = true; refreshGrid() end)
 end
 
 createsort(1, "Favorites First", "favfirst"); createsort(2, "A - Z", "az"); createsort(3, "Z - A", "za")
 
--- ============ GRID LOGIC ============ --
-local function getTotalPages()
-    local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
-    local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-    local totalItems = #list + #favs
-    return math.max(1, math.ceil(totalItems / State.itemsPerPage))
+-- ============ BUTTON POOL & GRID LOGIC ============ --
+local buttonPool = {}
+local btnDataMap = {}
+
+local function ensurePoolSize(count)
+    while #buttonPool < count do
+        local i = #buttonPool + 1
+        local btn = Instance.new("ImageButton")
+        btn.Name = "PoolBtn_" .. i
+        btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        btn.BackgroundTransparency = 0.5
+        btn.BorderSizePixel = 0
+        btn.Visible = false
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+        local Favorite = Instance.new("ImageButton")
+        Favorite.Name = "favorite"
+        Favorite.Image = FavoriteOff
+        Favorite.AnchorPoint = Vector2.new(0.5, 0.5)
+        Favorite.Size = UDim2.new(0.32, 0, 0.32, 0)
+        Favorite.Position = UDim2.new(0.88, 0, 0.88, 0)
+        Favorite.BorderSizePixel = 0
+        Favorite.BackgroundTransparency = 1
+        Favorite.Parent = btn
+
+        btn.MouseButton1Click:Connect(function()
+            local item = btnDataMap[btn]
+            if item then
+                if State.mode == "animation" then applyAnim(item.data) else task.spawn(playEmote, item.data.name, item.data.id) end
+                ScreenGui.Enabled = false
+            end
+        end)
+
+        Favorite.MouseButton1Click:Connect(function()
+            local item = btnDataMap[btn]
+            if item then
+                toggleFav(item.data.id, item.data.name, item.data.bundledItems)
+            end
+        end)
+
+        btn.MouseEnter:Connect(function()
+            local item = btnDataMap[btn]
+            if item then EmoteName.Text = item.data.name end
+        end)
+
+        btn.Parent = Frame
+        buttonPool[i] = btn
+    end
+end
+
+ensurePoolSize(60) -- Initial pool
+
+local function getItemsPerPage()
+    local absX = Frame.AbsoluteSize.X
+    local absY = Frame.AbsoluteSize.Y
+    if absX > 0 and absY > 0 then
+        local cols = math.floor((absX - 8) / 80)
+        local rows = math.floor(absY / 80)
+        return math.max(1, math.max(1, cols) * math.max(1, rows))
+    end
+    return 60
 end
 
 function refreshGrid()
-    for _, child in pairs(Frame:GetChildren()) do
-        if child:IsA("ImageButton") or child:IsA("TextButton") or (child:IsA("Frame") and child.Name == "filler") then child:Destroy() end
+    State.itemsPerPage = getItemsPerPage()
+    ensurePoolSize(State.itemsPerPage)
+
+    if State.cacheDirty then
+        local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
+        local favs = State.mode == "animation" and State.favAnims or State.favEmotes
+        local favLookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
+        local normalList = {}
+        for i = 1, #list do if not favLookup[tostring(list[i].id)] then normalList[#normalList + 1] = list[i] end end
+
+        if CurrentSort == "az" then
+            table.sort(normalList, function(a, b) return a.name:lower() < b.name:lower() end)
+            table.sort(favs, function(a, b) return a.name:lower() < b.name:lower() end)
+        elseif CurrentSort == "za" then
+            table.sort(normalList, function(a, b) return a.name:lower() > b.name:lower() end)
+            table.sort(favs, function(a, b) return a.name:lower() > b.name:lower() end)
+        end
+
+        State.cachedCombined = {}
+        for _, v in ipairs(favs) do State.cachedCombined[#State.cachedCombined+1] = {data=v, isFav=true} end
+        for _, v in ipairs(normalList) do State.cachedCombined[#State.cachedCombined+1] = {data=v, isFav=false} end
+        State.cacheDirty = false
     end
 
-    local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
-    local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-    local favLookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
-    local normalList = {}
-    for i = 1, #list do if not favLookup[tostring(list[i].id)] then normalList[#normalList + 1] = list[i] end end
-
-    if CurrentSort == "az" then
-        table.sort(normalList, function(a, b) return a.name:lower() < b.name:lower() end)
-        table.sort(favs, function(a, b) return a.name:lower() < b.name:lower() end)
-    elseif CurrentSort == "za" then
-        table.sort(normalList, function(a, b) return a.name:lower() > b.name:lower() end)
-        table.sort(favs, function(a, b) return a.name:lower() > b.name:lower() end)
-    end
-
-    local combined = {}
-    for _, v in ipairs(favs) do combined[#combined+1] = {data=v, isFav=true} end
-    for _, v in ipairs(normalList) do combined[#combined+1] = {data=v, isFav=false} end
-
-    local totalPages = getTotalPages()
+    local combined = State.cachedCombined
+    local totalPages = math.max(1, math.ceil(#combined / State.itemsPerPage))
+    
     if State.currentPage > totalPages then State.currentPage = totalPages end
     if State.currentPage < 1 then State.currentPage = 1 end
 
@@ -672,60 +729,43 @@ function refreshGrid()
     local startIdx = (State.currentPage - 1) * State.itemsPerPage + 1
     local endIdx = math.min(startIdx + State.itemsPerPage - 1, #combined)
 
-    for i = startIdx, endIdx do
-        local item = combined[i]
-        if item then
-            local btn = Instance.new("ImageButton")
-            btn.Name = tostring(item.data.id); btn:SetAttribute("name", item.data.name)
-            btn.BackgroundColor3 = Color3.fromRGB(0, 0, 0); btn.BackgroundTransparency = 0.5; btn.BorderSizePixel = 0
-            btn.LayoutOrder = i; Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-
-            if State.mode == "animation" then btn.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.data.id .. "&w=420&h=420"
-            else btn.Image = "rbxthumb://type=Asset&id=" .. item.data.id .. "&w=150&h=150" end
-
-            local Favorite = Instance.new("ImageButton"); Favorite.Name = "favorite"; Favorite.Image = item.isFav and FavoriteOn or FavoriteOff
-            Favorite.AnchorPoint = Vector2.new(0.5, 0.5); Favorite.Size = UDim2.new(0.32, 0, 0.32, 0); Favorite.Position = UDim2.new(0.88, 0, 0.88, 0)
-            Favorite.BorderSizePixel = 0; Favorite.BackgroundTransparency = 1; Favorite.Parent = btn
-
-            Favorite.MouseButton1Click:Connect(function()
-                toggleFav(item.data.id, item.data.name, item.data.bundledItems); refreshGrid()
-            end)
-
-            btn.MouseButton1Click:Connect(function()
-                if State.mode == "animation" then applyAnim(item.data) else task.spawn(playEmote, item.data.name, item.data.id) end
-                ScreenGui.Enabled = false
-            end)
-
-            btn.MouseEnter:Connect(function() EmoteName.Text = item.data.name end)
-            btn.Parent = Frame
-        end
-    end
-
-    -- Only add fillers to complete the last row, no extra blank rows
-    local itemsOnPage = math.max(0, endIdx - startIdx + 1)
-    if itemsOnPage > 0 then
-        local frameAbsWidth = Frame.AbsoluteSize.X - 5 - 8 -- subtract padding
-        local cols = math.floor((frameAbsWidth + 5) / (75 + 5))
-        if cols > 0 then
-            local remainder = itemsOnPage % cols
-            local fillerCount = (remainder > 0) and (cols - remainder) or 0
-            for i = 1, fillerCount do
-                local filler = Instance.new("Frame"); filler.Name = "filler"; filler.BackgroundTransparency = 1; filler.LayoutOrder = 2147483647 - fillerCount + i
-                filler.Parent = Frame
+    for i = 1, #buttonPool do
+        local btn = buttonPool[i]
+        local itemIdx = startIdx + i - 1
+        if itemIdx <= endIdx and combined[itemIdx] then
+            local item = combined[itemIdx]
+            btnDataMap[btn] = item
+            btn.Visible = true
+            if State.mode == "animation" then
+                btn.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.data.id .. "&w=420&h=420"
+            else
+                btn.Image = "rbxthumb://type=Asset&id=" .. item.data.id .. "&w=150&h=150"
             end
+            btn:FindFirstChild("favorite").Image = item.isFav and FavoriteOn or FavoriteOff
+        else
+            btn.Visible = false
+            btnDataMap[btn] = nil
         end
     end
 end
 
+Frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+    local newIPP = getItemsPerPage()
+    if newIPP ~= State.itemsPerPage then
+        State.itemsPerPage = newIPP
+        if ScreenGui.Enabled then refreshGrid() end
+    end
+end)
+
 PageLeft.MouseButton1Click:Connect(function()
-    local totalPages = getTotalPages()
+    local totalPages = math.max(1, math.ceil(#State.cachedCombined / State.itemsPerPage))
     if totalPages <= 1 then return end
     if State.currentPage > 1 then State.currentPage = State.currentPage - 1 else State.currentPage = totalPages end
     refreshGrid()
 end)
 
 PageRight.MouseButton1Click:Connect(function()
-    local totalPages = getTotalPages()
+    local totalPages = math.max(1, math.ceil(#State.cachedCombined / State.itemsPerPage))
     if totalPages <= 1 then return end
     if State.currentPage < totalPages then State.currentPage = State.currentPage + 1 else State.currentPage = 1 end
     refreshGrid()
@@ -741,7 +781,7 @@ PageLabel.FocusLost:Connect(function(enterPressed)
     local text = PageLabel.Text:gsub("%s", "")
     local pageNum = tonumber(text)
     if pageNum then
-        local totalPages = getTotalPages()
+        local totalPages = math.max(1, math.ceil(#State.cachedCombined / State.itemsPerPage))
         State.currentPage = math.clamp(math.floor(pageNum), 1, totalPages)
     end
     refreshGrid()
@@ -869,7 +909,7 @@ ModeButton.MouseButton1Click:Connect(function()
     State.mode = State.mode == "emote" and "animation" or "emote"
     ModeButton.Text = State.mode == "animation" and "ANI" or "EMO"
     if State.mode == "animation" and #State.animsData == 0 then task.spawn(fetchAnims) end
-    SearchBar.Text = ""; searchItems(""); refreshGrid()
+    SearchBar.Text = ""; searchItems(""); State.cacheDirty = true; refreshGrid()
 end)
 
 AutoButton.MouseButton1Click:Connect(function()
