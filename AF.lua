@@ -153,14 +153,11 @@ local function protect(char)
     overlapParams.FilterDescendantsInstances = {char}
 
     -- ═══════════════════════════════════
-    -- OUR COLLISION GROUP ONLY (no CanCollide = false!)
-    -- The _af_me group blocks _af_them (other players)
-    -- but still collides with default/anchored parts normally
+    -- OUR COLLISION GROUP ONLY
     -- ═══════════════════════════════════
     local function fortify(p)
         if not p:IsA("BasePart") then return end
         if cgWork then safeSet(p, "CollisionGroup", "_af_me") end
-        -- DO NOT set CanCollide = false here — that's what caused phasing through walls
     end
 
     for _, p in ipairs(char:GetDescendants()) do fortify(p) end
@@ -177,7 +174,6 @@ local function protect(char)
                 end
             end))
         end
-        -- Removed CanCollide listener — we WANT to collide with anchored/default parts
     end
 
     for _, p in ipairs(char:GetDescendants()) do hookOwnPart(p) end
@@ -280,7 +276,6 @@ local function protect(char)
 
         for i = 1, #nearby do
             local part = nearby[i]
-            -- SKIP anchored parts — we want to collide with walls/floors normally
             if not part.Anchored and part.Parent then
                 if not part:IsDescendantOf(char) then
                     pcall(function()
@@ -301,7 +296,6 @@ local function protect(char)
                                 safeSet(part, "CanCollide", false)
                             end
                         else
-                            -- Unanchored non-player parts (super rings, tp parts, etc.)
                             if part.AssemblyAngularVelocity.Magnitude > 3 or part.AssemblyLinearVelocity.Magnitude > 15 then
                                 killPart(part)
                                 killPartVelocity(part)
@@ -385,7 +379,6 @@ local function protect(char)
         if not bp:IsA("BasePart") then return end
         reg(bp.Touched:Connect(function(hit)
             if not hit or not hit.Parent or hit:IsDescendantOf(char) then return end
-            -- Skip anchored — we want normal wall/floor collision
             if hit.Anchored then return end
 
             pcall(function()
@@ -401,7 +394,6 @@ local function protect(char)
                     end
                 end
 
-                -- For player parts only, enforce CanCollide off
                 if cgWork and hit.CollisionGroup == "_af_them" and hit.CanCollide then
                     safeSet(hit, "CanCollide", false)
                 end
@@ -411,46 +403,6 @@ local function protect(char)
 
     for _, p in ipairs(char:GetDescendants()) do hookTouch(p) end
     reg(char.DescendantAdded:Connect(function(p) hookTouch(p) end))
-
-    -- ═══════════════════════════════════
-    -- PLATFORMSTAND GUARD
-    -- ═══════════════════════════════════
-    reg(hum:GetPropertyChangedSignal("PlatformStand"):Connect(function()
-        if hum.PlatformStand then
-            task.defer(function()
-                if hum.Parent then
-                    hum.PlatformStand = false
-                end
-            end)
-        end
-    end))
-
-    -- ═══════════════════════════════════
-    -- SIT GUARD
-    -- ═══════════════════════════════════
-    reg(hum:GetPropertyChangedSignal("Sit"):Connect(function()
-        if hum.Sit and not hum.SeatPart then
-            task.defer(function()
-                if hum.Parent then
-                    hum.Sit = false
-                end
-            end)
-        end
-    end))
-
-    -- ═══════════════════════════════════
-    -- STATE GUARD
-    -- ═══════════════════════════════════
-    reg(hum.StateChanged:Connect(function(_, newState)
-        if newState == Enum.HumanoidStateType.FallingDown
-        or newState == Enum.HumanoidStateType.Ragdoll then
-            task.defer(function()
-                if hum.Parent then
-                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-                end
-            end)
-        end
-    end))
 end
 
 protect(LP.Character)
