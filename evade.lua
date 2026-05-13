@@ -2,13 +2,6 @@ if not game:IsLoaded() then game.Loaded:Wait() end
 
 local SCRIPT_VERSION = 19
 
-pcall(function()
-    if queue_on_teleport then
-        local scriptToQueue = game:HttpGet("https://raw.githubusercontent.com/PinkWards/my-scripts/refs/heads/main/evade.lua")
-        queue_on_teleport(scriptToQueue)
-    end
-end)
-
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
 
