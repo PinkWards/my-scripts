@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 18
+local SCRIPT_VERSION = 19
 
 pcall(function()
     if queue_on_teleport then
@@ -74,12 +74,6 @@ local Config = {
 local BounceConfig = {
     Power = 90,
     MaxSpeed = 1000,
-    PredictDistance = 2.0,  -- tuned for adaptive ground detection
-}
-
-local AirStrafeConfig = {
-    Acceleration = 0.15,    -- keeps air control without pushing forward
-    Enabled = true,         
 }
 
 local ColaSettings = {
@@ -90,29 +84,16 @@ local ColaSettings = {
     OldNamecall = nil,
 }
 
-local ColaSpeedPresets = {
-    {name = "Normal",    speed = 1.4},
-    {name = "Fast",      speed = 1.6},
-    {name = "VeryFast",  speed = 1.8},
-    {name = "Ultra",     speed = 2.0},
-    {name = "Insane",    speed = 2.5},
-    {name = "Max",       speed = 3.0},
-}
-
 local Humanoid, RootPart = nil, nil
-local GUI, VIPPanel, TimerGUI = nil, nil, nil
+local GUI, TimerGUI = nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
-
--- WASD key tracking for air strafe
 local keysDown = { W = false, A = false, S = false, D = false }
 
-local LastAntiCheck, LastCarry, LastBounce = 0, 0, 0
-local LastVoteMap, LastVoteMode = 0, 0
+local LastAntiCheck, LastCarry = 0, 0
 local SelfResCD = 0
 local LastRayFilterUpdate = 0
-local LastEdgeCheck = 0
 
 local CurrentTarget, FarmStart = nil, 0
 local NPCNames = {}
@@ -127,12 +108,6 @@ local Connections = {}
 local EdgeTouchConnections = {}
 local ExchangeConnections = {}
 local CachedGame = nil
-local StateChangedConn = nil
-local BhopHeartbeatConn = nil
-local BounceHeartbeatConn = nil
-
-local SliderTrack, SliderFill, SliderThumb, SliderLabel
-local SliderMin, SliderMax = 1.4, 3.0
 
 local LastGCTime = 0
 local GC_INTERVAL = 120
@@ -140,21 +115,7 @@ local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
 
 local RecordedSpeed = 16
-local IsBouncing = false
-local WasInAir = false
-
-local WasGrounded = false
-local LastJumpTime = 0
-local JUMP_COOLDOWN = 0.1
-
--- Bounce state
-local BounceInAir = false
-local BounceWaitingForAir = false
-local BounceJustPressed = false
-local BounceGroundStuckFrames = 0
-local BOUNCE_STUCK_THRESHOLD = 6
-local BounceFramesSinceBounce = 0
-local BOUNCE_SPEED_LOCK_FRAMES = 15
+local LastBounceTime = 0
 
 local BounceRayParams = RaycastParams.new()
 BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -167,38 +128,23 @@ EdgeRayParams.IgnoreWater = true
 EdgeRayParams.RespectCanCollide = true
 
 local VEC3_ZERO = Vector3.zero
-local VEC3_DOWN = Vector3.new(0, -1, 0)
-local VEC3_Y_AXIS = Vector3.yAxis
 local VEC2_ZERO = Vector2.new(0, 0)
 
 local Theme = {
     Background = Color3.fromRGB(15, 15, 20),
     Surface = Color3.fromRGB(22, 22, 30),
-    SurfaceLight = Color3.fromRGB(30, 30, 40),
-    Card = Color3.fromRGB(25, 25, 35),
     Accent = Color3.fromRGB(88, 101, 242),
-    AccentHover = Color3.fromRGB(108, 121, 255),
-    AccentGlow = Color3.fromRGB(88, 101, 242),
     Success = Color3.fromRGB(87, 242, 135),
-    Warning = Color3.fromRGB(254, 231, 92),
     Danger = Color3.fromRGB(237, 66, 69),
     TextPrimary = Color3.fromRGB(235, 235, 245),
     TextSecondary = Color3.fromRGB(148, 155, 175),
     TextMuted = Color3.fromRGB(88, 95, 115),
     Border = Color3.fromRGB(40, 40, 55),
-    BorderAccent = Color3.fromRGB(88, 101, 242),
-    ButtonOff = Color3.fromRGB(35, 35, 48),
-    ButtonOn = Color3.fromRGB(88, 101, 242),
-    ButtonHover = Color3.fromRGB(42, 42, 58),
-    SliderBg = Color3.fromRGB(35, 35, 48),
-    SliderFill = Color3.fromRGB(88, 101, 242),
-    Shadow = Color3.fromRGB(0, 0, 0),
 }
 
-local FONT_TITLE = Enum.Font.GothamBlack
-local FONT_HEADING = Enum.Font.GothamBold
-local FONT_BODY = Enum.Font.GothamMedium
-local FONT_SMALL = Enum.Font.Gotham
+-- ═══════════════════════════════════════════════════════════════
+-- CORE UTILS
+-- ═══════════════════════════════════════════════════════════════
 
 local function SafeGetPath(...)
     local args = {...}
@@ -279,37 +225,23 @@ end)
 
 local function PeriodicCleanup()
     local now = tick()
-    
     if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
         LastCacheCleanup = now
-        
         for i = 1, #CachedBots do CachedBots[i] = nil end
-        LastBotCheck = 0
-        
         local validCount = 0
         for i = 1, #CachedItems do
             local item = CachedItems[i]
             if item and item.object and item.object.Parent then
                 validCount = validCount + 1
-                if validCount ~= i then
-                    CachedItems[validCount] = item
-                end
+                if validCount ~= i then CachedItems[validCount] = item end
             end
         end
-        for i = validCount + 1, #CachedItems do
-            CachedItems[i] = nil
-        end
-        
-        if CachedGame and not CachedGame.Parent then
-            CachedGame = Workspace:FindFirstChild("Game")
-        end
+        for i = validCount + 1, #CachedItems do CachedItems[i] = nil end
+        if CachedGame and not CachedGame.Parent then CachedGame = Workspace:FindFirstChild("Game") end
     end
-    
     if now - LastGCTime >= GC_INTERVAL then
         LastGCTime = now
-        pcall(function()
-            collectgarbage("step", 50)
-        end)
+        pcall(function() collectgarbage("step", 50) end)
     end
 end
 
@@ -321,9 +253,6 @@ local function CleanupAll()
     for _, conn in pairs(ExchangeConnections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(ExchangeConnections)
     getgenv().var156_upvw_arg1 = nil
-    if StateChangedConn then SafeCall(function() StateChangedConn:Disconnect() end) StateChangedConn = nil end
-    if BhopHeartbeatConn then SafeCall(function() BhopHeartbeatConn:Disconnect() end) BhopHeartbeatConn = nil end
-    if BounceHeartbeatConn then SafeCall(function() BounceHeartbeatConn:Disconnect() end) BounceHeartbeatConn = nil end
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
     table.clear(CachedBots)
@@ -343,7 +272,7 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BHOP & BOUNCE & AIR STRAFE (Macro / Natural / Responsive)
+-- MOVEMENT (MACRO BHOP + TOUCH BOUNCE + SPEED STRAFE)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -363,7 +292,6 @@ local function DoBounce()
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
-    -- Preserve and lock speed
     if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
     local useSpeed = math.max(RecordedSpeed, hSpeed)
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
@@ -371,6 +299,7 @@ local function DoBounce()
     local dir = GetBounceDirection(hVel, hSpeed)
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    LastBounceTime = tick()
 end
 
 local function OnStateChanged(old, new)
@@ -378,7 +307,6 @@ local function OnStateChanged(old, new)
         if holdLeftShift then
             DoBounce()
         elseif holdSpace then
-            -- Pure macro bhop, instant jump on land
             Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
     end
@@ -387,13 +315,14 @@ end
 local function OnTouchPart(hit)
     if not holdLeftShift or not hit then return end
     local character = LocalPlayer.Character
-    if not character then return end
-    if hit:IsDescendantOf(character) then return end
+    if not character or hit:IsDescendantOf(character) then return end
     
     local vel = RootPart.AssemblyLinearVelocity
-    -- Only bounce off things if we are falling/flat to prevent flying upwards infinitely
     if vel.Y <= 0.1 then 
-        DoBounce()
+        local now = tick()
+        if now - LastBounceTime > 0.05 then -- Tiny physics debounce to prevent explosions
+            DoBounce()
+        end
     end
 end
 
@@ -407,8 +336,7 @@ local function AirStrafe()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     
-    local cf = cam.CFrame
-    local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+    local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
     if right.Magnitude < 0.01 then return end
     right = right.Unit
     
@@ -422,7 +350,6 @@ local function AirStrafe()
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     
-    -- Gain speed in the air while strafing
     local gain = 1.5 
     local newHVel = hVel + (wishDir * gain)
     
@@ -634,91 +561,35 @@ local function ToggleUpsideDownFix(enabled)
 end
 
 local function ForceEnableExchange()
-    if getgenv().var156_upvw_arg1 then
-        game:GetService("Players").LocalPlayer.PlayerGui.Global.Messages.Use:Fire("You can only use this at a time jae", "Error")
-        return
-    end
+    if getgenv().var156_upvw_arg1 then return end
     getgenv().var156_upvw_arg1 = true
-    
     State.ExchangeUnlocked = true
-    
-    local Players = game:GetService("Players")
     local player = Players.LocalPlayer
-
-    function arg69()
-        function arg_v5()
-            local exchangeButton = player.PlayerGui:FindFirstChild("Menu") and 
-            player.PlayerGui.Menu:FindFirstChild("Views") and 
-            player.PlayerGui.Menu.Views:FindFirstChild("Default") and 
-            player.PlayerGui.Menu.Views.Default:FindFirstChild("MainMenu") and 
-            player.PlayerGui.Menu.Views.Default.MainMenu:FindFirstChild("LeftCorner") and 
-            player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner:FindFirstChild("Exchange") and 
-            player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange:FindFirstChild("ImageButton")
-
-            local exitButton = player.PlayerGui:FindFirstChild("Menu") and 
-            player.PlayerGui.Menu:FindFirstChild("Views") and 
-            player.PlayerGui.Menu.Views:FindFirstChild("Battlepass") and 
-            player.PlayerGui.Menu.Views.Battlepass:FindFirstChild("Exchange") and 
-            player.PlayerGui.Menu.Views.Battlepass.Exchange:FindFirstChild("Center") and 
-            player.PlayerGui.Menu.Views.Battlepass.Exchange.Center:FindFirstChild("Exit") and 
-            player.PlayerGui.Menu.Views.Battlepass.Exchange.Center.Exit:FindFirstChild("ImageButton")
-
-            if exchangeButton then
-                player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange.Visible = true
-
-                if ExchangeConnections.ExchangeClick then
-                    ExchangeConnections.ExchangeClick:Disconnect()
-                end
-                
-                ExchangeConnections.ExchangeClick = exchangeButton.MouseButton1Click:Connect(function()
-                    local battlepass = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
-                    if battlepass then
-                        battlepass.Center.Visible = false
-                        battlepass.Exchange.Visible = true
-                    end
-                end)
-            end
-
-            if exitButton then
-                if ExchangeConnections.ExitClick then
-                    ExchangeConnections.ExitClick:Disconnect()
-                end
-                
-                ExchangeConnections.ExitClick = exitButton.MouseButton1Click:Connect(function()
-                    local battlepass = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
-                    if battlepass then
-                        repeat task.wait() until battlepass.Visible == false
-                        battlepass.Exchange.Visible = false
-                        battlepass.Center.Visible = true
-                    end
-                end)
-            end
+    local function patchExchange()
+        local exchangeButton = SafeGetPath(player, "PlayerGui", "Menu", "Views", "Default", "MainMenu", "LeftCorner", "Exchange", "ImageButton")
+        local exitButton = SafeGetPath(player, "PlayerGui", "Menu", "Views", "Battlepass", "Exchange", "Center", "Exit", "ImageButton")
+        if exchangeButton then
+            player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange.Visible = true
+            if ExchangeConnections.ExchangeClick then ExchangeConnections.ExchangeClick:Disconnect() end
+            ExchangeConnections.ExchangeClick = exchangeButton.MouseButton1Click:Connect(function()
+                local bp = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
+                if bp then bp.Center.Visible = false bp.Exchange.Visible = true end
+            end)
         end
-
-        arg_v5()
-
-        if ExchangeConnections.DescendantAdded then
-            ExchangeConnections.DescendantAdded:Disconnect()
+        if exitButton then
+            if ExchangeConnections.ExitClick then ExchangeConnections.ExitClick:Disconnect() end
+            ExchangeConnections.ExitClick = exitButton.MouseButton1Click:Connect(function()
+                local bp = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
+                if bp then repeat task.wait() until bp.Visible == false bp.Exchange.Visible = false bp.Center.Visible = true end
+            end)
         end
-        
-        ExchangeConnections.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function()
-            task.wait(0.1)
-            arg_v5()
-        end)
     end
-
-    arg69()
+    patchExchange()
+    if ExchangeConnections.DescendantAdded then ExchangeConnections.DescendantAdded:Disconnect() end
+    ExchangeConnections.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function() task.wait(0.1) patchExchange() end)
 end
 
-local EdgeConfig = {
-    Boost = 35,
-    MinSpeed = 3,
-    Cooldown = 0.12,
-    MinEdge = 0.5,
-    LastTime = 0,
-    DetectionRange = 2.5,
-    RayDepth = 5
-}
+local EdgeConfig = { Boost = 35, MinSpeed = 3, Cooldown = 0.12, MinEdge = 0.5, LastTime = 0, DetectionRange = 2.5, RayDepth = 5 }
 
 local function DetectEdge(position, direction)
     local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
@@ -766,47 +637,6 @@ local function ReactiveEdgeBoost()
     end
 end
 
-local function EdgeBoostTouchHandler(hit)
-    if not State.EdgeBoost or not hit or not hit.Parent then return end
-    local character = LocalPlayer.Character
-    if not character or not Humanoid or not RootPart then return end
-    if hit:IsDescendantOf(character) then return end
-    local hitModel = hit:FindFirstAncestorOfClass("Model")
-    if hitModel then
-        if Players:GetPlayerFromCharacter(hitModel) or hitModel:FindFirstChildOfClass("Humanoid") then return end
-    end
-    if not hit.CanCollide or hit.Transparency > 0.9 or hit.Size.Magnitude < 0.5 then return end
-    local now = tick()
-    if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
-    local vel = RootPart.AssemblyLinearVelocity
-    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-    local minSq = (EdgeConfig.MinSpeed * 0.5) ^ 2
-    if hSpeedSq < minSq then return end
-    local partTop = hit.Position.Y + (hit.Size.Y * 0.5)
-    local hitPos = hit.Position
-    local halfX, halfZ = hit.Size.X * 0.5 + 0.5, hit.Size.Z * 0.5 + 0.5
-    local playerPos = RootPart.Position
-    local invSpeed = 1 / math.sqrt(hSpeedSq)
-    local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
-    local offsets = {
-        Vector3.new(moveDirX > 0 and halfX or -halfX, 0, 0),
-        Vector3.new(0, 0, moveDirZ > 0 and halfZ or -halfZ),
-    }
-    for _, offset in ipairs(offsets) do
-        local checkPos = Vector3.new(hitPos.X + offset.X, partTop + 1, hitPos.Z + offset.Z)
-        local ray = Workspace:Raycast(checkPos, Vector3.new(0, -3, 0), EdgeRayParams)
-        if not ray or math.abs(partTop - ray.Position.Y) >= EdgeConfig.MinEdge then
-            local dx = playerPos.X - (hitPos.X + offset.X)
-            local dz = playerPos.Z - (hitPos.Z + offset.Z)
-            if dx*dx + dz*dz < (EdgeConfig.DetectionRange + 1)^2 then
-                RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + EdgeConfig.Boost * 0.8, vel.Z)
-                EdgeConfig.LastTime = now
-                return
-            end
-        end
-    end
-end
-
 local function SetupEdgeBoost()
     for _, conn in pairs(EdgeTouchConnections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(EdgeTouchConnections)
@@ -814,7 +644,46 @@ local function SetupEdgeBoost()
     local character = LocalPlayer.Character
     if not character then return end
     for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then EdgeTouchConnections[#EdgeTouchConnections + 1] = part.Touched:Connect(EdgeBoostTouchHandler) end
+        if part:IsA("BasePart") then EdgeTouchConnections[#EdgeTouchConnections + 1] = part.Touched:Connect(function(hit)
+            if not State.EdgeBoost or not hit or not hit.Parent then return end
+            local char = LocalPlayer.Character
+            if not char or not Humanoid or not RootPart then return end
+            if hit:IsDescendantOf(char) then return end
+            local hitModel = hit:FindFirstAncestorOfClass("Model")
+            if hitModel then
+                if Players:GetPlayerFromCharacter(hitModel) or hitModel:FindFirstChildOfClass("Humanoid") then return end
+            end
+            if not hit.CanCollide or hit.Transparency > 0.9 or hit.Size.Magnitude < 0.5 then return end
+            local now = tick()
+            if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
+            local vel = RootPart.AssemblyLinearVelocity
+            local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
+            local minSq = (EdgeConfig.MinSpeed * 0.5) ^ 2
+            if hSpeedSq < minSq then return end
+            local partTop = hit.Position.Y + (hit.Size.Y * 0.5)
+            local hitPos = hit.Position
+            local halfX, halfZ = hit.Size.X * 0.5 + 0.5, hit.Size.Z * 0.5 + 0.5
+            local playerPos = RootPart.Position
+            local invSpeed = 1 / math.sqrt(hSpeedSq)
+            local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
+            local offsets = {
+                Vector3.new(moveDirX > 0 and halfX or -halfX, 0, 0),
+                Vector3.new(0, 0, moveDirZ > 0 and halfZ or -halfZ),
+            }
+            for _, offset in ipairs(offsets) do
+                local checkPos = Vector3.new(hitPos.X + offset.X, partTop + 1, hitPos.Z + offset.Z)
+                local ray = Workspace:Raycast(checkPos, Vector3.new(0, -3, 0), EdgeRayParams)
+                if not ray or math.abs(partTop - ray.Position.Y) >= EdgeConfig.MinEdge then
+                    local dx = playerPos.X - (hitPos.X + offset.X)
+                    local dz = playerPos.Z - (hitPos.Z + offset.Z)
+                    if dx*dx + dz*dz < (EdgeConfig.DetectionRange + 1)^2 then
+                        RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + EdgeConfig.Boost * 0.8, vel.Z)
+                        EdgeConfig.LastTime = now
+                        return
+                    end
+                end
+            end
+        end) end
     end
 end
 
@@ -929,57 +798,33 @@ end)
 
 local function InstallColaHook()
     if ColaSettings.HookInstalled then return end
-
     local ToolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
     local SpeedBoost = SafeGetPath(ReplicatedStorage, "Events", "Character", "SpeedBoost")
-
-    if not ToolAction or not SpeedBoost then
-        warn("[Cola] Events not found")
-        return
-    end
-
+    if not ToolAction or not SpeedBoost then return end
     local mt = getrawmetatable(game)
-    if not mt then warn("[Cola] No metatable") return end
-
+    if not mt then return end
     ColaSettings.OldNamecall = mt.__namecall
     local lastBlock = 0
-
     setreadonly(mt, false)
-
     mt.__namecall = newcclosure(function(self, ...)
         local method = getnamecallmethod()
         local args = {...}
-
-        if method == "FireServer" and self == ToolAction then
-            if args[1] == 0 and args[2] == 20 then
-                if ColaSettings.Active then
-                    local now = tick()
-                    if now - lastBlock < 0.5 then
-                        return nil
+        if method == "FireServer" and self == ToolAction and args[1] == 0 and args[2] == 20 then
+            if ColaSettings.Active then
+                local now = tick()
+                if now - lastBlock < 0.5 then return nil end
+                lastBlock = now
+                task.spawn(function()
+                    task.wait(0.3)
+                    if ColaSettings.Active then
+                        firesignal(SpeedBoost.OnClientEvent, "Cola", ColaSettings.Speed, ColaSettings.Duration, Color3.fromRGB(199, 141, 93))
                     end
-                    lastBlock = now
-
-                    task.spawn(function()
-                        task.wait(0.3)
-                        if ColaSettings.Active then
-                            firesignal(
-                                SpeedBoost.OnClientEvent,
-                                "Cola",
-                                ColaSettings.Speed,
-                                ColaSettings.Duration,
-                                Color3.fromRGB(199, 141, 93)
-                            )
-                        end
-                    end)
-
-                    return nil
-                end
+                end)
+                return nil
             end
         end
-
         return ColaSettings.OldNamecall(self, ...)
     end)
-
     setreadonly(mt, true)
     ColaSettings.HookInstalled = true
 end
@@ -997,7 +842,7 @@ local function UninstallColaHook()
     ColaSettings.OldNamecall = nil
 end
 
-local function ToggleInfiniteColaFixed(state)
+local function ToggleInfiniteCola(state)
     if state then
         ColaSettings.Active = true
         State.InfiniteCola = true
@@ -1006,27 +851,6 @@ local function ToggleInfiniteColaFixed(state)
         State.InfiniteCola = false
         UninstallColaHook()
     end
-end
-
-local function FixCola()
-    SafeCall(function()
-        local eventPath = SafeGetPath(LocalPlayer, "PlayerScripts", "Events", "temporary_events", "UseKeybind")
-        if not eventPath then return end
-        local mt = getrawmetatable(eventPath)
-        local oldNamecall = mt.__namecall
-        setreadonly(mt, false)
-        mt.__namecall = newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = {...}
-            if method == "Fire" and self == eventPath and args[1] and args[1].Key == "Cola" then
-                local toolAction = SafeGetPath(ReplicatedStorage, "Events", "Character", "ToolAction")
-                if toolAction then toolAction:FireServer(0, 20) end
-                return task.wait()
-            end
-            return oldNamecall(self, ...)
-        end)
-        setreadonly(mt, true)
-    end)
 end
 
 local function ToggleFullbright()
@@ -1047,69 +871,43 @@ local function ToggleFullbright()
     end
 end
 
-local function GetVoteEvent() return SafeGetPath(ReplicatedStorage, "Events", "Player", "Vote") end
-local function FindInList(name, list)
-    if not name or name == "" then return nil end
-    local nameLower = name:lower()
-    for _, item in ipairs(list) do if item:lower() == nameLower then return item end end
-    return nil
+-- ═══════════════════════════════════════════════════════════════
+-- GUI (COMPACT & UNIQUE)
+-- ═══════════════════════════════════════════════════════════════
+
+local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local TI_OPEN = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TI_SLOW = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+local function Tween(obj, props, tweenInfo)
+    TweenService:Create(obj, tweenInfo or TI_FAST, props):Play()
 end
-local function FireAdmin(command, value)
-    SafeCall(function()
-        local event = SafeGetPath(ReplicatedStorage, "Events", "CustomServers", "Admin")
-        if event then event:FireServer(command, value) end
+
+local function MakeDraggable(frame)
+    local dragging, dragStart, startPos = false, nil, nil
+    local dragArea = Instance.new("Frame") dragArea.Name = "DragArea" dragArea.Size = UDim2.new(1, 0, 0, 30) dragArea.BackgroundTransparency = 1 dragArea.ZIndex = 10 dragArea.Parent = frame
+    dragArea.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true dragStart = input.Position startPos = frame.Position end end)
+    dragArea.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
+    Connections["Drag_" .. frame.Name] = UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
     end)
 end
 
-local function VoteMapLoop()
-    if not State.VoteMap then return end
-    local event = GetVoteEvent()
-    if event then SafeCall(function() event:FireServer(State.MapIndex, false) end) end
-    task.delay(1, VoteMapLoop)
-end
-local function VoteModeLoop()
-    if not State.VoteMode then return end
-    local event = GetVoteEvent()
-    if event then SafeCall(function() event:FireServer(State.ModeIndex, true) end) end
-    task.delay(1, VoteModeLoop)
-end
-local function StartMapVoting() if State.VoteMap then return end State.VoteMap = true VoteMapLoop() end
-local function StopMapVoting() State.VoteMap = false end
-local function StartModeVoting() if State.VoteMode then return end State.VoteMode = true VoteModeLoop() end
-local function StopModeVoting() State.VoteMode = false end
-
--- ═══════════════════════════════════════════════════════════════
--- GUI (Simple, Compact, Unique)
--- ═══════════════════════════════════════════════════════════════
 local function CreateToggle(parent, name, text, yPos, callback)
     local btn = Instance.new("TextButton")
-    btn.Name = name
-    btn.Size = UDim2.new(1, -20, 0, 28)
-    btn.Position = UDim2.new(0, 10, 0, yPos)
-    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
-    btn.Text = ""
-    btn.AutoButtonColor = false
-    btn.BorderSizePixel = 0
-    btn.Parent = parent
+    btn.Name = name btn.Size = UDim2.new(1, -20, 0, 28) btn.Position = UDim2.new(0, 10, 0, yPos)
+    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 35) btn.Text = "" btn.AutoButtonColor = false btn.BorderSizePixel = 0 btn.Parent = parent
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
     
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -40, 1, 0)
-    label.Position = UDim2.new(0, 10, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(180, 180, 200)
-    label.TextSize = 11
-    label.Font = Enum.Font.Gotham
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = btn
+    local label = Instance.new("TextLabel") label.Size = UDim2.new(1, -40, 1, 0) label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1 label.Text = text label.TextColor3 = Color3.fromRGB(180, 180, 200) label.TextSize = 11
+    label.Font = Enum.Font.Gotham label.TextXAlignment = Enum.TextXAlignment.Left label.Parent = btn
     
-    local dot = Instance.new("Frame")
-    dot.Size = UDim2.new(0, 8, 0, 8)
-    dot.Position = UDim2.new(1, -18, 0.5, -4)
-    dot.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
-    dot.BorderSizePixel = 0
-    dot.Parent = btn
+    local dot = Instance.new("Frame") dot.Size = UDim2.new(0, 8, 0, 8) dot.Position = UDim2.new(1, -18, 0.5, -4)
+    dot.BackgroundColor3 = Color3.fromRGB(80, 80, 100) dot.BorderSizePixel = 0 dot.Parent = btn
     Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
     
     btn.MouseButton1Click:Connect(function()
@@ -1129,98 +927,56 @@ end
 
 local function CreateMainGUI()
     if GUI then SafeCall(function() GUI:Destroy() end) end
-    GUI = Instance.new("ScreenGui")
-    GUI.Name = "EvadeHelper"
-    GUI.ResetOnSpawn = false
-    GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    GUI = Instance.new("ScreenGui") GUI.Name = "EvadeHelper" GUI.ResetOnSpawn = false GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     SafeCall(function() GUI.Parent = game:GetService("CoreGui") end)
     if not GUI.Parent then GUI.Parent = PlayerGui end
     
-    local main = Instance.new("Frame")
-    main.Name = "Main"
-    main.Size = UDim2.new(0, 200, 0, 0)
-    main.Position = UDim2.new(0, 20, 0, 50)
-    main.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
-    main.BackgroundTransparency = 0.1
-    main.BorderSizePixel = 0
-    main.ClipsDescendants = true
-    main.Parent = GUI
+    local main = Instance.new("Frame") main.Name = "Main" main.Size = UDim2.new(0, 180, 0, 0) main.Position = UDim2.new(0, 20, 0, 50)
+    main.BackgroundColor3 = Color3.fromRGB(15, 15, 22) main.BackgroundTransparency = 0.1 main.BorderSizePixel = 0 main.ClipsDescendants = true main.Parent = GUI
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+    local stroke = Instance.new("UIStroke", main) stroke.Color = Color3.fromRGB(40, 40, 60) stroke.Thickness = 1
     
-    local stroke = Instance.new("UIStroke", main)
-    stroke.Color = Color3.fromRGB(40, 40, 60)
-    stroke.Thickness = 1
-    
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 30)
-    title.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    title.Text = "  EVADE // V" .. SCRIPT_VERSION
-    title.TextColor3 = Color3.fromRGB(88, 101, 242)
-    title.TextSize = 11
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.BorderSizePixel = 0
-    title.Parent = main
+    local title = Instance.new("TextLabel") title.Size = UDim2.new(1, 0, 0, 30) title.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    title.Text = "  EVADE // V" .. SCRIPT_VERSION title.TextColor3 = Color3.fromRGB(88, 101, 242) title.TextSize = 11 title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left title.BorderSizePixel = 0 title.Parent = main
     Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
     local fix = Instance.new("Frame", title) fix.Size = UDim2.new(1,0,0,10) fix.Position = UDim2.new(0,0,1,-10) fix.BackgroundColor3 = title.BackgroundColor3 fix.BorderSizePixel = 0
     
-    local content = Instance.new("ScrollingFrame")
-    content.Size = UDim2.new(1, 0, 1, -30)
-    content.Position = UDim2.new(0, 0, 0, 30)
-    content.BackgroundTransparency = 1
-    content.ScrollBarThickness = 0
-    content.BorderSizePixel = 0
-    content.CanvasSize = UDim2.new(0, 0, 0, 400)
-    content.Parent = main
+    local closeBtn = Instance.new("TextButton", title) closeBtn.Size = UDim2.new(0, 30, 0, 30) closeBtn.Position = UDim2.new(1, -30, 0, 0)
+    closeBtn.BackgroundTransparency = 1 closeBtn.Text = "X" closeBtn.TextColor3 = Color3.fromRGB(200,200,220) closeBtn.TextSize = 12 closeBtn.Font = Enum.Font.GothamBold closeBtn.BorderSizePixel = 0
+    closeBtn.MouseButton1Click:Connect(function()
+        Tween(main, {Size = UDim2.new(0, 180, 0, 0)}, TI_SLOW) task.delay(0.3, function() main.Visible = false end)
+    end)
     
-    local y = 10
-    local toggles = {
-        {"Bright", "Fullbright", function(s) ToggleFullbright() end},
-        {"Border", "No Borders", function(s) ToggleBorder() end},
-        {"Anti", "Anti-Nextbot", function(s) State.AntiNextbot = s if s then LoadNPCs() end end},
-        {"Farm", "Auto Farm", function(s) State.AutoFarm = s if not s then CurrentTarget = nil end end},
-        {"EdgeBoost", "Edge Boost", function(s) State.EdgeBoost = s SetupEdgeBoost() end},
-        {"UpFix", "Upside Fix", function(s) State.UpsideDownFix = s ToggleUpsideDownFix(s) end},
-        {"InfCola", "Custom Cola", function(s) ToggleInfiniteColaFixed(s) end},
-        {"Exchange", "Exchange", function(s) ForceEnableExchange() end}
-    }
+    local content = Instance.new("ScrollingFrame") content.Size = UDim2.new(1, 0, 1, -30) content.Position = UDim2.new(0, 0, 0, 30)
+    content.BackgroundTransparency = 1 content.ScrollBarThickness = 0 content.BorderSizePixel = 0 content.CanvasSize = UDim2.new(0, 0, 0, 350) content.Parent = main
     
-    for _, t in ipairs(toggles) do
-        CreateToggle(content, t[1], t[2], y, t[3])
-        y = y + 32
+    local y = 8
+    CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
+    CreateToggle(content, "Border", "No Borders", y, function(s) ToggleBorder() end) y = y + 32
+    CreateToggle(content, "Anti", "Anti-Nextbot", y, function(s) State.AntiNextbot = s if s then LoadNPCs() end end) y = y + 32
+    CreateToggle(content, "Farm", "Auto Farm", y, function(s) State.AutoFarm = s if not s then CurrentTarget = nil end end) y = y + 32
+    CreateToggle(content, "EdgeBoost", "Edge Boost", y, function(s) State.EdgeBoost = s SetupEdgeBoost() end) y = y + 32
+    CreateToggle(content, "UpFix", "Upside Fix", y, function(s) State.UpsideDownFix = s ToggleUpsideDownFix(s) end) y = y + 32
+    CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 32
+    CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 40
+    
+    local fovLabel = Instance.new("TextLabel", content) fovLabel.Size = UDim2.new(0, 40, 0, 20) fovLabel.Position = UDim2.new(0, 10, 0, y)
+    fovLabel.BackgroundTransparency = 1 fovLabel.Text = "FOV:" fovLabel.TextColor3 = Color3.fromRGB(150,150,170) fovLabel.TextSize = 10 fovLabel.Font = Enum.Font.Gotham
+    
+    local function CreateFovBtn(name, text, xPos, val)
+        local b = Instance.new("TextButton", content) b.Name = name b.Size = UDim2.new(0, 40, 0, 20) b.Position = UDim2.new(0, xPos, 0, y)
+        b.BackgroundColor3 = Color3.fromRGB(25,25,35) b.Text = text b.TextColor3 = Color3.fromRGB(150,150,170) b.TextSize = 10 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
+        b.MouseButton1Click:Connect(function() Config.FOV = val SetFOV() end)
     end
+    CreateFovBtn("F90", "90", 55, 90)
+    CreateFovBtn("F120", "120", 100, 120)
     
-    -- FOV Buttons
-    local fovY = y + 5
-    local fovLabel = Instance.new("TextLabel", content)
-    fovLabel.Size = UDim2.new(0, 40, 0, 20)
-    fovLabel.Position = UDim2.new(0, 10, 0, fovY)
-    fovLabel.BackgroundTransparency = 1
-    fovLabel.Text = "FOV:"
-    fovLabel.TextColor3 = Color3.fromRGB(150,150,170)
-    fovLabel.TextSize = 10
-    fovLabel.Font = Enum.Font.Gotham
-    
-    local btn90 = Instance.new("TextButton", content)
-    btn90.Size = UDim2.new(0, 40, 0, 20) btn90.Position = UDim2.new(0, 55, 0, fovY)
-    btn90.BackgroundColor3 = Color3.fromRGB(25,25,35) btn90.Text = "90" btn90.TextColor3 = Color3.fromRGB(150,150,170)
-    btn90.TextSize = 10 btn90.Font = Enum.Font.Gotham btn90.BorderSizePixel = 0 btn90.AutoButtonColor = false
-    Instance.new("UICorner", btn90).CornerRadius = UDim.new(0,4)
-    btn90.MouseButton1Click:Connect(function() Config.FOV = 90 SetFOV() end)
-    
-    local btn120 = Instance.new("TextButton", content)
-    btn120.Size = UDim2.new(0, 40, 0, 20) btn120.Position = UDim2.new(0, 100, 0, fovY)
-    btn120.BackgroundColor3 = Color3.fromRGB(25,25,35) btn120.Text = "120" btn120.TextColor3 = Color3.fromRGB(150,150,170)
-    btn120.TextSize = 10 btn120.Font = Enum.Font.Gotham btn120.BorderSizePixel = 0 btn120.AutoButtonColor = false
-    Instance.new("UICorner", btn120).CornerRadius = UDim.new(0,4)
-    btn120.MouseButton1Click:Connect(function() Config.FOV = 120 SetFOV() end)
-    
-    content.CanvasSize = UDim2.new(0, 0, 0, fovY + 30)
-    
+    content.CanvasSize = UDim2.new(0, 0, 0, y + 30)
     MakeDraggable(main)
-    main.Size = UDim2.new(0, 200, 0, 0)
-    main.Visible = true
-    Tween(main, {Size = UDim2.new(0, 200, 0, 300)}, TI_OPEN)
+    main.Size = UDim2.new(0, 180, 0, 0) main.Visible = true
+    Tween(main, {Size = UDim2.new(0, 180, 0, 310)}, TI_OPEN)
 end
 
 local function CreateTimerGUI()
@@ -1252,8 +1008,9 @@ local function UpdateTimer()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- INPUT (Cleaned up)
+-- INPUT
 -- ═══════════════════════════════════════════════════════════════
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     local key = input.KeyCode
@@ -1271,8 +1028,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local m = GUI.Main
-            if m.Visible then Tween(m, {Size = UDim2.new(0, 200, 0, 0)}, TI_SLOW) task.delay(0.3, function() m.Visible = false end)
-            else m.Visible = true m.Size = UDim2.new(0, 200, 0, 0) Tween(m, {Size = UDim2.new(0, 200, 0, 300)}, TI_OPEN) end
+            if m.Visible then Tween(m, {Size = UDim2.new(0, 180, 0, 0)}, TI_SLOW) task.delay(0.3, function() m.Visible = false end)
+            else m.Visible = true m.Size = UDim2.new(0, 180, 0, 0) Tween(m, {Size = UDim2.new(0, 180, 0, 310)}, TI_OPEN) end
         end
     end
     if key == Enum.KeyCode.W then keysDown.W = true end
@@ -1293,8 +1050,29 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- ═══════════════════════════════════════════════════════════════
--- CHARACTER SETUP & EVENTS
+-- CHARACTER SETUP & LOOPS
 -- ═══════════════════════════════════════════════════════════════
+
+local function SetupCharacter(character)
+    if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
+    if Connections.TouchConn then Connections.TouchConn:Disconnect() Connections.TouchConn = nil end
+    
+    Humanoid = character:WaitForChild("Humanoid", 5)
+    RootPart = character:WaitForChild("HumanoidRootPart", 5)
+    ForceUpdateRayFilter()
+    SetupEdgeBoost()
+    CurrentTarget, FarmStart = nil, 0
+    RecordedSpeed = 16
+    LastBounceTime = 0
+    
+    if Humanoid then 
+        Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
+    end
+    if RootPart then
+        Connections.TouchConn = RootPart.Touched:Connect(OnTouchPart)
+    end
+end
+
 Players.PlayerAdded:Connect(function(player)
     player.CharacterAdded:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
     player.CharacterRemoving:Connect(function() task.delay(0.5, ForceUpdateRayFilter) end)
@@ -1307,14 +1085,41 @@ for _, player in ipairs(Players:GetPlayers()) do
     end
 end
 
+local function StartMainLoop()
+    if Connections.MainLoop then Connections.MainLoop:Disconnect() end
+    if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
+    
+    Connections.MainLoop = RunService.RenderStepped:Connect(function()
+        AirStrafe()
+    end)
+    
+    local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
+    Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
+        if State.EdgeBoost then
+            edgeAccum = edgeAccum + dt
+            if edgeAccum >= 0.06 then edgeAccum = 0 ReactiveEdgeBoost() end
+        end
+        if holdQ then DoCarry() end
+        slowAccum = slowAccum + dt
+        if slowAccum >= 0.2 then
+            slowAccum = 0
+            UpdateRayFilter()
+            if State.AntiNextbot then AntiNextbot() end
+            if State.AutoFarm then AutoFarm() end
+        end
+        cleanupAccum = cleanupAccum + dt
+        if cleanupAccum >= 10.0 then cleanupAccum = 0 PeriodicCleanup() end
+    end)
+end
+
 if LocalPlayer.Character then SetupCharacter(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0
-        RecordedSpeed = 16 table.clear(CachedBots) table.clear(CachedItems)
+        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 RecordedSpeed = 16 LastBounceTime = 0
+        table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
     end
 end)
@@ -1327,4 +1132,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + Touch Bounce + Speed Gain Strafe + Compact UI!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + Touch Bounce + Speed Strafe + Compact GUI!")
