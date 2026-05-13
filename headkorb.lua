@@ -9,8 +9,8 @@ local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
 -- [!] ADJUST THIS NUMBER TO LIFT THE KORBLOX LEG UP OR DOWN [!]
--- 0.2 is a slight lift. Change to 0 for default, or negative to lower it.
-local KORBLOX_Y_LIFT = 0.2 
+-- Changed from 0.2 to 0.1. 0.2 clipped into the torso, 0.0 floated. 0.1 is the sweet spot!
+local KORBLOX_Y_LIFT = 0.15
 
 local activeConnections = {}
 local heartbeatConns = {}
@@ -182,6 +182,8 @@ local function applyKorbloxR6(character)
             local hScale = getScaleProp(humanoid, "BodyHeightScale")
             local dScale = getScaleProp(humanoid, "BodyDepthScale")
             korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
+            -- Ensure lift persists dynamically
+            korbloxMesh.Offset = Vector3.new(0, KORBLOX_Y_LIFT, 0)
         end
     end))
 end
@@ -210,14 +212,6 @@ local function applyKorbloxR15(character)
     hidePart(rightLowerLeg)
     hidePart(rightFoot)
 
-    -- Calculate total leg height
-    local legHeight = 0
-    if rightUpperLeg then legHeight = legHeight + rightUpperLeg.Size.Y end
-    if rightLowerLeg then legHeight = legHeight + rightLowerLeg.Size.Y end
-    if rightFoot then legHeight = legHeight + rightFoot.Size.Y end
-    
-    if legHeight == 0 then legHeight = 2.6 end -- Fallback
-
     local korbloxLeg = Instance.new("Part")
     korbloxLeg.Name         = "KorbloxLeg"
     korbloxLeg.Size         = Vector3.new(1, 1, 1)
@@ -243,12 +237,8 @@ local function applyKorbloxR15(character)
     mesh.Scale     = Vector3.new(wScale, hScale, dScale)
     mesh.Parent    = korbloxLeg
 
-    -- Calculate offset so the top of the mesh aligns perfectly with the top of the upper leg
-    -- ADDED KORBLOX_Y_LIFT here to raise the part itself
-    local yOffset = (rightUpperLeg.Size.Y / 2) - (legHeight / 2) + KORBLOX_Y_LIFT
-    
     -- Position the Korblox exactly on the leg before welding
-    korbloxLeg.CFrame = rightUpperLeg.CFrame * CFrame.new(0, yOffset, 0)
+    korbloxLeg.CFrame = rightUpperLeg.CFrame
 
     -- Weld it directly to the real (invisible) RightUpperLeg! 
     local weld = Instance.new("WeldConstraint")
@@ -273,7 +263,7 @@ local function applyKorbloxR15(character)
             rightFoot.Transparency = 1
         end
         
-        -- Dynamically calculate current leg height for reference (if ever needed)
+        -- Dynamically calculate current leg height
         local currentLegHeight = rightUpperLeg.Size.Y
         if rightLowerLeg and rightLowerLeg.Parent then currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y end
         if rightFoot and rightFoot.Parent then currentLegHeight = currentLegHeight + rightFoot.Size.Y end
@@ -284,6 +274,10 @@ local function applyKorbloxR15(character)
             local curH = getScaleProp(humanoid, "BodyHeightScale")
             local curD = getScaleProp(humanoid, "BodyDepthScale")
             mesh.Scale = Vector3.new(curW, curH, curD)
+            
+            -- Apply the perfect center + lift combination to fix floating/clipping
+            local yOffset = (rightUpperLeg.Size.Y / 2) - (currentLegHeight / 2) + KORBLOX_Y_LIFT
+            mesh.Offset = Vector3.new(0, yOffset, 0)
         end
     end))
 end
