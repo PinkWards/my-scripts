@@ -1,6 +1,8 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 19
+local SCRIPT_VERSION = 20
+
+-- Auto-execute removed
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -265,7 +267,7 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (MACRO BHOP + TOUCH BOUNCE + SPEED STRAFE)
+-- MOVEMENT (MACRO BHOP + INSTANT BOUNCE + SPEED STRAFE)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -285,11 +287,13 @@ local function DoBounce()
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
+    -- Strictly preserve the highest speed
     if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
     local useSpeed = math.max(RecordedSpeed, hSpeed)
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
     
     local dir = GetBounceDirection(hVel, hSpeed)
+    -- Force exact velocity, overriding game friction completely
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     LastBounceTime = tick()
@@ -310,11 +314,32 @@ local function OnTouchPart(hit)
     local character = LocalPlayer.Character
     if not character or hit:IsDescendantOf(character) then return end
     
-    local vel = RootPart.AssemblyLinearVelocity
-    if vel.Y <= 0.1 then 
-        local now = tick()
-        if now - LastBounceTime > 0.05 then -- Tiny physics debounce to prevent explosions
-            DoBounce()
+    -- Removed the Y-velocity check so it bounces off walls/edges too
+    -- 0.01s cooldown prevents physics engine explosions but feels instant
+    local now = tick()
+    if now - LastBounceTime > 0.01 then 
+        DoBounce()
+    end
+end
+
+-- Aggressively preserves speed mid-air so Roblox physics drag doesn't slow you down
+local function EnforceBounceSpeed()
+    if not holdLeftShift or not RootPart or not Humanoid then return end
+    if Humanoid.Health <= 0 then return end
+    
+    local state = Humanoid:GetState()
+    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
+        local vel = RootPart.AssemblyLinearVelocity
+        local hVel = Vector3.new(vel.X, 0, vel.Z)
+        local hSpeed = hVel.Magnitude
+        
+        if hSpeed > 0 and hSpeed < RecordedSpeed then
+            -- Force speed back up instantly
+            RootPart.AssemblyLinearVelocity = Vector3.new(
+                hVel.Unit.X * RecordedSpeed,
+                vel.Y,
+                hVel.Unit.Z * RecordedSpeed
+            )
         end
     end
 end
@@ -865,7 +890,7 @@ local function ToggleFullbright()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GUI (COMPACT & UNIQUE)
+-- GUI (COMPACT + COLA SETTINGS)
 -- ═══════════════════════════════════════════════════════════════
 
 local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -952,8 +977,41 @@ local function CreateMainGUI()
     CreateToggle(content, "EdgeBoost", "Edge Boost", y, function(s) State.EdgeBoost = s SetupEdgeBoost() end) y = y + 32
     CreateToggle(content, "UpFix", "Upside Fix", y, function(s) State.UpsideDownFix = s ToggleUpsideDownFix(s) end) y = y + 32
     CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 32
-    CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 40
+    CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
     
+    -- Cola Speed Presets
+    local presetY = y
+    local presetX = 10
+    local presets = {
+        {name = "1.4x", speed = 1.4}, {name = "1.8x", speed = 1.8}, {name = "2.5x", speed = 2.5}, {name = "3.0x", speed = 3.0}
+    }
+    for _, p in ipairs(presets) do
+        local b = Instance.new("TextButton", content)
+        b.Size = UDim2.new(0, 35, 0, 20) b.Position = UDim2.new(0, presetX, 0, presetY)
+        b.BackgroundColor3 = Color3.fromRGB(25,25,35) b.Text = p.name b.TextColor3 = Color3.fromRGB(150,150,170)
+        b.TextSize = 9 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
+        b.MouseButton1Click:Connect(function() ColaSettings.Speed = p.speed end)
+        presetX = presetX + 39
+    end
+    y = y + 26
+    
+    -- Cola Duration Input
+    local durInput = Instance.new("TextBox", content)
+    durInput.Size = UDim2.new(0, 40, 0, 20) durInput.Position = UDim2.new(0, 10, 0, y)
+    durInput.BackgroundColor3 = Color3.fromRGB(25,25,35) durInput.Text = tostring(ColaSettings.Duration)
+    durInput.TextColor3 = Color3.fromRGB(180,180,200) durInput.PlaceholderText = "Sec"
+    durInput.TextSize = 9 durInput.Font = Enum.Font.Gotham durInput.BorderSizePixel = 0
+    Instance.new("UICorner", durInput).CornerRadius = UDim.new(0,4)
+    durInput.FocusLost:Connect(function() local n = tonumber(durInput.Text) if n and n > 0 then ColaSettings.Duration = n end end)
+
+    local durLabel = Instance.new("TextLabel", content)
+    durLabel.Size = UDim2.new(0, 80, 0, 20) durLabel.Position = UDim2.new(0, 55, 0, y)
+    durLabel.BackgroundTransparency = 1 durLabel.Text = "Cola Duration" durLabel.TextColor3 = Color3.fromRGB(100,100,120)
+    durLabel.TextSize = 9 durLabel.Font = Enum.Font.Gotham durLabel.TextXAlignment = Enum.TextXAlignment.Left
+    y = y + 30
+    
+    -- FOV Buttons
     local fovLabel = Instance.new("TextLabel", content) fovLabel.Size = UDim2.new(0, 40, 0, 20) fovLabel.Position = UDim2.new(0, 10, 0, y)
     fovLabel.BackgroundTransparency = 1 fovLabel.Text = "FOV:" fovLabel.TextColor3 = Color3.fromRGB(150,150,170) fovLabel.TextSize = 10 fovLabel.Font = Enum.Font.Gotham
     
@@ -966,7 +1024,7 @@ local function CreateMainGUI()
     CreateFovBtn("F90", "90", 55, 90)
     CreateFovBtn("F120", "120", 100, 120)
     
-    content.CanvasSize = UDim2.new(0, 0, 0, y + 30)
+    content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
     MakeDraggable(main)
     main.Size = UDim2.new(0, 180, 0, 0) main.Visible = true
     Tween(main, {Size = UDim2.new(0, 180, 0, 310)}, TI_OPEN)
@@ -1084,6 +1142,7 @@ local function StartMainLoop()
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         AirStrafe()
+        EnforceBounceSpeed()
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
@@ -1125,4 +1184,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + Touch Bounce + Speed Strafe + Compact GUI!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + Instant Bounce + Speed Strafe + Compact GUI!")
