@@ -10,7 +10,7 @@ local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
 -- [!] ADJUST THIS NUMBER TO LIFT THE KORBLOX LEG UP OR DOWN [!]
 -- Changed from 0.2 to 0.1. 0.2 clipped into the torso, 0.0 floated. 0.1 is the sweet spot!
-local KORBLOX_Y_LIFT = 1
+local KORBLOX_Y_LIFT = 0.20
 
 local activeConnections = {}
 local heartbeatConns = {}
