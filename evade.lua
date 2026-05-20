@@ -281,24 +281,7 @@ local function GetBounceDirection(hVel, hSpeed)
     return Vector3.new(0, 0, -1)
 end
 
--- Gets the angle of the surface we just touched
-local function GetContactNormal()
-    if not RootPart then return Vector3.new(0, 1, 0) end
-    local origin = RootPart.Position
-    -- Check straight down
-    local result = Workspace:Raycast(origin, Vector3.new(0, -4, 0), BounceRayParams)
-    if result then return result.Normal end
-    -- Check in the direction we are moving (for walls/ramps)
-    local hVel = Vector3.new(RootPart.AssemblyLinearVelocity.X, 0, RootPart.AssemblyLinearVelocity.Z)
-    if hVel.Magnitude > 1 then
-        result = Workspace:Raycast(origin, hVel.Unit * 3, BounceRayParams)
-        if result then return result.Normal end
-    end
-    -- Fallback to straight up
-    return Vector3.new(0, 1, 0)
-end
-
-local function DoTrimp()
+local function DoBounce()
     if not RootPart or not Humanoid or Humanoid.Health <= 0 then return end
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
@@ -310,23 +293,8 @@ local function DoTrimp()
     useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
     
     local dir = GetBounceDirection(hVel, hSpeed)
-    local surfaceNormal = GetContactNormal()
-    
-    -- Dynamic Trimp Power: The faster you go, the more lift you get (scales naturally)
-    local dynamicPower = BounceConfig.Power + (useSpeed * 0.15)
-    
-    -- Normal-Based Launch: Pushes along the angle of the surface (ramps act like real ramps now!)
-    local trimpForce = surfaceNormal * dynamicPower
-    
-    -- Combine forward momentum with the trimp force
-    local finalVel = (dir * useSpeed) + trimpForce
-    
-    -- Hard cap to prevent physics breaking
-    if finalVel.Magnitude > BounceConfig.MaxSpeed * 1.2 then
-        finalVel = finalVel.Unit * (BounceConfig.MaxSpeed * 1.2)
-    end
-
-    RootPart.AssemblyLinearVelocity = finalVel
+    -- Force exact velocity, overriding game friction completely
+    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     LastBounceTime = tick()
 end
@@ -334,7 +302,7 @@ end
 local function OnStateChanged(old, new)
     if new == Enum.HumanoidStateType.Landed then
         if holdLeftShift then
-            DoTrimp()
+            DoBounce()
         elseif holdSpace then
             Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
@@ -349,7 +317,7 @@ local function OnTouchPart(hit)
     -- 0.01s cooldown prevents physics explosions but feels instant
     local now = tick()
     if now - LastBounceTime > 0.01 then 
-        DoTrimp()
+        DoBounce()
     end
 end
 
@@ -388,14 +356,22 @@ local function EnforceBounceSpeed()
         local hVel = Vector3.new(vel.X, 0, vel.Z)
         local hSpeed = hVel.Magnitude
         
+        local newX, newZ = vel.X, vel.Z
+        
+        -- Preserve forward speed
         if hSpeed > 0 and hSpeed < RecordedSpeed then
-            -- Force speed back up instantly
-            RootPart.AssemblyLinearVelocity = Vector3.new(
-                hVel.Unit.X * RecordedSpeed,
-                vel.Y,
-                hVel.Unit.Z * RecordedSpeed
-            )
+            newX = hVel.Unit.X * RecordedSpeed
+            newZ = hVel.Unit.Z * RecordedSpeed
         end
+        
+        local newY = vel.Y
+        
+        -- GRAVITY SNAP: If falling, pull down slightly faster so it doesn't feel floaty
+        if newY < 0 then
+            newY = newY - 2.0 -- Adds a natural, snappy weight to your fall
+        end
+        
+        RootPart.AssemblyLinearVelocity = Vector3.new(newX, newY, newZ)
     end
 end
 
