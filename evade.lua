@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 21
+local SCRIPT_VERSION = 22
 
 -- Auto-execute removed
 
@@ -66,7 +66,8 @@ local Config = {
     SafeDistance = 90
 }
 
-local BounceSpeed = 75 -- Default speed for the bounce modifier
+local BouncePower = 75 -- How high you bounce
+local BounceWalkSpeed = 75 -- WalkSpeed modifier while bouncing
 
 local ColaSettings = {
     Speed = 1.4,
@@ -105,6 +106,11 @@ local LastGCTime = 0
 local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
+
+local RecordedSpeed = 16
+local LastBounceTime = 0
+
+local bounceWalkSpeedConn = nil
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -255,53 +261,71 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (MACRO BHOP + NEW BOUNCE MODIFIER + SPEED STRAFE)
+-- MOVEMENT (VELOCITY BOUNCE + WALKSPEED BOOST + AIR STRAFE)
 -- ═══════════════════════════════════════════════════════════════
 
-local bounceConnection = nil
-local lastWalkSpeed = nil
-
-local function StartBounceModifier()
-    if bounceConnection then return end
-    lastWalkSpeed = nil
-    bounceConnection = RunService.RenderStepped:Connect(function()
-        if not RootPart or not Humanoid then return end
-        local velocity = RootPart.AssemblyLinearVelocity
-        local speed = velocity.Magnitude
-        local newWalkSpeed = 0
-        
-        if speed > 0.1 then 
-            newWalkSpeed = BounceSpeed
-        else
-            newWalkSpeed = 0
-        end
-        
-        if lastWalkSpeed == nil or newWalkSpeed ~= lastWalkSpeed then
-            Humanoid.WalkSpeed = newWalkSpeed
-            lastWalkSpeed = newWalkSpeed
-        end
-    end)
+local function GetBounceDirection(hVel, hSpeed)
+    if hSpeed > 1 then return hVel.Unit end
+    local cam = Workspace.CurrentCamera
+    if cam then
+        local look = cam.CFrame.LookVector
+        local dir = Vector3.new(look.X, 0, look.Z)
+        if dir.Magnitude > 0.01 then return dir.Unit end
+    end
+    return Vector3.new(0, 0, -1)
 end
 
-local function StopBounceModifier()
-    if bounceConnection then
-        bounceConnection:Disconnect()
-        bounceConnection = nil
-    end
-    lastWalkSpeed = nil
-    if Humanoid then
-        Humanoid.WalkSpeed = 16 -- Restores normal walk speed
-    end
+local function DoBounce()
+    if not RootPart or not Humanoid or Humanoid.Health <= 0 then return end
+    local vel = RootPart.AssemblyLinearVelocity
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    local hSpeed = hVel.Magnitude
+    
+    if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
+    local useSpeed = math.max(RecordedSpeed, hSpeed)
+    
+    local dir = GetBounceDirection(hVel, hSpeed)
+    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BouncePower, 0)
+    Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    LastBounceTime = tick()
 end
 
 local function OnStateChanged(old, new)
     if new == Enum.HumanoidStateType.Landed then
         if holdLeftShift then
-            Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            DoBounce()
         elseif holdSpace then
             Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
     end
+end
+
+local function OnTouchPart(hit)
+    if not holdLeftShift or not hit then return end
+    local character = LocalPlayer.Character
+    if not character or hit:IsDescendantOf(character) then return end
+    local now = tick()
+    if now - LastBounceTime > 0.01 then 
+        DoBounce()
+    end
+end
+
+local function StartBounceWalkSpeed()
+    if bounceWalkSpeedConn then return end
+    bounceWalkSpeedConn = RunService.RenderStepped:Connect(function()
+        if Humanoid and holdLeftShift then
+            Humanoid.WalkSpeed = BounceWalkSpeed
+        end
+    end)
+end
+
+local function StopBounceWalkSpeed()
+    if bounceWalkSpeedConn then
+        bounceWalkSpeedConn:Disconnect()
+        bounceWalkSpeedConn = nil
+    end
+    if Humanoid then Humanoid.WalkSpeed = 16 end
+    RecordedSpeed = 16
 end
 
 local function AirStrafe()
@@ -336,6 +360,7 @@ local function AirStrafe()
     end
     
     RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
+    RecordedSpeed = math.max(RecordedSpeed, newHVel.Magnitude)
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1031,7 +1056,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.P then ToggleFullbright()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
-        StartBounceModifier()
+        StartBounceWalkSpeed()
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local m = GUI.Main
@@ -1051,7 +1076,7 @@ UserInputService.InputEnded:Connect(function(input)
     elseif key == Enum.KeyCode.Q then holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false 
-        StopBounceModifier()
+        StopBounceWalkSpeed()
     end
     if key == Enum.KeyCode.W then keysDown.W = false end
     if key == Enum.KeyCode.A then keysDown.A = false end
@@ -1065,20 +1090,25 @@ end)
 
 local function SetupCharacter(character)
     if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
+    if Connections.TouchConn then Connections.TouchConn:Disconnect() Connections.TouchConn = nil end
     
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter()
     SetupEdgeBoost()
     CurrentTarget, FarmStart = nil, 0
+    RecordedSpeed = 16
+    LastBounceTime = 0
     
     if Humanoid then 
         Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
+    if RootPart then
+        Connections.TouchConn = RootPart.Touched:Connect(OnTouchPart)
+    end
     
-    -- If already holding shift when character spawns, restart modifier
     if holdLeftShift then
-        StartBounceModifier()
+        StartBounceWalkSpeed()
     end
 end
 
@@ -1127,7 +1157,7 @@ LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0
+        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 RecordedSpeed = 16 LastBounceTime = 0
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
     end
@@ -1141,4 +1171,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + WalkSpeed Bounce + Air Strafe + Compact GUI!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Velocity Bounce + WalkSpeed Boost + Air Strafe!")
