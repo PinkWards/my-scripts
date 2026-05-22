@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 20
+local SCRIPT_VERSION = 21
 
 -- Auto-execute removed
 
@@ -66,10 +66,7 @@ local Config = {
     SafeDistance = 90
 }
 
-local BounceConfig = {
-    Power = 75,
-    MaxSpeed = 1000,
-}
+local BounceSpeed = 75 -- Default speed for the bounce modifier
 
 local ColaSettings = {
     Speed = 1.4,
@@ -108,14 +105,6 @@ local LastGCTime = 0
 local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
-
-local RecordedSpeed = 16
-local LastBounceTime = 0
-
-local BounceRayParams = RaycastParams.new()
-BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
-BounceRayParams.IgnoreWater = true
-BounceRayParams.RespectCanCollide = true
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -174,7 +163,6 @@ local function UpdateRayFilter()
         if gamePlayers then filterList[#filterList + 1] = gamePlayers end
     end
     EdgeRayParams.FilterDescendantsInstances = filterList
-    BounceRayParams.FilterDescendantsInstances = filterList
 end
 
 local function ForceUpdateRayFilter()
@@ -267,109 +255,52 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (MACRO BHOP + INSTANT BOUNCE + SPEED STRAFE)
+-- MOVEMENT (MACRO BHOP + NEW BOUNCE MODIFIER + SPEED STRAFE)
 -- ═══════════════════════════════════════════════════════════════
 
-local function GetBounceDirection(hVel, hSpeed)
-    if hSpeed > 1 then return hVel.Unit end
-    local cam = Workspace.CurrentCamera
-    if cam then
-        local look = cam.CFrame.LookVector
-        local dir = Vector3.new(look.X, 0, look.Z)
-        if dir.Magnitude > 0.01 then return dir.Unit end
-    end
-    return Vector3.new(0, 0, -1)
+local bounceConnection = nil
+local lastWalkSpeed = nil
+
+local function StartBounceModifier()
+    if bounceConnection then return end
+    lastWalkSpeed = nil
+    bounceConnection = RunService.RenderStepped:Connect(function()
+        if not RootPart or not Humanoid then return end
+        local velocity = RootPart.AssemblyLinearVelocity
+        local speed = velocity.Magnitude
+        local newWalkSpeed = 0
+        
+        if speed > 0.1 then 
+            newWalkSpeed = BounceSpeed
+        else
+            newWalkSpeed = 0
+        end
+        
+        if lastWalkSpeed == nil or newWalkSpeed ~= lastWalkSpeed then
+            Humanoid.WalkSpeed = newWalkSpeed
+            lastWalkSpeed = newWalkSpeed
+        end
+    end)
 end
 
-local function DoBounce()
-    if not RootPart or not Humanoid or Humanoid.Health <= 0 then return end
-    local vel = RootPart.AssemblyLinearVelocity
-    local hVel = Vector3.new(vel.X, 0, vel.Z)
-    local hSpeed = hVel.Magnitude
-    
-    -- Strictly preserve the highest speed
-    if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
-    local useSpeed = math.max(RecordedSpeed, hSpeed)
-    useSpeed = math.min(useSpeed, BounceConfig.MaxSpeed)
-    
-    local dir = GetBounceDirection(hVel, hSpeed)
-    -- Force exact velocity, overriding game friction completely
-    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BounceConfig.Power, 0)
-    Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    LastBounceTime = tick()
+local function StopBounceModifier()
+    if bounceConnection then
+        bounceConnection:Disconnect()
+        bounceConnection = nil
+    end
+    lastWalkSpeed = nil
+    if Humanoid then
+        Humanoid.WalkSpeed = 16 -- Restores normal walk speed
+    end
 end
 
 local function OnStateChanged(old, new)
     if new == Enum.HumanoidStateType.Landed then
         if holdLeftShift then
-            DoBounce()
+            Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         elseif holdSpace then
             Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         end
-    end
-end
-
-local function OnTouchPart(hit)
-    if not holdLeftShift or not hit then return end
-    local character = LocalPlayer.Character
-    if not character or hit:IsDescendantOf(character) then return end
-    
-    -- 0.01s cooldown prevents physics explosions but feels instant
-    local now = tick()
-    if now - LastBounceTime > 0.01 then 
-        DoBounce()
-    end
-end
-
--- Softly preserves speed in the air, letting gravity happen naturally so it looks legit
-local function EnforceBounceSpeed()
-    if not holdLeftShift or not RootPart or not Humanoid then return end
-    if Humanoid.Health <= 0 then return end
-    
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-        local vel = RootPart.AssemblyLinearVelocity
-        local hVel = Vector3.new(vel.X, 0, vel.Z)
-        local hSpeed = hVel.Magnitude
-        
-        -- ONLY preserve horizontal speed. Leave Y (vertical) completely alone for 100% natural gravity!
-        if hSpeed > 0 and hSpeed < RecordedSpeed then
-            RootPart.AssemblyLinearVelocity = Vector3.new(
-                hVel.Unit.X * RecordedSpeed,
-                vel.Y, -- Untouched! Game handles gravity naturally.
-                hVel.Unit.Z * RecordedSpeed
-            )
-        end
-    end
-end
-
--- Aggressively preserves speed mid-air so Roblox physics drag doesn't slow you down
-local function EnforceBounceSpeed()
-    if not holdLeftShift or not RootPart or not Humanoid then return end
-    if Humanoid.Health <= 0 then return end
-    
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-        local vel = RootPart.AssemblyLinearVelocity
-        local hVel = Vector3.new(vel.X, 0, vel.Z)
-        local hSpeed = hVel.Magnitude
-        
-        local newX, newZ = vel.X, vel.Z
-        
-        -- Preserve forward speed
-        if hSpeed > 0 and hSpeed < RecordedSpeed then
-            newX = hVel.Unit.X * RecordedSpeed
-            newZ = hVel.Unit.Z * RecordedSpeed
-        end
-        
-        local newY = vel.Y
-        
-        -- GRAVITY SNAP: If falling, pull down slightly faster so it doesn't feel floaty
-        if newY < 0 then
-            newY = newY - 2.0 -- Adds a natural, snappy weight to your fall
-        end
-        
-        RootPart.AssemblyLinearVelocity = Vector3.new(newX, newY, newZ)
     end
 end
 
@@ -400,12 +331,11 @@ local function AirStrafe()
     local gain = 1.5 
     local newHVel = hVel + (wishDir * gain)
     
-    if newHVel.Magnitude > BounceConfig.MaxSpeed then
-        newHVel = newHVel.Unit * BounceConfig.MaxSpeed
+    if newHVel.Magnitude > 1000 then
+        newHVel = newHVel.Unit * 1000
     end
     
     RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
-    RecordedSpeed = math.max(RecordedSpeed, newHVel.Magnitude)
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -1101,10 +1031,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.P then ToggleFullbright()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
-        if RootPart and Humanoid and Humanoid.Health > 0 then
-            local hSpeed = Vector3.new(RootPart.AssemblyLinearVelocity.X, 0, RootPart.AssemblyLinearVelocity.Z).Magnitude
-            if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
-        end
+        StartBounceModifier()
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local m = GUI.Main
@@ -1122,7 +1049,10 @@ UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then holdSpace = false
     elseif key == Enum.KeyCode.Q then holdQ = false
-    elseif key == Enum.KeyCode.LeftShift then holdLeftShift = false RecordedSpeed = 16 end
+    elseif key == Enum.KeyCode.LeftShift then 
+        holdLeftShift = false 
+        StopBounceModifier()
+    end
     if key == Enum.KeyCode.W then keysDown.W = false end
     if key == Enum.KeyCode.A then keysDown.A = false end
     if key == Enum.KeyCode.S then keysDown.S = false end
@@ -1135,21 +1065,20 @@ end)
 
 local function SetupCharacter(character)
     if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
-    if Connections.TouchConn then Connections.TouchConn:Disconnect() Connections.TouchConn = nil end
     
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter()
     SetupEdgeBoost()
     CurrentTarget, FarmStart = nil, 0
-    RecordedSpeed = 16
-    LastBounceTime = 0
     
     if Humanoid then 
         Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
-    if RootPart then
-        Connections.TouchConn = RootPart.Touched:Connect(OnTouchPart)
+    
+    -- If already holding shift when character spawns, restart modifier
+    if holdLeftShift then
+        StartBounceModifier()
     end
 end
 
@@ -1171,7 +1100,6 @@ local function StartMainLoop()
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
         AirStrafe()
-        EnforceBounceSpeed()
     end)
     
     local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
@@ -1199,7 +1127,7 @@ LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 RecordedSpeed = 16 LastBounceTime = 0
+        NPCLoaded = false CurrentTarget, FarmStart = nil, 0
         table.clear(CachedBots) table.clear(CachedItems)
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
     end
@@ -1213,4 +1141,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + Instant Bounce + Speed Strafe + Compact GUI!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Macro Bhop + WalkSpeed Bounce + Air Strafe + Compact GUI!")
