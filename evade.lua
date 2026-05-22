@@ -67,7 +67,7 @@ local Config = {
 }
 
 local BounceConfig = {
-    Power = 90,
+    Power = 75,
     MaxSpeed = 1000,
 }
 
@@ -332,14 +332,12 @@ local function EnforceBounceSpeed()
         local hVel = Vector3.new(vel.X, 0, vel.Z)
         local hSpeed = hVel.Magnitude
         
-        -- Allow a tiny 0.1% speed loss so it mimics natural air friction (looks legit to anti-cheat)
-        local targetSpeed = RecordedSpeed * 0.999 
-        
-        if hSpeed > 0 and hSpeed < targetSpeed then
+        -- ONLY preserve horizontal speed. Leave Y (vertical) completely alone for 100% natural gravity!
+        if hSpeed > 0 and hSpeed < RecordedSpeed then
             RootPart.AssemblyLinearVelocity = Vector3.new(
-                hVel.Unit.X * targetSpeed,
-                vel.Y, -- Leave Y alone so gravity creates a natural arc!
-                hVel.Unit.Z * targetSpeed
+                hVel.Unit.X * RecordedSpeed,
+                vel.Y, -- Untouched! Game handles gravity naturally.
+                hVel.Unit.Z * RecordedSpeed
             )
         end
     end
