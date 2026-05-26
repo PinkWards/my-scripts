@@ -8,6 +8,14 @@ local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
+-- The exact scale the real Korblox leg uses on a default R15 avatar
+-- These are the base values that get multiplied by your body scales
+local KORBLOX_BASE_SCALE = Vector3.new(1, 1, 1)
+
+-- Fixed Y placement: matches the exact real Korblox leg position
+-- relative to LowerTorso bottom edge, same as the catalog item
+local KORBLOX_FIXED_Y = -0.55
+
 local activeConnections = {}
 local heartbeatConns = {}
 local applied = false
@@ -28,43 +36,34 @@ local function getScaleProp(humanoid, propName)
     return 1.0
 end
 
--- Detects the correct Y lift by reading the torso size and leg sizes live
-local function calculateKorbloxYLift(character, humanoid)
+-- Returns the mesh scale based on your actual body scales
+local function getKorbloxScale(humanoid)
+    local wScale = getScaleProp(humanoid, "BodyWidthScale")
+    local hScale = getScaleProp(humanoid, "BodyHeightScale")
+    local dScale = getScaleProp(humanoid, "BodyDepthScale")
+    return Vector3.new(
+        KORBLOX_BASE_SCALE.X * wScale,
+        KORBLOX_BASE_SCALE.Y * hScale,
+        KORBLOX_BASE_SCALE.Z * dScale
+    )
+end
+
+-- Returns the fixed Y offset anchored to the LowerTorso bottom
+-- so it always sits exactly where the real Korblox leg sits
+local function getKorbloxOffset(character, humanoid)
     local rigType = humanoid.RigType
 
-    if rigType == Enum.HumanoidRigType.R6 then
-        -- R6: torso sits above the right leg, measure both
-        local torso    = character:FindFirstChild("Torso")
-        local rightLeg = character:FindFirstChild("Right Leg")
-
-        if not torso or not rightLeg then
-            return 0.19 -- fallback
-        end
-
-        local torsoHalfHeight = torso.Size.Y / 2
-        local legHalfHeight   = rightLeg.Size.Y / 2
-
-        -- The leg part origin is at its center.
-        -- We want the mesh bottom to align with torso bottom.
-        -- Lift = half torso + half leg (places mesh top near torso bottom)
-        -- Then we push up slightly so it sits flush under the torso.
-        local lift = torsoHalfHeight + legHalfHeight
-
-        -- Scale it by the humanoid height scale so it stretches with the body
-        local hScale = getScaleProp(humanoid, "BodyHeightScale")
-        return lift * hScale
-
-    elseif rigType == Enum.HumanoidRigType.R15 then
-        -- R15: measure the upper leg + lower leg + foot combined height
-        local upperLeg = character:FindFirstChild("RightUpperLeg")
-        local lowerLeg = character:FindFirstChild("RightLowerLeg")
-        local foot     = character:FindFirstChild("RightFoot")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if rigType == Enum.HumanoidRigType.R15 then
+        local lowerTorso = character:FindFirstChild("LowerTorso")
+        local upperLeg   = character:FindFirstChild("RightUpperLeg")
+        local lowerLeg   = character:FindFirstChild("RightLowerLeg")
+        local foot       = character:FindFirstChild("RightFoot")
 
         if not upperLeg then
-            return 0.55 -- fallback
+            return Vector3.new(0, KORBLOX_FIXED_Y, 0)
         end
 
+        -- Total leg height so we can center the mesh on the leg column
         local totalLegHeight = upperLeg.Size.Y
         if lowerLeg and lowerLeg.Parent then
             totalLegHeight = totalLegHeight + lowerLeg.Size.Y
@@ -73,19 +72,34 @@ local function calculateKorbloxYLift(character, humanoid)
             totalLegHeight = totalLegHeight + foot.Size.Y
         end
 
-        -- Center the mesh across the full leg span
-        local baseCenter = (upperLeg.Size.Y / 2) - (totalLegHeight / 2)
+        -- Center offset: moves mesh origin to center of full leg column
+        local centerOffset = (upperLeg.Size.Y / 2) - (totalLegHeight / 2)
 
-        -- Measure root part to get the body scale reference
-        local rootHeight = rootPart and rootPart.Size.Y or 2
-        local hScale     = getScaleProp(humanoid, "BodyHeightScale")
+        -- LowerTorso bottom edge reference
+        local lowerTorsoHalf = lowerTorso and (lowerTorso.Size.Y / 2) or 0.25
+        local hScale = getScaleProp(humanoid, "BodyHeightScale")
 
-        -- Push up so the mesh top sits flush under the torso/root
-        local lift = baseCenter + (rootHeight * 0.1 * hScale)
-        return lift
+        -- Final Y: center the mesh on the leg, then anchor it
+        -- exactly to where the real Korblox sits under LowerTorso
+        local finalY = centerOffset + (lowerTorsoHalf * hScale * KORBLOX_FIXED_Y)
+        return Vector3.new(0, finalY, 0)
+
+    elseif rigType == Enum.HumanoidRigType.R6 then
+        local torso    = character:FindFirstChild("Torso")
+        local rightLeg = character:FindFirstChild("Right Leg")
+
+        if not torso or not rightLeg then
+            return Vector3.new(0, 0.19, 0)
+        end
+
+        local hScale = getScaleProp(humanoid, "BodyHeightScale")
+        local legHalf   = rightLeg.Size.Y / 2
+        local torsoHalf = torso.Size.Y / 2
+        local finalY = (torsoHalf + legHalf) * hScale
+        return Vector3.new(0, finalY, 0)
     end
 
-    return 0.55 -- universal fallback
+    return Vector3.new(0, KORBLOX_FIXED_Y, 0)
 end
 
 local function cleanupConnections()
@@ -222,7 +236,6 @@ local function applyKorbloxR6(character)
     korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
     korbloxMesh.Parent = rightLeg
 
-    -- Live loop: recalculates Y lift every frame based on actual torso size
     trackHeartbeat(RunService.Heartbeat:Connect(function()
         if not rightLeg or not rightLeg.Parent then return end
         if not korbloxMesh or not korbloxMesh.Parent then return end
@@ -230,14 +243,10 @@ local function applyKorbloxR6(character)
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         if not humanoid then return end
 
-        local wScale = getScaleProp(humanoid, "BodyWidthScale")
-        local hScale = getScaleProp(humanoid, "BodyHeightScale")
-        local dScale = getScaleProp(humanoid, "BodyDepthScale")
-        korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
-
-        -- Recalculate lift dynamically from actual torso size
-        local yLift = calculateKorbloxYLift(character, humanoid)
-        korbloxMesh.Offset = Vector3.new(0, yLift, 0)
+        -- Scale mesh to match body proportions
+        korbloxMesh.Scale = getKorbloxScale(humanoid)
+        -- Fixed placement anchored to torso
+        korbloxMesh.Offset = getKorbloxOffset(character, humanoid)
     end))
 end
 
@@ -281,11 +290,8 @@ local function applyKorbloxR15(character)
     mesh.MeshType  = Enum.MeshType.FileMesh
     mesh.MeshId    = KORBLOX_MESH_ID
     mesh.TextureId = KORBLOX_TEXTURE_ID
-
-    local wScale = getScaleProp(humanoid, "BodyWidthScale")
-    local hScale = getScaleProp(humanoid, "BodyHeightScale")
-    local dScale = getScaleProp(humanoid, "BodyDepthScale")
-    mesh.Scale     = Vector3.new(wScale, hScale, dScale)
+    -- Set initial scale from body scales right away
+    mesh.Scale     = getKorbloxScale(humanoid)
     mesh.Parent    = korbloxLeg
 
     korbloxLeg.CFrame = rightUpperLeg.CFrame
@@ -295,7 +301,6 @@ local function applyKorbloxR15(character)
     weld.Part1 = korbloxLeg
     weld.Parent = korbloxLeg
 
-    -- Live loop: recalculates Y lift every frame based on actual leg + torso size
     trackHeartbeat(RunService.Heartbeat:Connect(function()
         if not character or not character.Parent then return end
         if not rightUpperLeg or not rightUpperLeg.Parent then return end
@@ -321,14 +326,10 @@ local function applyKorbloxR15(character)
         end
 
         if currentLegHeight > 0.1 then
-            local curW = getScaleProp(humanoid, "BodyWidthScale")
-            local curH = getScaleProp(humanoid, "BodyHeightScale")
-            local curD = getScaleProp(humanoid, "BodyDepthScale")
-            mesh.Scale = Vector3.new(curW, curH, curD)
-
-            -- Dynamically calculated from actual torso + leg sizes every frame
-            local yLift = calculateKorbloxYLift(character, humanoid)
-            mesh.Offset = Vector3.new(0, yLift, 0)
+            -- Scale dynamically with body proportions every frame
+            mesh.Scale = getKorbloxScale(humanoid)
+            -- Fixed placement anchored to LowerTorso every frame
+            mesh.Offset = getKorbloxOffset(character, humanoid)
         end
     end))
 end
@@ -338,6 +339,7 @@ local function waitForRig(character)
     if not humanoid then return end
 
     if humanoid.RigType == Enum.HumanoidRigType.R15 then
+        character:WaitForChild("LowerTorso",       10)
         character:WaitForChild("RightUpperLeg",    10)
         character:WaitForChild("RightLowerLeg",    10)
         character:WaitForChild("RightFoot",        10)
