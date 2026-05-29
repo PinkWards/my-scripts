@@ -66,8 +66,8 @@ local Config = {
     SafeDistance = 90
 }
 
-local BouncePower = 75 -- How high you bounce
-local BounceWalkSpeed = 75 -- WalkSpeed modifier while bouncing
+local BouncePower = 85 -- How high you bounce
+local BounceWalkSpeed = 80 -- WalkSpeed modifier while bouncing
 
 local ColaSettings = {
     Speed = 1.4,
