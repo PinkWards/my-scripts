@@ -3,16 +3,28 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
--- // Config (persists during session)
-local Config = {
-    LegYOffset = 0,
-}
-
 -- // Constants
 local KORBLOX_MESH_ID = "rbxassetid://101851696"
 local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local MIN_VAL, MAX_VAL, STEP = -2, 2, 0.05
+local CONFIG_FILE = "KorbloxLegConfig.txt"
+
+-- // Config (persists during session)
+local Config = {
+    LegYOffset = 0,
+}
+
+-- // Load saved config from file
+pcall(function()
+    local savedData = readfile(CONFIG_FILE)
+    if savedData then
+        local savedNum = tonumber(savedData)
+        if savedNum then
+            Config.LegYOffset = math.clamp(savedNum, MIN_VAL, MAX_VAL)
+        end
+    end
+end)
 
 -- // Notification
 local function notify(title, text, icon)
@@ -357,6 +369,11 @@ local function setValue(val)
     if not n then return end
     Config.LegYOffset = math.clamp(math.round(n * 100) / 100, MIN_VAL, MAX_VAL)
     updateVisuals()
+    
+    -- Save to file whenever the value is changed
+    pcall(function()
+        writefile(CONFIG_FILE, tostring(Config.LegYOffset))
+    end)
 end
 
 local dragging = false
@@ -428,6 +445,7 @@ end
 setupArrow(upBtn, upVis, STEP)
 setupArrow(dnBtn, dnVis, -STEP)
 
+-- Initialize visuals with the loaded config
 updateVisuals()
 
-notify("Korblox + Headless", "Active! Adjust leg Y with the GUI.", "rbxassetid://101851696")
+notify("Korblox + Headless", "Active! Config loaded. Adjust leg Y with the GUI.", "rbxassetid://101851696")
