@@ -1,396 +1,499 @@
+-- Korblox Leg Script (R15 Adjuster + Mini GUI)
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
-local HEADLESS_MESH_ID = "rbxassetid://1095708"
 local KORBLOX_MESH_ID = "rbxassetid://101851696"
 local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
-local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
--- The exact scale the real Korblox leg uses on a default R15 avatar
--- These are the base values that get multiplied by your body scales
-local KORBLOX_BASE_SCALE = Vector3.new(1, 1, 1)
-
--- Fixed Y placement: matches the exact real Korblox leg position
--- relative to LowerTorso bottom edge, same as the catalog item
-local KORBLOX_FIXED_Y = -0.55
+local currentOffset = {
+	Y = 0.19,
+}
 
 local activeConnections = {}
 local heartbeatConns = {}
 local applied = false
 
+-- =============================================
+--              MINI GUI
+-- =============================================
+
+local function buildGUI()
+	local old = player.PlayerGui:FindFirstChild("KorbloxMiniGUI")
+	if old then old:Destroy() end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "KorbloxMiniGUI"
+	screenGui.ResetOnSpawn = false
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = player.PlayerGui
+
+	-- Toggle Icon Button (always visible)
+	local toggleBtn = Instance.new("ImageButton")
+	toggleBtn.Name = "ToggleBtn"
+	toggleBtn.Size = UDim2.new(0, 40, 0, 40)
+	toggleBtn.Position = UDim2.new(0, 12, 0.5, -20)
+	toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+	toggleBtn.BorderSizePixel = 0
+	toggleBtn.Image = "rbxassetid://6031068420" -- gear/settings icon
+	toggleBtn.ImageColor3 = Color3.fromRGB(255, 200, 80)
+	toggleBtn.ZIndex = 10
+	toggleBtn.Parent = screenGui
+
+	local toggleCorner = Instance.new("UICorner")
+	toggleCorner.CornerRadius = UDim.new(1, 0)
+	toggleCorner.Parent = toggleBtn
+
+	local toggleStroke = Instance.new("UIStroke")
+	toggleStroke.Color = Color3.fromRGB(255, 200, 80)
+	toggleStroke.Thickness = 1.5
+	toggleStroke.Parent = toggleBtn
+
+	-- Main panel (small, just the slider)
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.Size = UDim2.new(0, 200, 0, 72)
+	panel.Position = UDim2.new(0, 60, 0.5, -36)
+	panel.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+	panel.BorderSizePixel = 0
+	panel.Visible = false
+	panel.Active = true
+	panel.ZIndex = 9
+	panel.Parent = screenGui
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 8)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Color = Color3.fromRGB(255, 200, 80)
+	panelStroke.Thickness = 1
+	panelStroke.Parent = panel
+
+	-- Panel title
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Text = "Korblox Y Offset"
+	titleLabel.Size = UDim2.new(1, -10, 0, 18)
+	titleLabel.Position = UDim2.new(0, 8, 0, 6)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+	titleLabel.TextSize = 11
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+	titleLabel.ZIndex = 10
+	titleLabel.Parent = panel
+
+	-- Value box
+	local valueBox = Instance.new("TextBox")
+	valueBox.Size = UDim2.new(0, 48, 0, 18)
+	valueBox.Position = UDim2.new(1, -56, 0, 6)
+	valueBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	valueBox.BorderSizePixel = 0
+	valueBox.TextColor3 = Color3.fromRGB(255, 200, 80)
+	valueBox.TextSize = 11
+	valueBox.Font = Enum.Font.GothamBold
+	valueBox.Text = tostring(currentOffset.Y)
+	valueBox.ClearTextOnFocus = false
+	valueBox.ZIndex = 10
+	valueBox.Parent = panel
+
+	local vbCorner = Instance.new("UICorner")
+	vbCorner.CornerRadius = UDim.new(0, 4)
+	vbCorner.Parent = valueBox
+
+	-- Slider track
+	local track = Instance.new("Frame")
+	track.Name = "Track"
+	track.Size = UDim2.new(1, -16, 0, 10)
+	track.Position = UDim2.new(0, 8, 0, 34)
+	track.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+	track.BorderSizePixel = 0
+	track.ZIndex = 10
+	track.Parent = panel
+
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(0, 5)
+	trackCorner.Parent = track
+
+	-- Fill bar
+	local fill = Instance.new("Frame")
+	fill.BackgroundColor3 = Color3.fromRGB(255, 160, 0)
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.ZIndex = 11
+	fill.Parent = track
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(0, 5)
+	fillCorner.Parent = fill
+
+	-- Thumb
+	local thumb = Instance.new("Frame")
+	thumb.Size = UDim2.new(0, 16, 0, 16)
+	thumb.AnchorPoint = Vector2.new(0.5, 0.5)
+	thumb.BackgroundColor3 = Color3.fromRGB(255, 200, 80)
+	thumb.BorderSizePixel = 0
+	thumb.ZIndex = 12
+	thumb.Parent = track
+
+	local thumbCorner = Instance.new("UICorner")
+	thumbCorner.CornerRadius = UDim.new(1, 0)
+	thumbCorner.Parent = thumb
+
+	-- Drag label hint
+	local hintLabel = Instance.new("TextLabel")
+	hintLabel.Text = "drag to adjust • -0.5 to 2"
+	hintLabel.Size = UDim2.new(1, -10, 0, 14)
+	hintLabel.Position = UDim2.new(0, 8, 0, 52)
+	hintLabel.BackgroundTransparency = 1
+	hintLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
+	hintLabel.TextSize = 9
+	hintLabel.Font = Enum.Font.Gotham
+	hintLabel.TextXAlignment = Enum.TextXAlignment.Left
+	hintLabel.ZIndex = 10
+	hintLabel.Parent = panel
+
+	-- Dragging the panel
+	local dragging, dragStart, startPos
+	panel.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = panel.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging then
+			if input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch then
+				local delta = input.Position - dragStart
+				panel.Position = UDim2.new(
+					startPos.X.Scale,
+					startPos.X.Offset + delta.X,
+					startPos.Y.Scale,
+					startPos.Y.Offset + delta.Y
+				)
+			end
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	-- Slider logic
+	local MIN_Y, MAX_Y, STEP_Y = -0.5, 2, 0.01
+
+	local function valueToAlpha(v)
+		return math.clamp((v - MIN_Y) / (MAX_Y - MIN_Y), 0, 1)
+	end
+
+	local function alphaToValue(a)
+		local raw = MIN_Y + a * (MAX_Y - MIN_Y)
+		local snapped = math.round(raw / STEP_Y) * STEP_Y
+		return math.clamp(snapped, MIN_Y, MAX_Y)
+	end
+
+	local function applyValue(v)
+		v = math.clamp(v, MIN_Y, MAX_Y)
+		local display = math.round(v * 10000) / 10000
+		currentOffset.Y = display
+		valueBox.Text = tostring(display)
+		local alpha = valueToAlpha(v)
+		fill.Size = UDim2.new(alpha, 0, 1, 0)
+		thumb.Position = UDim2.new(alpha, 0, 0.5, 0)
+	end
+
+	applyValue(currentOffset.Y)
+
+	local sliding = false
+
+	local function updateFromInput(input)
+		local abs = track.AbsolutePosition
+		local sz = track.AbsoluteSize
+		local relX = (input.Position.X - abs.X) / sz.X
+		applyValue(alphaToValue(math.clamp(relX, 0, 1)))
+	end
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = true
+			updateFromInput(input)
+		end
+	end)
+	thumb.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = true
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if sliding then
+			if input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch then
+				updateFromInput(input)
+			end
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			sliding = false
+		end
+	end)
+
+	valueBox.FocusLost:Connect(function()
+		local num = tonumber(valueBox.Text)
+		if num then
+			applyValue(math.clamp(num, MIN_Y, MAX_Y))
+		else
+			valueBox.Text = tostring(currentOffset.Y)
+		end
+	end)
+
+	-- Toggle open/close
+	toggleBtn.MouseButton1Click:Connect(function()
+		panel.Visible = not panel.Visible
+	end)
+end
+
+-- =============================================
+--           CORE LOGIC
+-- =============================================
+
 local function getScaleProp(humanoid, propName)
-    local success, val = pcall(function()
-        return humanoid[propName]
-    end)
-    if success then
-        local num = tonumber(val)
-        if num then
-            return math.max(num, 0.5)
-        end
-        if typeof(val) == "Instance" and val:IsA("NumberValue") then
-            return math.max(val.Value, 0.5)
-        end
-    end
-    return 1.0
-end
-
--- Returns the mesh scale based on your actual body scales
-local function getKorbloxScale(humanoid)
-    local wScale = getScaleProp(humanoid, "BodyWidthScale")
-    local hScale = getScaleProp(humanoid, "BodyHeightScale")
-    local dScale = getScaleProp(humanoid, "BodyDepthScale")
-    return Vector3.new(
-        KORBLOX_BASE_SCALE.X * wScale,
-        KORBLOX_BASE_SCALE.Y * hScale,
-        KORBLOX_BASE_SCALE.Z * dScale
-    )
-end
-
--- Returns the fixed Y offset anchored to the LowerTorso bottom
--- so it always sits exactly where the real Korblox leg sits
-local function getKorbloxOffset(character, humanoid)
-    local rigType = humanoid.RigType
-
-    if rigType == Enum.HumanoidRigType.R15 then
-        local lowerTorso = character:FindFirstChild("LowerTorso")
-        local upperLeg   = character:FindFirstChild("RightUpperLeg")
-        local lowerLeg   = character:FindFirstChild("RightLowerLeg")
-        local foot       = character:FindFirstChild("RightFoot")
-
-        if not upperLeg then
-            return Vector3.new(0, KORBLOX_FIXED_Y, 0)
-        end
-
-        -- Total leg height so we can center the mesh on the leg column
-        local totalLegHeight = upperLeg.Size.Y
-        if lowerLeg and lowerLeg.Parent then
-            totalLegHeight = totalLegHeight + lowerLeg.Size.Y
-        end
-        if foot and foot.Parent then
-            totalLegHeight = totalLegHeight + foot.Size.Y
-        end
-
-        -- Center offset: moves mesh origin to center of full leg column
-        local centerOffset = (upperLeg.Size.Y / 2) - (totalLegHeight / 2)
-
-        -- LowerTorso bottom edge reference
-        local lowerTorsoHalf = lowerTorso and (lowerTorso.Size.Y / 2) or 0.25
-        local hScale = getScaleProp(humanoid, "BodyHeightScale")
-
-        -- Final Y: center the mesh on the leg, then anchor it
-        -- exactly to where the real Korblox sits under LowerTorso
-        local finalY = centerOffset + (lowerTorsoHalf * hScale * KORBLOX_FIXED_Y)
-        return Vector3.new(0, finalY, 0)
-
-    elseif rigType == Enum.HumanoidRigType.R6 then
-        local torso    = character:FindFirstChild("Torso")
-        local rightLeg = character:FindFirstChild("Right Leg")
-
-        if not torso or not rightLeg then
-            return Vector3.new(0, 0.19, 0)
-        end
-
-        local hScale = getScaleProp(humanoid, "BodyHeightScale")
-        local legHalf   = rightLeg.Size.Y / 2
-        local torsoHalf = torso.Size.Y / 2
-        local finalY = (torsoHalf + legHalf) * hScale
-        return Vector3.new(0, finalY, 0)
-    end
-
-    return Vector3.new(0, KORBLOX_FIXED_Y, 0)
+	local success, val = pcall(function() return humanoid[propName] end)
+	if success then
+		local num = tonumber(val)
+		if num then return math.max(num, 0.5) end
+		if typeof(val) == "Instance" and val:IsA("NumberValue") then
+			return math.max(val.Value, 0.5)
+		end
+	end
+	return 1.0
 end
 
 local function cleanupConnections()
-    for i = #activeConnections, 1, -1 do
-        local conn = activeConnections[i]
-        if conn and conn.Connected then
-            conn:Disconnect()
-        end
-        activeConnections[i] = nil
-    end
-    for i = #heartbeatConns, 1, -1 do
-        local conn = heartbeatConns[i]
-        if conn and conn.Connected then
-            conn:Disconnect()
-        end
-        heartbeatConns[i] = nil
-    end
-    applied = false
+	for i = #activeConnections, 1, -1 do
+		local c = activeConnections[i]
+		if c and c.Connected then c:Disconnect() end
+		activeConnections[i] = nil
+	end
+	for i = #heartbeatConns, 1, -1 do
+		local c = heartbeatConns[i]
+		if c and c.Connected then c:Disconnect() end
+		heartbeatConns[i] = nil
+	end
+	applied = false
 end
 
 local function track(conn)
-    activeConnections[#activeConnections + 1] = conn
-    return conn
+	activeConnections[#activeConnections + 1] = conn
+	return conn
 end
 
 local function trackHeartbeat(conn)
-    heartbeatConns[#heartbeatConns + 1] = conn
-    return conn
+	heartbeatConns[#heartbeatConns + 1] = conn
+	return conn
 end
 
-local function removeFace(head)
-    local face = head:FindFirstChild("face")
-    if face then face:Destroy() end
-end
-
-local function applyHeadless(head)
-    if not head or head:FindFirstChild("HeadlessMesh") then return end
-
-    head.Transparency = 1
-    head.CanCollide = false
-    removeFace(head)
-
-    local existingMesh = head:FindFirstChildOfClass("SpecialMesh")
-    if existingMesh then
-        existingMesh.Scale = TINY_SCALE
-    end
-
-    local mesh = Instance.new("SpecialMesh")
-    mesh.Name = "HeadlessMesh"
-    mesh.MeshType = Enum.MeshType.FileMesh
-    mesh.MeshId = HEADLESS_MESH_ID
-    mesh.Scale = TINY_SCALE
-    mesh.Parent = head
-
-    track(head:GetPropertyChangedSignal("Transparency"):Connect(function()
-        if head.Transparency ~= 1 then
-            head.Transparency = 1
-        end
-    end))
-
-    track(head.ChildAdded:Connect(function(child)
-        if child:IsA("Decal") then
-            task.defer(function()
-                if child and child.Parent then
-                    child:Destroy()
-                end
-            end)
-        end
-    end))
-
-    local character = head.Parent
-    if character then
-        task.spawn(function()
-            task.wait(0.3)
-            if not character or not character.Parent then return end
-            for _, v in pairs(character:GetChildren()) do
-                if v:IsA("Accessory") then
-                    local handle = v:FindFirstChild("Handle")
-                    if handle then
-                        local weld = handle:FindFirstChildOfClass("Weld")
-                            or handle:FindFirstChildOfClass("Motor6D")
-                        if weld then
-                            local attachTo = weld.Part0 or weld.Part1
-                            if attachTo and attachTo.Name == "Head" then
-                                handle.Transparency = 1
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-
-        track(character.ChildAdded:Connect(function(child)
-            if child:IsA("Accessory") then
-                task.wait(0.1)
-                local handle = child:FindFirstChild("Handle")
-                if handle then
-                    local weld = handle:FindFirstChildOfClass("Weld")
-                        or handle:FindFirstChildOfClass("Motor6D")
-                    if weld then
-                        local attachTo = weld.Part0 or weld.Part1
-                        if attachTo and attachTo.Name == "Head" then
-                            handle.Transparency = 1
-                        end
-                    end
-                end
-            end
-        end))
-    end
-end
+-- =============================================
+--  R6: Korblox on Right Leg (no Y adjustment)
+-- =============================================
 
 local function applyKorbloxR6(character)
-    local rightLeg = character:FindFirstChild("Right Leg")
-    if not rightLeg or rightLeg:FindFirstChild("KorbloxMesh") then return end
+	local rightLeg = character:FindFirstChild("Right Leg")
+	if not rightLeg or rightLeg:FindFirstChild("KorbloxMesh") then return end
 
-    for _, child in ipairs(rightLeg:GetChildren()) do
-        if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
-            child:Destroy()
-        end
-    end
+	for _, child in ipairs(rightLeg:GetChildren()) do
+		if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
+			child:Destroy()
+		end
+	end
 
-    rightLeg.Color = DARK_GREY_COLOR
+	rightLeg.Color = DARK_GREY_COLOR
 
-    track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
-        if rightLeg.Color ~= DARK_GREY_COLOR then
-            rightLeg.Color = DARK_GREY_COLOR
-        end
-    end))
+	track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
+		if rightLeg.Color ~= DARK_GREY_COLOR then
+			rightLeg.Color = DARK_GREY_COLOR
+		end
+	end))
 
-    local korbloxMesh = Instance.new("SpecialMesh")
-    korbloxMesh.Name = "KorbloxMesh"
-    korbloxMesh.MeshType = Enum.MeshType.FileMesh
-    korbloxMesh.MeshId = KORBLOX_MESH_ID
-    korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
-    korbloxMesh.Parent = rightLeg
+	local korbloxMesh = Instance.new("SpecialMesh")
+	korbloxMesh.Name = "KorbloxMesh"
+	korbloxMesh.MeshType = Enum.MeshType.FileMesh
+	korbloxMesh.MeshId = KORBLOX_MESH_ID
+	korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
+	-- R6: fixed offset, no GUI adjustment
+	korbloxMesh.Offset = Vector3.new(0, 0.19, 0)
+	korbloxMesh.Parent = rightLeg
 
-    trackHeartbeat(RunService.Heartbeat:Connect(function()
-        if not rightLeg or not rightLeg.Parent then return end
-        if not korbloxMesh or not korbloxMesh.Parent then return end
-
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not humanoid then return end
-
-        -- Scale mesh to match body proportions
-        korbloxMesh.Scale = getKorbloxScale(humanoid)
-        -- Fixed placement anchored to torso
-        korbloxMesh.Offset = getKorbloxOffset(character, humanoid)
-    end))
+	trackHeartbeat(RunService.Heartbeat:Connect(function()
+		if not rightLeg or not rightLeg.Parent then return end
+		if not korbloxMesh or not korbloxMesh.Parent then return end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			local wScale = getScaleProp(humanoid, "BodyWidthScale")
+			local hScale = getScaleProp(humanoid, "BodyHeightScale")
+			local dScale = getScaleProp(humanoid, "BodyDepthScale")
+			korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
+		end
+		-- R6 keeps fixed offset, no GUI control
+		korbloxMesh.Offset = Vector3.new(0, 0.19, 0)
+	end))
 end
+
+-- =============================================
+--  R15: Korblox on Right Leg (Y GUI-controlled)
+-- =============================================
 
 local function applyKorbloxR15(character)
-    local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
-    local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
-    local rightFoot     = character:FindFirstChild("RightFoot")
-    local humanoid      = character:FindFirstChildOfClass("Humanoid")
+	local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
+	local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
+	local rightFoot = character:FindFirstChild("RightFoot")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
 
-    if not rightUpperLeg or not humanoid then return end
-    if character:FindFirstChild("KorbloxLeg") then return end
+	if not rightUpperLeg or not humanoid then return end
+	if character:FindFirstChild("KorbloxLeg") then return end
 
-    local function hidePart(part)
-        if not part then return end
-        part.Transparency = 1
-        part.CanCollide   = false
-        for _, child in ipairs(part:GetChildren()) do
-            if child:IsA("SpecialMesh") or child:IsA("Decal") then
-                child:Destroy()
-            end
-        end
-    end
+	local function hidePart(part)
+		if not part then return end
+		part.Transparency = 1
+		part.CanCollide = false
+		for _, child in ipairs(part:GetChildren()) do
+			if child:IsA("SpecialMesh") or child:IsA("Decal") then
+				child:Destroy()
+			end
+		end
+	end
 
-    hidePart(rightUpperLeg)
-    hidePart(rightLowerLeg)
-    hidePart(rightFoot)
+	hidePart(rightUpperLeg)
+	hidePart(rightLowerLeg)
+	hidePart(rightFoot)
 
-    local korbloxLeg = Instance.new("Part")
-    korbloxLeg.Name         = "KorbloxLeg"
-    korbloxLeg.Size         = Vector3.new(1, 1, 1)
-    korbloxLeg.Anchored     = false
-    korbloxLeg.CanCollide   = false
-    korbloxLeg.Massless     = true
-    korbloxLeg.CastShadow   = true
-    korbloxLeg.Color        = DARK_GREY_COLOR
-    korbloxLeg.Transparency = 0
-    korbloxLeg.Parent       = character
+	-- Invisible anchor part welded to RightUpperLeg
+	local korbloxLeg = Instance.new("Part")
+	korbloxLeg.Name = "KorbloxLeg"
+	korbloxLeg.Size = Vector3.new(1, 1, 1)
+	korbloxLeg.Anchored = false
+	korbloxLeg.CanCollide = false
+	korbloxLeg.Massless = true
+	korbloxLeg.CastShadow = true
+	korbloxLeg.Color = DARK_GREY_COLOR
+	korbloxLeg.Transparency = 0
+	korbloxLeg.Parent = character
 
-    local mesh = Instance.new("SpecialMesh")
-    mesh.Name      = "KorbloxMesh"
-    mesh.MeshType  = Enum.MeshType.FileMesh
-    mesh.MeshId    = KORBLOX_MESH_ID
-    mesh.TextureId = KORBLOX_TEXTURE_ID
-    -- Set initial scale from body scales right away
-    mesh.Scale     = getKorbloxScale(humanoid)
-    mesh.Parent    = korbloxLeg
+	local mesh = Instance.new("SpecialMesh")
+	mesh.Name = "KorbloxMesh"
+	mesh.MeshType = Enum.MeshType.FileMesh
+	mesh.MeshId = KORBLOX_MESH_ID
+	mesh.TextureId = KORBLOX_TEXTURE_ID
 
-    korbloxLeg.CFrame = rightUpperLeg.CFrame
+	local wScale = getScaleProp(humanoid, "BodyWidthScale")
+	local hScale = getScaleProp(humanoid, "BodyHeightScale")
+	local dScale = getScaleProp(humanoid, "BodyDepthScale")
+	mesh.Scale = Vector3.new(wScale, hScale, dScale)
+	mesh.Parent = korbloxLeg
 
-    local weld = Instance.new("WeldConstraint")
-    weld.Part0 = rightUpperLeg
-    weld.Part1 = korbloxLeg
-    weld.Parent = korbloxLeg
+	korbloxLeg.CFrame = rightUpperLeg.CFrame
 
-    trackHeartbeat(RunService.Heartbeat:Connect(function()
-        if not character or not character.Parent then return end
-        if not rightUpperLeg or not rightUpperLeg.Parent then return end
-        if not mesh or not mesh.Parent then return end
-        if not humanoid or not humanoid.Parent then return end
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = rightUpperLeg
+	weld.Part1 = korbloxLeg
+	weld.Parent = korbloxLeg
 
-        if rightUpperLeg.Transparency ~= 1 then
-            rightUpperLeg.Transparency = 1
-        end
-        if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then
-            rightLowerLeg.Transparency = 1
-        end
-        if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then
-            rightFoot.Transparency = 1
-        end
+	trackHeartbeat(RunService.Heartbeat:Connect(function()
+		if not character or not character.Parent then return end
+		if not rightUpperLeg or not rightUpperLeg.Parent then return end
+		if not mesh or not mesh.Parent then return end
+		if not humanoid or not humanoid.Parent then return end
 
-        local currentLegHeight = rightUpperLeg.Size.Y
-        if rightLowerLeg and rightLowerLeg.Parent then
-            currentLegHeight = currentLegHeight + rightLowerLeg.Size.Y
-        end
-        if rightFoot and rightFoot.Parent then
-            currentLegHeight = currentLegHeight + rightFoot.Size.Y
-        end
+		-- Keep legs hidden
+		if rightUpperLeg.Transparency ~= 1 then rightUpperLeg.Transparency = 1 end
+		if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then
+			rightLowerLeg.Transparency = 1
+		end
+		if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then
+			rightFoot.Transparency = 1
+		end
 
-        if currentLegHeight > 0.1 then
-            -- Scale dynamically with body proportions every frame
-            mesh.Scale = getKorbloxScale(humanoid)
-            -- Fixed placement anchored to LowerTorso every frame
-            mesh.Offset = getKorbloxOffset(character, humanoid)
-        end
-    end))
+		-- Compute total leg height
+		local legHeight = rightUpperLeg.Size.Y
+		if rightLowerLeg and rightLowerLeg.Parent then
+			legHeight = legHeight + rightLowerLeg.Size.Y
+		end
+		if rightFoot and rightFoot.Parent then
+			legHeight = legHeight + rightFoot.Size.Y
+		end
+
+		if legHeight > 0.1 then
+			local curW = getScaleProp(humanoid, "BodyWidthScale")
+			local curH = getScaleProp(humanoid, "BodyHeightScale")
+			local curD = getScaleProp(humanoid, "BodyDepthScale")
+			mesh.Scale = Vector3.new(curW, curH, curD)
+
+			-- Base centering + GUI Y offset only
+			local baseY = (rightUpperLeg.Size.Y / 2) - (legHeight / 2)
+			mesh.Offset = Vector3.new(0, baseY + currentOffset.Y, 0)
+		end
+	end))
 end
 
-local function waitForRig(character)
-    local humanoid = character:WaitForChild("Humanoid", 10)
-    if not humanoid then return end
+-- =============================================
+--              INIT
+-- =============================================
 
-    if humanoid.RigType == Enum.HumanoidRigType.R15 then
-        character:WaitForChild("LowerTorso",       10)
-        character:WaitForChild("RightUpperLeg",    10)
-        character:WaitForChild("RightLowerLeg",    10)
-        character:WaitForChild("RightFoot",        10)
-        character:WaitForChild("HumanoidRootPart", 10)
-    else
-        character:WaitForChild("Right Leg", 10)
-    end
+local function waitForRig(character)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	if not humanoid then return end
+	if humanoid.RigType == Enum.HumanoidRigType.R15 then
+		character:WaitForChild("RightUpperLeg", 10)
+		character:WaitForChild("RightLowerLeg", 10)
+		character:WaitForChild("RightFoot", 10)
+		character:WaitForChild("HumanoidRootPart", 10)
+	else
+		character:WaitForChild("Right Leg", 10)
+	end
 end
 
 local function applyCharacter(character)
-    if applied then return end
-    applied = true
+	if applied then return end
+	applied = true
 
-    waitForRig(character)
+	waitForRig(character)
 
-    if not character or not character.Parent then
-        applied = false
-        return
-    end
+	if not character or not character.Parent then
+		applied = false
+		return
+	end
 
-    local head = character:FindFirstChild("Head")
-    if head then
-        applyHeadless(head)
-    end
-
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        if humanoid.RigType == Enum.HumanoidRigType.R6 then
-            applyKorbloxR6(character)
-        elseif humanoid.RigType == Enum.HumanoidRigType.R15 then
-            applyKorbloxR15(character)
-        end
-    end
-
-    track(character.ChildAdded:Connect(function(child)
-        if child.Name == "Head" then
-            task.wait(0.1)
-            applyHeadless(child)
-        end
-    end))
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		if humanoid.RigType == Enum.HumanoidRigType.R6 then
+			applyKorbloxR6(character)
+		elseif humanoid.RigType == Enum.HumanoidRigType.R15 then
+			applyKorbloxR15(character)
+		end
+	end
 end
 
+buildGUI()
+
 if player.Character then
-    task.spawn(function()
-        applyCharacter(player.Character)
-    end)
+	task.spawn(function()
+		applyCharacter(player.Character)
+	end)
 end
 
 player.CharacterAdded:Connect(function(character)
-    cleanupConnections()
-    task.spawn(function()
-        applyCharacter(character)
-    end)
+	cleanupConnections()
+	task.spawn(function()
+		applyCharacter(character)
+	end)
 end)
