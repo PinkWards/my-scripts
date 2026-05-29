@@ -1,499 +1,467 @@
--- Korblox Leg Script (R15 Adjuster + Mini GUI)
+if _G.PerfectKorbloxHeadlessLoaded then return end
+_G.PerfectKorbloxHeadlessLoaded = true
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 
+local HEADLESS_MESH_ID = "rbxassetid://1095708"
 local KORBLOX_MESH_ID = "rbxassetid://101851696"
 local KORBLOX_TEXTURE_ID = "rbxassetid://101851254"
 local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
+local TINY_SCALE = Vector3.new(0.001, 0.001, 0.001)
 
-local currentOffset = {
-	Y = 0.19,
-}
+-- Default Y offset tailored for R15 to perfectly cover the lower leg gap
+local currentOffsetY = -0.5 
 
 local activeConnections = {}
 local heartbeatConns = {}
 local applied = false
 
 -- =============================================
---              MINI GUI
+--           BUTTERY SMOOTH MINI GUI
 -- =============================================
 
 local function buildGUI()
-	local old = player.PlayerGui:FindFirstChild("KorbloxMiniGUI")
-	if old then old:Destroy() end
+    local old = player.PlayerGui:FindFirstChild("KorbloxAdjuster")
+    if old then old:Destroy() end
 
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name = "KorbloxMiniGUI"
-	screenGui.ResetOnSpawn = false
-	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screenGui.Parent = player.PlayerGui
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "KorbloxAdjuster"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = player.PlayerGui
 
-	-- Toggle Icon Button (always visible)
-	local toggleBtn = Instance.new("ImageButton")
-	toggleBtn.Name = "ToggleBtn"
-	toggleBtn.Size = UDim2.new(0, 40, 0, 40)
-	toggleBtn.Position = UDim2.new(0, 12, 0.5, -20)
-	toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-	toggleBtn.BorderSizePixel = 0
-	toggleBtn.Image = "rbxassetid://6031068420" -- gear/settings icon
-	toggleBtn.ImageColor3 = Color3.fromRGB(255, 200, 80)
-	toggleBtn.ZIndex = 10
-	toggleBtn.Parent = screenGui
+    local container = Instance.new("Frame")
+    container.Name = "Container"
+    container.Size = UDim2.new(0, 230, 0, 34)
+    container.Position = UDim2.new(0, 15, 0, 15)
+    container.BackgroundTransparency = 1
+    container.Parent = screenGui
 
-	local toggleCorner = Instance.new("UICorner")
-	toggleCorner.CornerRadius = UDim.new(1, 0)
-	toggleCorner.Parent = toggleBtn
+    -- Toggle Icon
+    local toggleBtn = Instance.new("TextButton")
+    toggleBtn.Name = "Toggle"
+    toggleBtn.Size = UDim2.new(0, 30, 0, 30)
+    toggleBtn.Position = UDim2.new(0, 0, 0, 2)
+    toggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    toggleBtn.Text = "🦿"
+    toggleBtn.TextSize = 16
+    toggleBtn.BorderSizePixel = 0
+    toggleBtn.AutoButtonColor = false
+    toggleBtn.Parent = container
 
-	local toggleStroke = Instance.new("UIStroke")
-	toggleStroke.Color = Color3.fromRGB(255, 200, 80)
-	toggleStroke.Thickness = 1.5
-	toggleStroke.Parent = toggleBtn
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 8)
+    btnCorner.Parent = toggleBtn
 
-	-- Main panel (small, just the slider)
-	local panel = Instance.new("Frame")
-	panel.Name = "Panel"
-	panel.Size = UDim2.new(0, 200, 0, 72)
-	panel.Position = UDim2.new(0, 60, 0.5, -36)
-	panel.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-	panel.BorderSizePixel = 0
-	panel.Visible = false
-	panel.Active = true
-	panel.ZIndex = 9
-	panel.Parent = screenGui
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = Color3.fromRGB(90, 170, 255)
+    btnStroke.Thickness = 1.2
+    btnStroke.Parent = toggleBtn
 
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 8)
-	panelCorner.Parent = panel
+    -- Slider Frame
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "SliderFrame"
+    mainFrame.Size = UDim2.new(0, 194, 0, 30)
+    mainFrame.Position = UDim2.new(0, 35, 0, 2)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Visible = false
+    mainFrame.Parent = container
 
-	local panelStroke = Instance.new("UIStroke")
-	panelStroke.Color = Color3.fromRGB(255, 200, 80)
-	panelStroke.Thickness = 1
-	panelStroke.Parent = panel
+    local frameCorner = Instance.new("UICorner")
+    frameCorner.CornerRadius = UDim.new(0, 8)
+    frameCorner.Parent = mainFrame
 
-	-- Panel title
-	local titleLabel = Instance.new("TextLabel")
-	titleLabel.Text = "Korblox Y Offset"
-	titleLabel.Size = UDim2.new(1, -10, 0, 18)
-	titleLabel.Position = UDim2.new(0, 8, 0, 6)
-	titleLabel.BackgroundTransparency = 1
-	titleLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
-	titleLabel.TextSize = 11
-	titleLabel.Font = Enum.Font.GothamBold
-	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-	titleLabel.ZIndex = 10
-	titleLabel.Parent = panel
+    local frameStroke = Instance.new("UIStroke")
+    frameStroke.Color = Color3.fromRGB(60, 60, 60)
+    frameStroke.Thickness = 0.8
+    frameStroke.Parent = mainFrame
 
-	-- Value box
-	local valueBox = Instance.new("TextBox")
-	valueBox.Size = UDim2.new(0, 48, 0, 18)
-	valueBox.Position = UDim2.new(1, -56, 0, 6)
-	valueBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-	valueBox.BorderSizePixel = 0
-	valueBox.TextColor3 = Color3.fromRGB(255, 200, 80)
-	valueBox.TextSize = 11
-	valueBox.Font = Enum.Font.GothamBold
-	valueBox.Text = tostring(currentOffset.Y)
-	valueBox.ClearTextOnFocus = false
-	valueBox.ZIndex = 10
-	valueBox.Parent = panel
+    local label = Instance.new("TextLabel")
+    label.Text = "Y"
+    label.Size = UDim2.new(0, 12, 1, 0)
+    label.Position = UDim2.new(0, 8, 0, 0)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(200, 200, 200)
+    label.TextSize = 14
+    label.Font = Enum.Font.GothamBold
+    label.Parent = mainFrame
 
-	local vbCorner = Instance.new("UICorner")
-	vbCorner.CornerRadius = UDim.new(0, 4)
-	vbCorner.Parent = valueBox
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -60, 0, 6)
+    track.Position = UDim2.new(0, 26, 0.5, 0)
+    track.AnchorPoint = Vector2.new(0, 0.5)
+    track.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    track.BorderSizePixel = 0
+    track.Parent = mainFrame
 
-	-- Slider track
-	local track = Instance.new("Frame")
-	track.Name = "Track"
-	track.Size = UDim2.new(1, -16, 0, 10)
-	track.Position = UDim2.new(0, 8, 0, 34)
-	track.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
-	track.BorderSizePixel = 0
-	track.ZIndex = 10
-	track.Parent = panel
+    local tCorner = Instance.new("UICorner")
+    tCorner.CornerRadius = UDim.new(0, 3)
+    tCorner.Parent = track
 
-	local trackCorner = Instance.new("UICorner")
-	trackCorner.CornerRadius = UDim.new(0, 5)
-	trackCorner.Parent = track
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(90, 170, 255)
+    fill.BorderSizePixel = 0
+    fill.Parent = track
 
-	-- Fill bar
-	local fill = Instance.new("Frame")
-	fill.BackgroundColor3 = Color3.fromRGB(255, 160, 0)
-	fill.BorderSizePixel = 0
-	fill.Size = UDim2.new(0, 0, 1, 0)
-	fill.ZIndex = 11
-	fill.Parent = track
+    local fCorner = Instance.new("UICorner")
+    fCorner.CornerRadius = UDim.new(0, 3)
+    fCorner.Parent = fill
 
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 5)
-	fillCorner.Parent = fill
+    local valLabel = Instance.new("TextLabel")
+    valLabel.Name = "ValLabel"
+    valLabel.Text = tostring(currentOffsetY)
+    valLabel.Size = UDim2.new(0, 30, 1, 0)
+    valLabel.Position = UDim2.new(1, -37, 0, 0)
+    valLabel.BackgroundTransparency = 1
+    valLabel.TextColor3 = Color3.fromRGB(90, 170, 255)
+    valLabel.TextSize = 12
+    valLabel.Font = Enum.Font.GothamBold
+    valLabel.Parent = mainFrame
 
-	-- Thumb
-	local thumb = Instance.new("Frame")
-	thumb.Size = UDim2.new(0, 16, 0, 16)
-	thumb.AnchorPoint = Vector2.new(0.5, 0.5)
-	thumb.BackgroundColor3 = Color3.fromRGB(255, 200, 80)
-	thumb.BorderSizePixel = 0
-	thumb.ZIndex = 12
-	thumb.Parent = track
+    -- Slider Logic
+    local minVal = -2.0
+    local maxVal = 2.0
+    local stepVal = 0.01
 
-	local thumbCorner = Instance.new("UICorner")
-	thumbCorner.CornerRadius = UDim.new(1, 0)
-	thumbCorner.Parent = thumb
+    local function updateSlider(value)
+        value = math.clamp(value, minVal, maxVal)
+        local display = math.round(value * 100) / 100
+        currentOffsetY = display
+        valLabel.Text = tostring(display)
+        local alpha = (value - minVal) / (maxVal - minVal)
+        fill.Size = UDim2.new(alpha, 0, 1, 0)
+    end
 
-	-- Drag label hint
-	local hintLabel = Instance.new("TextLabel")
-	hintLabel.Text = "drag to adjust • -0.5 to 2"
-	hintLabel.Size = UDim2.new(1, -10, 0, 14)
-	hintLabel.Position = UDim2.new(0, 8, 0, 52)
-	hintLabel.BackgroundTransparency = 1
-	hintLabel.TextColor3 = Color3.fromRGB(120, 120, 120)
-	hintLabel.TextSize = 9
-	hintLabel.Font = Enum.Font.Gotham
-	hintLabel.TextXAlignment = Enum.TextXAlignment.Left
-	hintLabel.ZIndex = 10
-	hintLabel.Parent = panel
+    updateSlider(currentOffsetY)
 
-	-- Dragging the panel
-	local dragging, dragStart, startPos
-	panel.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPos = panel.Position
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(input)
-		if dragging then
-			if input.UserInputType == Enum.UserInputType.MouseMovement
-				or input.UserInputType == Enum.UserInputType.Touch then
-				local delta = input.Position - dragStart
-				panel.Position = UDim2.new(
-					startPos.X.Scale,
-					startPos.X.Offset + delta.X,
-					startPos.Y.Scale,
-					startPos.Y.Offset + delta.Y
-				)
-			end
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
+    local sliding = false
+    local function updateFromInput(input)
+        local relX = (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X
+        local raw = minVal + math.clamp(relX, 0, 1) * (maxVal - minVal)
+        local snapped = math.round(raw / stepVal) * stepVal
+        updateSlider(snapped)
+    end
 
-	-- Slider logic
-	local MIN_Y, MAX_Y, STEP_Y = -0.5, 2, 0.01
+    track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = true
+            updateFromInput(input)
+        end
+    end)
 
-	local function valueToAlpha(v)
-		return math.clamp((v - MIN_Y) / (MAX_Y - MIN_Y), 0, 1)
-	end
+    UserInputService.InputChanged:Connect(function(input)
+        if sliding and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            updateFromInput(input)
+        end
+    end)
 
-	local function alphaToValue(a)
-		local raw = MIN_Y + a * (MAX_Y - MIN_Y)
-		local snapped = math.round(raw / STEP_Y) * STEP_Y
-		return math.clamp(snapped, MIN_Y, MAX_Y)
-	end
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = false
+        end
+    end)
 
-	local function applyValue(v)
-		v = math.clamp(v, MIN_Y, MAX_Y)
-		local display = math.round(v * 10000) / 10000
-		currentOffset.Y = display
-		valueBox.Text = tostring(display)
-		local alpha = valueToAlpha(v)
-		fill.Size = UDim2.new(alpha, 0, 1, 0)
-		thumb.Position = UDim2.new(alpha, 0, 0.5, 0)
-	end
+    -- Toggle & Drag Logic
+    local isOpen = false
+    local dragging = false
+    local dragStart, startPos, dragDistance
 
-	applyValue(currentOffset.Y)
+    toggleBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = container.Position
+            dragDistance = 0
+        end
+    end)
 
-	local sliding = false
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            dragDistance = delta.Magnitude
+            container.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
 
-	local function updateFromInput(input)
-		local abs = track.AbsolutePosition
-		local sz = track.AbsoluteSize
-		local relX = (input.Position.X - abs.X) / sz.X
-		applyValue(alphaToValue(math.clamp(relX, 0, 1)))
-	end
-
-	track.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			sliding = true
-			updateFromInput(input)
-		end
-	end)
-	thumb.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			sliding = true
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(input)
-		if sliding then
-			if input.UserInputType == Enum.UserInputType.MouseMovement
-				or input.UserInputType == Enum.UserInputType.Touch then
-				updateFromInput(input)
-			end
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			sliding = false
-		end
-	end)
-
-	valueBox.FocusLost:Connect(function()
-		local num = tonumber(valueBox.Text)
-		if num then
-			applyValue(math.clamp(num, MIN_Y, MAX_Y))
-		else
-			valueBox.Text = tostring(currentOffset.Y)
-		end
-	end)
-
-	-- Toggle open/close
-	toggleBtn.MouseButton1Click:Connect(function()
-		panel.Visible = not panel.Visible
-	end)
+    toggleBtn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging then
+                dragging = false
+                if dragDistance < 6 then
+                    isOpen = not isOpen
+                    mainFrame.Visible = isOpen
+                end
+            end
+        end
+    end)
 end
 
 -- =============================================
---           CORE LOGIC
+--         CHEF'S KISS CORE LOGIC
 -- =============================================
 
 local function getScaleProp(humanoid, propName)
-	local success, val = pcall(function() return humanoid[propName] end)
-	if success then
-		local num = tonumber(val)
-		if num then return math.max(num, 0.5) end
-		if typeof(val) == "Instance" and val:IsA("NumberValue") then
-			return math.max(val.Value, 0.5)
-		end
-	end
-	return 1.0
+    local success, val = pcall(function()
+        return humanoid[propName]
+    end)
+    if success then
+        local num = tonumber(val)
+        if num then return math.max(num, 0.5) end
+        if typeof(val) == "Instance" and val:IsA("NumberValue") then
+            return math.max(val.Value, 0.5)
+        end
+    end
+    return 1.0
 end
 
 local function cleanupConnections()
-	for i = #activeConnections, 1, -1 do
-		local c = activeConnections[i]
-		if c and c.Connected then c:Disconnect() end
-		activeConnections[i] = nil
-	end
-	for i = #heartbeatConns, 1, -1 do
-		local c = heartbeatConns[i]
-		if c and c.Connected then c:Disconnect() end
-		heartbeatConns[i] = nil
-	end
-	applied = false
+    for i = #activeConnections, 1, -1 do
+        if activeConnections[i] and activeConnections[i].Connected then activeConnections[i]:Disconnect() end
+        activeConnections[i] = nil
+    end
+    for i = #heartbeatConns, 1, -1 do
+        if heartbeatConns[i] and heartbeatConns[i].Connected then heartbeatConns[i]:Disconnect() end
+        heartbeatConns[i] = nil
+    end
+    applied = false
 end
 
 local function track(conn)
-	activeConnections[#activeConnections + 1] = conn
-	return conn
+    activeConnections[#activeConnections + 1] = conn
+    return conn
 end
 
 local function trackHeartbeat(conn)
-	heartbeatConns[#heartbeatConns + 1] = conn
-	return conn
+    heartbeatConns[#heartbeatConns + 1] = conn
+    return conn
 end
 
--- =============================================
---  R6: Korblox on Right Leg (no Y adjustment)
--- =============================================
+-- Intelligent check to see if an accessory belongs to the head
+local function isHeadAccessory(acc)
+    local handle = acc:FindFirstChild("Handle")
+    if not handle then return false end
+    for _, att in pairs(handle:GetDescendants()) do
+        if att:IsA("Attachment") then
+            if att.Name == "HatAttachment" or att.Name == "HairAttachment" or att.Name == "FaceFrontAttachment" or att.Name == "FaceCenterAttachment" then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function applyHeadless(head)
+    if not head or head:FindFirstChild("PerfectHeadlessTag") then return end
+    local tag = Instance.new("BoolValue")
+    tag.Name = "PerfectHeadlessTag"
+    tag.Parent = head
+
+    head.Transparency = 1
+
+    -- Destroy face and shrink existing meshes (handles UGC heads perfectly)
+    for _, child in pairs(head:GetChildren()) do
+        if child:IsA("Decal") then
+            child:Destroy()
+        elseif child:IsA("SpecialMesh") then
+            child.Scale = TINY_SCALE
+        end
+    end
+
+    -- Apply invisible collision-less mesh
+    local mesh = head:FindFirstChildOfClass("SpecialMesh") or Instance.new("SpecialMesh")
+    mesh.Name = "HeadlessMesh"
+    mesh.MeshType = Enum.MeshType.FileMesh
+    mesh.MeshId = HEADLESS_MESH_ID
+    mesh.Scale = TINY_SCALE
+    mesh.Parent = head
+
+    -- Keep head invisible permanently
+    track(head:GetPropertyChangedSignal("Transparency"):Connect(function()
+        if head.Transparency ~= 1 then head.Transparency = 1 end
+    end))
+
+    -- Hide head accessories perfectly
+    local function checkAcc(c)
+        if c:IsA("Accessory") and isHeadAccessory(c) then
+            local handle = c:FindFirstChild("Handle")
+            if handle then handle.Transparency = 1 end
+        end
+    end
+
+    local character = head.Parent
+    if character then
+        for _, c in pairs(character:GetChildren()) do checkAcc(c) end
+        track(character.ChildAdded:Connect(function(c)
+            task.defer(function() checkAcc(c) end)
+        end))
+    end
+end
 
 local function applyKorbloxR6(character)
-	local rightLeg = character:FindFirstChild("Right Leg")
-	if not rightLeg or rightLeg:FindFirstChild("KorbloxMesh") then return end
+    local rightLeg = character:FindFirstChild("Right Leg")
+    if not rightLeg or rightLeg:FindFirstChild("PerfectKorbloxTag") then return end
+    
+    local tag = Instance.new("BoolValue")
+    tag.Name = "PerfectKorbloxTag"
+    tag.Parent = rightLeg
 
-	for _, child in ipairs(rightLeg:GetChildren()) do
-		if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
-			child:Destroy()
-		end
-	end
+    for _, child in ipairs(rightLeg:GetChildren()) do
+        if child:IsA("SpecialMesh") or child:IsA("CharacterMesh") then
+            child:Destroy()
+        end
+    end
 
-	rightLeg.Color = DARK_GREY_COLOR
+    rightLeg.Color = DARK_GREY_COLOR
 
-	track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
-		if rightLeg.Color ~= DARK_GREY_COLOR then
-			rightLeg.Color = DARK_GREY_COLOR
-		end
-	end))
+    track(rightLeg:GetPropertyChangedSignal("Color"):Connect(function()
+        if rightLeg.Color ~= DARK_GREY_COLOR then rightLeg.Color = DARK_GREY_COLOR end
+    end))
 
-	local korbloxMesh = Instance.new("SpecialMesh")
-	korbloxMesh.Name = "KorbloxMesh"
-	korbloxMesh.MeshType = Enum.MeshType.FileMesh
-	korbloxMesh.MeshId = KORBLOX_MESH_ID
-	korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
-	-- R6: fixed offset, no GUI adjustment
-	korbloxMesh.Offset = Vector3.new(0, 0.19, 0)
-	korbloxMesh.Parent = rightLeg
+    local korbloxMesh = Instance.new("SpecialMesh")
+    korbloxMesh.Name = "KorbloxMesh"
+    korbloxMesh.MeshType = Enum.MeshType.FileMesh
+    korbloxMesh.MeshId = KORBLOX_MESH_ID
+    korbloxMesh.TextureId = KORBLOX_TEXTURE_ID
+    korbloxMesh.Offset = Vector3.new(0, 0, 0) -- Native, untouched R6 offset
+    korbloxMesh.Parent = rightLeg
 
-	trackHeartbeat(RunService.Heartbeat:Connect(function()
-		if not rightLeg or not rightLeg.Parent then return end
-		if not korbloxMesh or not korbloxMesh.Parent then return end
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			local wScale = getScaleProp(humanoid, "BodyWidthScale")
-			local hScale = getScaleProp(humanoid, "BodyHeightScale")
-			local dScale = getScaleProp(humanoid, "BodyDepthScale")
-			korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
-		end
-		-- R6 keeps fixed offset, no GUI control
-		korbloxMesh.Offset = Vector3.new(0, 0.19, 0)
-	end))
+    trackHeartbeat(RunService.Heartbeat:Connect(function()
+        if not rightLeg or not rightLeg.Parent then return end
+        if not korbloxMesh or not korbloxMesh.Parent then return end
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local wScale = getScaleProp(humanoid, "BodyWidthScale")
+            local hScale = getScaleProp(humanoid, "BodyHeightScale")
+            local dScale = getScaleProp(humanoid, "BodyDepthScale")
+            korbloxMesh.Scale = Vector3.new(wScale, hScale, dScale)
+        end
+    end))
 end
-
--- =============================================
---  R15: Korblox on Right Leg (Y GUI-controlled)
--- =============================================
 
 local function applyKorbloxR15(character)
-	local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
-	local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
-	local rightFoot = character:FindFirstChild("RightFoot")
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local rightUpperLeg = character:FindFirstChild("RightUpperLeg")
+    local rightLowerLeg = character:FindFirstChild("RightLowerLeg")
+    local rightFoot     = character:FindFirstChild("RightFoot")
+    local humanoid      = character:FindFirstChildOfClass("Humanoid")
 
-	if not rightUpperLeg or not humanoid then return end
-	if character:FindFirstChild("KorbloxLeg") then return end
+    if not rightUpperLeg or not humanoid or rightUpperLeg:FindFirstChild("PerfectKorbloxTag") then return end
+    
+    local tag = Instance.new("BoolValue")
+    tag.Name = "PerfectKorbloxTag"
+    tag.Parent = rightUpperLeg
 
-	local function hidePart(part)
-		if not part then return end
-		part.Transparency = 1
-		part.CanCollide = false
-		for _, child in ipairs(part:GetChildren()) do
-			if child:IsA("SpecialMesh") or child:IsA("Decal") then
-				child:Destroy()
-			end
-		end
-	end
+    -- Hide lower leg and foot completely, disable collisions to prevent physics glitches
+    for _, p in pairs({rightLowerLeg, rightFoot}) do
+        if p then
+            p.Transparency = 1
+            p.CanCollide = false
+            for _, c in pairs(p:GetChildren()) do
+                if c:IsA("SpecialMesh") or c:IsA("Decal") then c:Destroy() end
+            end
+        end
+    end
 
-	hidePart(rightUpperLeg)
-	hidePart(rightLowerLeg)
-	hidePart(rightFoot)
+    -- Clean upper leg for our mesh
+    for _, c in pairs(rightUpperLeg:GetChildren()) do
+        if c:IsA("SpecialMesh") or c:IsA("CharacterMesh") then c:Destroy() end
+    end
 
-	-- Invisible anchor part welded to RightUpperLeg
-	local korbloxLeg = Instance.new("Part")
-	korbloxLeg.Name = "KorbloxLeg"
-	korbloxLeg.Size = Vector3.new(1, 1, 1)
-	korbloxLeg.Anchored = false
-	korbloxLeg.CanCollide = false
-	korbloxLeg.Massless = true
-	korbloxLeg.CastShadow = true
-	korbloxLeg.Color = DARK_GREY_COLOR
-	korbloxLeg.Transparency = 0
-	korbloxLeg.Parent = character
+    rightUpperLeg.Color = DARK_GREY_COLOR
 
-	local mesh = Instance.new("SpecialMesh")
-	mesh.Name = "KorbloxMesh"
-	mesh.MeshType = Enum.MeshType.FileMesh
-	mesh.MeshId = KORBLOX_MESH_ID
-	mesh.TextureId = KORBLOX_TEXTURE_ID
+    local mesh = Instance.new("SpecialMesh")
+    mesh.Name = "KorbloxMesh"
+    mesh.MeshType = Enum.MeshType.FileMesh
+    mesh.MeshId = KORBLOX_MESH_ID
+    mesh.TextureId = KORBLOX_TEXTURE_ID
+    mesh.Parent = rightUpperLeg
 
-	local wScale = getScaleProp(humanoid, "BodyWidthScale")
-	local hScale = getScaleProp(humanoid, "BodyHeightScale")
-	local dScale = getScaleProp(humanoid, "BodyDepthScale")
-	mesh.Scale = Vector3.new(wScale, hScale, dScale)
-	mesh.Parent = korbloxLeg
+    -- By attaching to the actual rig part, animations are 100% flawless and jitter-free
+    trackHeartbeat(RunService.Heartbeat:Connect(function()
+        if not character or not character.Parent then return end
+        if not rightUpperLeg or not rightUpperLeg.Parent then return end
+        if not mesh or not mesh.Parent then return end
+        if not humanoid or not humanoid.Parent then return end
 
-	korbloxLeg.CFrame = rightUpperLeg.CFrame
+        -- Force hide lower parts in case of avatar update glitches
+        if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then rightLowerLeg.Transparency = 1 end
+        if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then rightFoot.Transparency = 1 end
+        if rightUpperLeg.Color ~= DARK_GREY_COLOR then rightUpperLeg.Color = DARK_GREY_COLOR end
 
-	local weld = Instance.new("WeldConstraint")
-	weld.Part0 = rightUpperLeg
-	weld.Part1 = korbloxLeg
-	weld.Parent = korbloxLeg
+        local curW = getScaleProp(humanoid, "BodyWidthScale")
+        local curH = getScaleProp(humanoid, "BodyHeightScale")
+        local curD = getScaleProp(humanoid, "BodyDepthScale")
+        mesh.Scale = Vector3.new(curW, curH, curD)
 
-	trackHeartbeat(RunService.Heartbeat:Connect(function()
-		if not character or not character.Parent then return end
-		if not rightUpperLeg or not rightUpperLeg.Parent then return end
-		if not mesh or not mesh.Parent then return end
-		if not humanoid or not humanoid.Parent then return end
-
-		-- Keep legs hidden
-		if rightUpperLeg.Transparency ~= 1 then rightUpperLeg.Transparency = 1 end
-		if rightLowerLeg and rightLowerLeg.Parent and rightLowerLeg.Transparency ~= 1 then
-			rightLowerLeg.Transparency = 1
-		end
-		if rightFoot and rightFoot.Parent and rightFoot.Transparency ~= 1 then
-			rightFoot.Transparency = 1
-		end
-
-		-- Compute total leg height
-		local legHeight = rightUpperLeg.Size.Y
-		if rightLowerLeg and rightLowerLeg.Parent then
-			legHeight = legHeight + rightLowerLeg.Size.Y
-		end
-		if rightFoot and rightFoot.Parent then
-			legHeight = legHeight + rightFoot.Size.Y
-		end
-
-		if legHeight > 0.1 then
-			local curW = getScaleProp(humanoid, "BodyWidthScale")
-			local curH = getScaleProp(humanoid, "BodyHeightScale")
-			local curD = getScaleProp(humanoid, "BodyDepthScale")
-			mesh.Scale = Vector3.new(curW, curH, curD)
-
-			-- Base centering + GUI Y offset only
-			local baseY = (rightUpperLeg.Size.Y / 2) - (legHeight / 2)
-			mesh.Offset = Vector3.new(0, baseY + currentOffset.Y, 0)
-		end
-	end))
+        -- Live update Y offset based on slider
+        mesh.Offset = Vector3.new(0, currentOffsetY, 0)
+    end))
 end
 
--- =============================================
---              INIT
--- =============================================
-
 local function waitForRig(character)
-	local humanoid = character:WaitForChild("Humanoid", 10)
-	if not humanoid then return end
-	if humanoid.RigType == Enum.HumanoidRigType.R15 then
-		character:WaitForChild("RightUpperLeg", 10)
-		character:WaitForChild("RightLowerLeg", 10)
-		character:WaitForChild("RightFoot", 10)
-		character:WaitForChild("HumanoidRootPart", 10)
-	else
-		character:WaitForChild("Right Leg", 10)
-	end
+    local humanoid = character:WaitForChild("Humanoid", 10)
+    if not humanoid then return end
+    if humanoid.RigType == Enum.HumanoidRigType.R15 then
+        character:WaitForChild("RightUpperLeg", 10)
+        character:WaitForChild("RightLowerLeg", 10)
+        character:WaitForChild("RightFoot", 10)
+    else
+        character:WaitForChild("Right Leg", 10)
+    end
 end
 
 local function applyCharacter(character)
-	if applied then return end
-	applied = true
+    if applied then return end
+    applied = true
 
-	waitForRig(character)
+    waitForRig(character)
 
-	if not character or not character.Parent then
-		applied = false
-		return
-	end
+    if not character or not character.Parent then
+        applied = false
+        return
+    end
 
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if humanoid then
-		if humanoid.RigType == Enum.HumanoidRigType.R6 then
-			applyKorbloxR6(character)
-		elseif humanoid.RigType == Enum.HumanoidRigType.R15 then
-			applyKorbloxR15(character)
-		end
-	end
+    local head = character:FindFirstChild("Head")
+    if head then applyHeadless(head) end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        if humanoid.RigType == Enum.HumanoidRigType.R6 then
+            applyKorbloxR6(character)
+        elseif humanoid.RigType == Enum.HumanoidRigType.R15 then
+            applyKorbloxR15(character)
+        end
+    end
+
+    track(character.ChildAdded:Connect(function(child)
+        if child.Name == "Head" then
+            task.defer(function() applyHeadless(child) end)
+        end
+    end))
 end
+
+-- =============================================
+--              INITIALIZATION
+-- =============================================
 
 buildGUI()
 
 if player.Character then
-	task.spawn(function()
-		applyCharacter(player.Character)
-	end)
+    task.spawn(function()
+        applyCharacter(player.Character)
+    end)
 end
 
 player.CharacterAdded:Connect(function(character)
-	cleanupConnections()
-	task.spawn(function()
-		applyCharacter(character)
-	end)
+    cleanupConnections()
+    task.spawn(function()
+        applyCharacter(character)
+    end)
 end)
