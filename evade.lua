@@ -67,7 +67,7 @@ local Config = {
 }
 
 local BouncePower = 88 -- How high you bounce
-local BounceWalkSpeed = 88 -- WalkSpeed modifier while bouncing
+local BounceWalkSpeed = 96 -- WalkSpeed modifier while bouncing
 
 local ColaSettings = {
     Speed = 1.4,
