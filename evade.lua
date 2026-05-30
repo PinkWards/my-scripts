@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 22
+local SCRIPT_VERSION = 23
 
 -- Auto-execute removed
 
@@ -277,26 +277,30 @@ end
 
 local function DoBounce()
     if not RootPart or not Humanoid or Humanoid.Health <= 0 then return end
+    
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
+    -- Record the highest speed we've hit, and enforce a minimum of BounceWalkSpeed so we never slow down on landing
     if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
-    local useSpeed = math.max(RecordedSpeed, hSpeed)
+    local useSpeed = math.max(RecordedSpeed, hSpeed, BounceWalkSpeed)
     
     local dir = GetBounceDirection(hVel, hSpeed)
+    
+    -- Forcefully set velocity and immediately jump to completely bypass landing friction/delay
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BouncePower, 0)
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    
     LastBounceTime = tick()
 end
 
 local function OnStateChanged(old, new)
-    if new == Enum.HumanoidStateType.Landed then
-        if holdLeftShift then
-            DoBounce()
-        elseif holdSpace then
-            Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
+    -- Catch Landed AND Running to instantly bounce the moment the engine thinks we're on the ground
+    if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
+        DoBounce()
+    elseif holdSpace and new == Enum.HumanoidStateType.Landed then
+        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     end
 end
 
@@ -304,17 +308,35 @@ local function OnTouchPart(hit)
     if not holdLeftShift or not hit then return end
     local character = LocalPlayer.Character
     if not character or hit:IsDescendantOf(character) then return end
-    local now = tick()
-    if now - LastBounceTime > 0.01 then 
-        DoBounce()
+    
+    -- If we touch something and we're falling/flat, bounce immediately
+    local vel = RootPart.AssemblyLinearVelocity
+    if vel.Y <= 1 then
+        local now = tick()
+        if now - LastBounceTime > 0.05 then 
+            DoBounce()
+        end
     end
 end
 
 local function StartBounceWalkSpeed()
     if bounceWalkSpeedConn then return end
-    bounceWalkSpeedConn = RunService.RenderStepped:Connect(function()
+    bounceWalkSpeedConn = RunService.Heartbeat:Connect(function()
         if Humanoid and holdLeftShift then
             Humanoid.WalkSpeed = BounceWalkSpeed
+            
+            local state = Humanoid:GetState()
+            -- Failsafe: if the engine forces us into Landed/Running, fix speed and bounce immediately
+            if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
+                local vel = RootPart.AssemblyLinearVelocity
+                local hVel = Vector3.new(vel.X, 0, vel.Z)
+                -- Enforce recorded speed so landing friction has zero effect
+                if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
+                    local dir = hVel.Magnitude > 1 and hVel.Unit or GetBounceDirection(hVel, hVel.Magnitude)
+                    RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, vel.Y, 0)
+                end
+                DoBounce()
+            end
         end
     end)
 end
@@ -1171,4 +1193,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Velocity Bounce + WalkSpeed Boost + Air Strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Hyper-Responsive Velocity Bounce + Air Strafe!")
