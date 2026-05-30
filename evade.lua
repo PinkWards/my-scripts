@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 23
+local SCRIPT_VERSION = 24 -- Pro Trimp Update
 
 -- Auto-execute removed
 
@@ -66,8 +66,9 @@ local Config = {
     SafeDistance = 90
 }
 
-local BouncePower = 88 -- How high you bounce
-local BounceWalkSpeed = 96 -- WalkSpeed modifier while bouncing
+-- Pros stay in control. 250 is blazing fast but won't fling you into the void.
+local MAX_PRO_SPEED = 250 
+local BounceWalkSpeed = 96 
 
 local ColaSettings = {
     Speed = 1.4,
@@ -261,8 +262,13 @@ local function LoadNPCs()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (VELOCITY BOUNCE + WALKSPEED BOOST + AIR STRAFE)
+-- PRO MOVEMENT (DYNAMIC TRIMP + AIR STRAFE)
 -- ═══════════════════════════════════════════════════════════════
+
+local BounceRayParams = RaycastParams.new()
+BounceRayParams.FilterType = Enum.RaycastFilterType.Exclude
+BounceRayParams.IgnoreWater = true
+BounceRayParams.RespectCanCollide = true
 
 local function GetBounceDirection(hVel, hSpeed)
     if hSpeed > 1 then return hVel.Unit end
@@ -282,21 +288,67 @@ local function DoBounce()
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
-    -- Record the highest speed we've hit, and enforce a minimum of BounceWalkSpeed so we never slow down on landing
-    if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
-    local useSpeed = math.max(RecordedSpeed, hSpeed, BounceWalkSpeed)
+    -- Update ray filter to ignore our character
+    BounceRayParams.FilterDescendantsInstances = {LocalPlayer.Character}
     
-    local dir = GetBounceDirection(hVel, hSpeed)
+    -- Raycast to find the ground normal (True Trimp mechanic)
+    local ray = Workspace:Raycast(RootPart.Position, Vector3.new(0, -5, 0), BounceRayParams)
     
-    -- Forcefully set velocity and immediately jump to completely bypass landing friction/delay
-    RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BouncePower, 0)
+    local newVel = vel
+    
+    if ray and ray.Normal then
+        local normal = ray.Normal
+        
+        -- Check if we are on a ramp (normal is not straight up)
+        if normal.Y < 0.95 then
+            -- TRUE TRIMP: Reflect velocity perfectly off the ramp normal (Source Engine physics)
+            local dot = vel:Dot(normal)
+            newVel = vel - (2 * dot * normal)
+            -- Add a slight boost up the ramp to maintain flow
+            newVel = newVel + (normal * 15)
+        else
+            -- FLAT GROUND: Convert fall speed to forward speed (Bhop/Trimp hybrid)
+            local fallSpeed = math.abs(vel.Y)
+            -- Add 40% of fall speed to horizontal speed (pros gain speed by falling)
+            local speedGain = fallSpeed * 0.4
+            local newHSpeed = math.max(hSpeed, BounceWalkSpeed) + speedGain
+            
+            -- Cap speed so we look incredibly fast but stay in control (no void flinging)
+            newHSpeed = math.min(newHSpeed, MAX_PRO_SPEED)
+            
+            local dir = hVel.Unit
+            if hSpeed < 1 then
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local look = cam.CFrame.LookVector
+                    dir = Vector3.new(look.X, 0, look.Z).Unit
+                else
+                    dir = Vector3.new(0,0,-1)
+                end
+            end
+            
+            -- Bounce height scales with how fast you were falling (min 75)
+            local bounceY = math.max(75, fallSpeed * 0.85)
+            
+            newVel = dir * newHSpeed + Vector3.new(0, bounceY, 0)
+        end
+    else
+        -- Fallback (no ground found, maybe edge case)
+        local newHSpeed = math.max(hSpeed, BounceWalkSpeed)
+        local dir = GetBounceDirection(hVel, hSpeed)
+        newVel = dir * newHSpeed + Vector3.new(0, 80, 0)
+    end
+    
+    RootPart.AssemblyLinearVelocity = newVel
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
+    -- Update recorded speed for perfect preservation
+    local finalH = Vector3.new(newVel.X, 0, newVel.Z)
+    RecordedSpeed = math.max(RecordedSpeed, finalH.Magnitude)
     LastBounceTime = tick()
 end
 
 local function OnStateChanged(old, new)
-    -- Catch Landed AND Running to instantly bounce the moment the engine thinks we're on the ground
     if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
         DoBounce()
     elseif holdSpace and new == Enum.HumanoidStateType.Landed then
@@ -309,7 +361,6 @@ local function OnTouchPart(hit)
     local character = LocalPlayer.Character
     if not character or hit:IsDescendantOf(character) then return end
     
-    -- If we touch something and we're falling/flat, bounce immediately
     local vel = RootPart.AssemblyLinearVelocity
     if vel.Y <= 1 then
         local now = tick()
@@ -326,12 +377,12 @@ local function StartBounceWalkSpeed()
             Humanoid.WalkSpeed = BounceWalkSpeed
             
             local state = Humanoid:GetState()
-            -- Failsafe: if the engine forces us into Landed/Running, fix speed and bounce immediately
             if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
                 local vel = RootPart.AssemblyLinearVelocity
                 local hVel = Vector3.new(vel.X, 0, vel.Z)
-                -- Enforce recorded speed so landing friction has zero effect
-                if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
+                
+                -- Instantly restore any speed lost to game friction
+                if hVel.Magnitude < RecordedSpeed - 1 then
                     local dir = hVel.Magnitude > 1 and hVel.Unit or GetBounceDirection(hVel, hVel.Magnitude)
                     RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, vel.Y, 0)
                 end
@@ -360,13 +411,18 @@ local function AirStrafe()
     local cam = Workspace.CurrentCamera
     if not cam then return end
     
-    local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
-    if right.Magnitude < 0.01 then return end
-    right = right.Unit
+    -- Calculate wish direction based on camera (Pros weave relative to where they look)
+    local look = cam.CFrame.LookVector
+    local right = cam.CFrame.RightVector
+    
+    local flatLook = Vector3.new(look.X, 0, look.Z).Unit
+    local flatRight = Vector3.new(right.X, 0, right.Z).Unit
     
     local wishDir = Vector3.zero
-    if keysDown.D then wishDir = wishDir + right end
-    if keysDown.A then wishDir = wishDir - right end
+    if keysDown.W then wishDir = wishDir + flatLook end
+    if keysDown.S then wishDir = wishDir - flatLook end
+    if keysDown.D then wishDir = wishDir + flatRight end
+    if keysDown.A then wishDir = wishDir - flatRight end
     
     if wishDir.Magnitude < 0.01 then return end
     wishDir = wishDir.Unit
@@ -374,11 +430,13 @@ local function AirStrafe()
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     
-    local gain = 1.5 
+    -- Smooth, controlled air acceleration
+    local gain = 1.2 
     local newHVel = hVel + (wishDir * gain)
     
-    if newHVel.Magnitude > 1000 then
-        newHVel = newHVel.Unit * 1000
+    -- Gentle speed cap for control (pros don't fling off the map)
+    if newHVel.Magnitude > MAX_PRO_SPEED then
+        newHVel = newHVel.Unit * MAX_PRO_SPEED
     end
     
     RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
@@ -1193,4 +1251,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Hyper-Responsive Velocity Bounce + Air Strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Pro Trimp Physics Active!")
