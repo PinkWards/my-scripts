@@ -249,7 +249,7 @@ local function setupArrow(btn, vis, delta)
             task.wait(0.35)
             while holding do
                 setValue(Config.LegYOffset + delta)
-                task.wait(0.035) -- Faster, smoother continuous adjustment
+                task.wait(0.035)
             end
         end)
     end)
@@ -267,41 +267,12 @@ setupArrow(upBtn, upVis, STEP)
 setupArrow(dnBtn, dnVis, -STEP)
 updateVisuals()
 
--- // Headless
-local function applyHeadless(char)
-    local head = char:FindFirstChild("Head")
-    if not head then return end
-    head.Transparency = 1
-    pcall(function() head.CastShadow = false end)
-    
-    for _, v in ipairs(head:GetChildren()) do
-        if v:IsA("Decal") or v:IsA("Texture") or v:IsA("SurfaceAppearance") then
-            v:Destroy()
-        elseif v:IsA("SpecialMesh") then
-            v.Scale = Vector3.new(0.001, 0.001, 0.001)
-        end
-    end
-    
-    for _, acc in ipairs(char:GetChildren()) do
-        if acc:IsA("Accessory") then
-            local handle = acc:FindFirstChild("Handle")
-            if handle then
-                for _, att in ipairs(handle:GetDescendants()) do
-                    if att:IsA("Attachment") and (att.Name == "HatAttachment" or att.Name == "HairAttachment" or att.Name == "FaceFrontAttachment" or att.Name == "FaceCenterAttachment") then
-                        handle.Transparency = 1
-                    end
-                end
-            end
-        end
-    end
-end
-
--- // Korblox Setup (Runs once per spawn)
+-- // Korblox Setup (Re-built automatically if destroyed by games like Evade)
 local function setupKorblox(char)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- Clean up old parts from previous deaths just in case
+    -- Clean up old parts
     local oldLeg = char:FindFirstChild("KorbloxLeg")
     if oldLeg then oldLeg:Destroy() end
 
@@ -309,7 +280,7 @@ local function setupKorblox(char)
 
     if hum.RigType == Enum.HumanoidRigType.R15 then
         isR15 = true
-        frm.Visible = true -- Show adjuster GUI for R15
+        frm.Visible = true
         
         local ru = char:FindFirstChild("RightUpperLeg")
         local rl = char:FindFirstChild("RightLowerLeg")
@@ -355,18 +326,15 @@ local function setupKorblox(char)
         end
     else
         isR15 = false
-        frm.Visible = false -- Force hide adjuster GUI for R6
+        frm.Visible = false
         
         local rightLeg = char:FindFirstChild("Right Leg")
         if rightLeg then
-            -- Remove existing right leg character meshes completely
             for _, v in ipairs(char:GetChildren()) do
                 if v:IsA("CharacterMesh") and v.BodyPart == Enum.BodyPart.RightLeg then
                     v:Destroy()
                 end
             end
-            
-            -- Remove any stray SpecialMesh inside the leg
             for _, c in ipairs(rightLeg:GetChildren()) do
                 if c:IsA("SpecialMesh") then c:Destroy() end
             end
@@ -374,8 +342,6 @@ local function setupKorblox(char)
             rightLeg.Color = DARK_GREY_COLOR
             rightLeg.Transparency = 0
 
-            -- Using the official Roblox CharacterMesh native to R6 packages
-            -- This ensures 100% exact positioning, scale, and behavior with no floating
             local cMesh = Instance.new("CharacterMesh")
             cMesh.Name = "KorbloxR6Leg"
             cMesh.BodyPart = Enum.BodyPart.RightLeg
@@ -386,33 +352,79 @@ local function setupKorblox(char)
     end
 end
 
--- // Heartbeat Loop (Applies offset, scale, and forces transparency every frame)
+-- // Heartbeat Loop (Permanent enforcement & auto-recreation)
 RunService.Heartbeat:Connect(function(deltaTime)
     local char = player.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- Keep head invisible
+    -- 1. Keep head invisible permanently
     local head = char:FindFirstChild("Head")
-    if head and head.Transparency ~= 1 then head.Transparency = 1 end
+    if head then
+        if head.Transparency ~= 1 then head.Transparency = 1 end
+        for _, v in ipairs(head:GetChildren()) do
+            if v:IsA("Decal") or v:IsA("Texture") or v:IsA("SurfaceAppearance") then
+                v:Destroy()
+            elseif v:IsA("SpecialMesh") then
+                if v.Scale ~= Vector3.new(0.001, 0.001, 0.001) then
+                    v.Scale = Vector3.new(0.001, 0.001, 0.001)
+                end
+            end
+        end
+    end
 
+    -- 2. Check if rig type changed or if the game deleted our Korblox
+    local currentR15 = hum.RigType == Enum.HumanoidRigType.R15
+    local needsSetup = false
+    
+    if currentR15 ~= isR15 then
+        needsSetup = true
+    elseif isR15 then
+        if not korbloxWeld or not korbloxWeld.Parent then
+            needsSetup = true
+        end
+    else
+        local hasMesh = false
+        for _, v in ipairs(char:GetChildren()) do
+            if v:IsA("CharacterMesh") and v.Name == "KorbloxR6Leg" and v.Parent == char then
+                hasMesh = true
+                break
+            end
+        end
+        if not hasMesh then
+            needsSetup = true
+        end
+    end
+
+    -- 3. Instantly rebuild if wiped by the game (Evade round transitions etc.)
+    if needsSetup then
+        setupKorblox(char)
+    end
+
+    -- 4. Enforce visibility and offsets
     if isR15 then
         local ru = char:FindFirstChild("RightUpperLeg")
         local rl = char:FindFirstChild("RightLowerLeg")
         local rf = char:FindFirstChild("RightFoot")
-        if ru and ru.Transparency ~= 1 then ru.Transparency = 1 end
-        if rl and rl.Transparency ~= 1 then rl.Transparency = 1 end
-        if rf and rf.Transparency ~= 1 then rf.Transparency = 1 end
+        
+        if ru and rl and rf then
+            if ru.Transparency ~= 1 then ru.Transparency = 1 end
+            if rl.Transparency ~= 1 then rl.Transparency = 1 end
+            if rf.Transparency ~= 1 then rf.Transparency = 1 end
+            
+            -- Destroy any clothes/meshes the game tries to put back on the leg
+            for _, p in pairs({ru, rl, rf}) do
+                for _, c in pairs(p:GetChildren()) do
+                    if c:IsA("SpecialMesh") or c:IsA("Decal") then c:Destroy() end
+                end
+            end
+        end
 
         if korbloxWeld and korbloxWeld.Parent then
-            -- Smoothly lerp towards the target config offset for smooth adjuster feeling
             currentYOffset = currentYOffset + (Config.LegYOffset - currentYOffset) * math.min(1, 15 * deltaTime)
-            
-            -- Apply Y Offset
             korbloxWeld.C0 = CFrame.new(0, currentYOffset, 0)
             
-            -- Apply Scale
             local mesh = korbloxWeld.Parent:FindFirstChildOfClass("SpecialMesh")
             if mesh and hum then
                 local w = getScaleProp(hum, "BodyWidthScale")
@@ -422,8 +434,6 @@ RunService.Heartbeat:Connect(function(deltaTime)
             end
         end
     else
-        -- R6 logic: The CharacterMesh handles everything automatically. 
-        -- We only ensure the leg color and transparency remain correct.
         local rightLeg = char:FindFirstChild("Right Leg")
         if rightLeg then
             if rightLeg.Color ~= DARK_GREY_COLOR then rightLeg.Color = DARK_GREY_COLOR end
@@ -436,7 +446,7 @@ end)
 player.CharacterAdded:Connect(function(char)
     korbloxWeld = nil
     char:WaitForChild("HumanoidRootPart", 10)
-    task.wait(1.5) -- Wait for rig to fully load
+    task.wait(0.5) -- Small wait to ensure rig loads
     setupKorblox(char)
 end)
 
@@ -446,4 +456,4 @@ if player.Character then
     end)
 end
 
-notify("Korblox + Headless", "Active! GUI adjusts R15 only. R6 uses native Korblox.", "rbxassetid://101851696")
+notify("Korblox + Headless", "Permanent mode! Will survive game round transitions.", "rbxassetid://101851696")
