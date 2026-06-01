@@ -202,6 +202,7 @@ local function revertSlot(slotName)
 end
 
 local function setSlotAnimations(animate, slotName, anims)
+    if not anims or #anims == 0 then return 0 end
     local folder = nil
     for _, child in pairs(animate:GetChildren()) do if child.Name:lower() == slotName:lower() then folder = child; break end end
     if not folder then return 0 end
@@ -221,36 +222,46 @@ local function setSlotAnimations(animate, slotName, anims)
         end
         applied = applied + 1
     end
+    -- Fix: Destroy leftover animations to prevent overlap/freezing
+    for i = #anims + 1, #existingAnims do
+        pcall(function() existingAnims[i]:Destroy() end)
+    end
     return applied
 end
 
 local function applyAllSlotsSafely(animate, allAnimData)
     local char = player.Character; if not char then return 0 end
-    stopAllTracks()
     pcall(function() animate.Enabled = false end)
-    task.wait(0.01)
+    stopAllTracks()
+    task.wait(0.05)
     local totalApplied = 0
     pcall(function() for slotName, anims in pairs(allAnimData) do totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims) end end)
     pcall(function() animate.Enabled = true end)
-    task.wait(0.01)
+    task.wait(0.05)
     return totalApplied
 end
 
 local function revertSlotSafely(slotName)
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
-    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    pcall(function() animate.Enabled = false end)
+    stopAllTracks()
+    task.wait(0.05)
     local reverted = false; pcall(function() reverted = revertSlot(slotName) end)
-    pcall(function() animate.Enabled = true end); task.wait(0.01)
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
     return reverted
 end
 
 local function revertAllSlotsSafely()
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
-    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    pcall(function() animate.Enabled = false end)
+    stopAllTracks()
+    task.wait(0.05)
     local anyReverted = false; pcall(function() for _, s in ipairs(ANIM_SLOT_NAMES) do if revertSlot(s) then anyReverted = true end end end)
-    pcall(function() animate.Enabled = true end); task.wait(0.01)
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
     return anyReverted
 end
 
@@ -280,9 +291,12 @@ local function applySlotFromBundle(slotName, bundleData)
     local allAnimData = buildAllAnimData(bundleData, slotName)
     local targetAnims = allAnimData[validSlotLookup[slotName:lower()]]
     if not targetAnims or #targetAnims == 0 then return false end
-    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    pcall(function() animate.Enabled = false end)
+    stopAllTracks()
+    task.wait(0.05)
     local applied = 0; pcall(function() applied = setSlotAnimations(animate, slotName, targetAnims) end)
-    pcall(function() animate.Enabled = true end); task.wait(0.01)
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
     if applied > 0 then State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}; SaveConfig(); return true end
     return false
 end
