@@ -44,6 +44,32 @@ local State = {
 getgenv().lastAnim = getgenv().lastAnim or nil
 local ConfigPath = "PinkWards/Config.json"
 
+-- ============================================================
+-- CONVERT: bundledAnimations → bundledItems format
+-- This bridges the new JSON format to what the script expects
+-- ============================================================
+local function convertBundledAnimations(item)
+    if not item then return nil end
+    if item.bundledItems then return item.bundledItems end
+    if not item.bundledAnimations or type(item.bundledAnimations) ~= "table" then return nil end
+    local result = {}
+    for typeKey, entries in pairs(item.bundledAnimations) do
+        if type(entries) == "table" then
+            local ids = {}
+            for _, entry in ipairs(entries) do
+                if type(entry) == "table" and entry.id then
+                    ids[#ids + 1] = entry.id
+                elseif type(entry) == "number" then
+                    ids[#ids + 1] = entry
+                end
+            end
+            if #ids > 0 then result[typeKey] = ids end
+        end
+    end
+    if next(result) then return result end
+    return nil
+end
+
 local function SaveConfig()
     if not isfolder then return end
     if not isfolder("PinkWards") then pcall(function() makefolder("PinkWards") end) end
@@ -102,7 +128,11 @@ end
 
 local function loadLastAnim()
     local data = loadFile("LastAnimation.json")
-    if data and data.id then getgenv().lastAnim = data end
+    if data and data.id then
+        -- Convert bundledAnimations if present
+        local bundled = convertBundledAnimations(data)
+        getgenv().lastAnim = {id = data.id, name = data.name, bundledItems = bundled}
+    end
 end
 
 local function rebuildFavLookup()
@@ -116,7 +146,11 @@ end
 local function getBundled(id)
     for _, src in ipairs({State.filteredAnims, State.animsData, State.favAnims}) do
         for _, a in ipairs(src) do
-            if tostring(a.id) == tostring(id) and a.bundledItems then return a.bundledItems end
+            if tostring(a.id) == tostring(id) then
+                if a.bundledItems then return a.bundledItems end
+                local converted = convertBundledAnimations(a)
+                if converted then a.bundledItems = converted; return converted end
+            end
         end
     end
     return nil
@@ -244,10 +278,6 @@ local function setSlotAnimations(animate, slotName, anims)
     return applied
 end
 
--- ===== FIXED: Replaced freeze/unfreeze with Animate script disable/re-enable =====
--- This prevents the character from getting stuck (anchored parts / PlatformStand)
--- after respawn because we never touch Anchored or PlatformStand anymore.
-
 local function applySlotSafely(animate, slotName, anims)
     local char = player.Character; if not char then return 0 end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
@@ -322,8 +352,6 @@ local function revertAllSlotsSafely()
     return anyReverted
 end
 
--- ===== END FIX =====
-
 local function applyAnim(data)
     if not data then return end; if State.applyingAnim then return end
     State.applyingAnim = true
@@ -331,8 +359,12 @@ local function applyAnim(data)
         local char = player.Character; if not char then State.applyingAnim = false; return end
         local hum = char:FindFirstChild("Humanoid"); local animate = char:FindFirstChild("Animate")
         if not animate or not hum then State.applyingAnim = false; return end
-        captureOriginalAnims(); local bundled = data.bundledItems or getBundled(data.id)
+        captureOriginalAnims()
+        
+        -- FIXED: Check bundledItems first, then convert bundledAnimations
+        local bundled = data.bundledItems or convertBundledAnimations(data) or getBundled(data.id)
         if not bundled then State.applyingAnim = false; return end
+        
         getgenv().lastAnim = {id = data.id, name = data.name, bundledItems = bundled}; saveLastAnim()
         notify("Animation", "Loading: " .. tostring(data.name or "Animation") .. "...", 2)
         local allAnimData = {}
@@ -359,7 +391,8 @@ local function applySlotFromBundle(slotName, bundleData)
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); local hum = char:FindFirstChild("Humanoid")
     if not animate or not hum then return false end
-    captureOriginalAnims(); local bundled = bundleData.bundledItems or getBundled(bundleData.id)
+    captureOriginalAnims()
+    local bundled = bundleData.bundledItems or convertBundledAnimations(bundleData) or getBundled(bundleData.id)
     if not bundled then return false end
     local targetAnims = nil
     for key, assetIds in pairs(bundled) do
@@ -392,7 +425,7 @@ local function applyAllCustomSlots()
         for slotName, info in pairs(State.config.CustomAnimSlots) do
             if type(info) == "table" and info.id then
                 local bundled = getBundled(info.id)
-                if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
+                if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bundled = a.bundledItems or convertBundledAnimations(a); break end end end
                 if bundled then
                     for key, assetIds in pairs(bundled) do
                         for _, assetId in pairs(assetIds) do
@@ -422,7 +455,7 @@ local function reapplyCustomSlots()
     for slotName, info in pairs(State.config.CustomAnimSlots) do
         if type(info) == "table" and info.id then
             local bundled = getBundled(info.id)
-            if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
+            if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bundled = a.bundledItems or convertBundledAnimations(a); break end end end
             if bundled then
                 for key, assetIds in pairs(bundled) do
                     for _, assetId in pairs(assetIds) do
@@ -478,17 +511,25 @@ local function fetchEmotes()
     local ok, result = pcall(function() return HttpService:JSONDecode(game:HttpGet(EMOTE_URL)) end)
     if ok and result then
         local rawList = result.data or result; local data = {}
-        for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id > 0 then data[#data + 1] = {id = id, name = item.name or ("Emote_" .. id)} end end
+        for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id ~= 0 then data[#data + 1] = {id = id, name = item.name or ("Emote_" .. id)} end end
         State.emotesData = data; State.filteredEmotes = data
     end; State.isLoadingEmotes = false; State.cacheDirty = true
 end
 
+-- FIXED: Now reads bundledAnimations and converts them, and allows negative IDs
 local function fetchAnims()
     if State.isLoadingAnims then return end; State.isLoadingAnims = true
     local ok, result = pcall(function() return HttpService:JSONDecode(game:HttpGet(ANIM_URL)) end)
     if ok and result then
         local rawList = result.data or result; local data = {}
-        for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id > 0 then data[#data + 1] = {id = id, name = item.name or ("Anim_" .. id), bundledItems = item.bundledItems} end end
+        for i = 1, #rawList do
+            local item = rawList[i]
+            local id = tonumber(item.id)
+            if id and id ~= 0 then
+                local bundled = convertBundledAnimations(item)
+                data[#data + 1] = {id = id, name = item.name or ("Anim_" .. id), bundledItems = bundled}
+            end
+        end
         State.animsData = data; State.filteredAnims = data
     end; State.isLoadingAnims = false; State.cacheDirty = true
 end
@@ -777,7 +818,12 @@ function refreshGrid()
             btnDataMap[btn] = item
             btn.Visible = true
             if State.mode == "animation" then
-                btn.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.data.id .. "&w=420&h=420"
+                -- FIXED: Use Asset thumbnail for negative IDs (custom anims), Bundle for positive
+                if item.data.id > 0 then
+                    btn.Image = "rbxthumb://type=BundleThumbnail&id=" .. item.data.id .. "&w=420&h=420"
+                else
+                    btn.Image = "rbxthumb://type=Asset&id=" .. math.abs(item.data.id) .. "&w=150&h=150"
+                end
             else
                 btn.Image = "rbxthumb://type=Asset&id=" .. item.data.id .. "&w=150&h=150"
             end
@@ -882,7 +928,7 @@ local function openCustomAnimEditor()
                 btn.MouseButton1Click:Connect(function()
                     if pickerApplying then return end; pickerApplying = true
                     task.spawn(function()
-                        local bundled = item.bundledItems or getBundled(item.id); if not bundled then pickerApplying = false; return end
+                        local bundled = item.bundledItems or convertBundledAnimations(item) or getBundled(item.id); if not bundled then pickerApplying = false; return end
                         local success = applySlotFromBundle(currentPickerSlot, {id = item.id, name = item.name, bundledItems = bundled})
                         if success then pickerPage.Visible = false; slotPage.Visible = true; local row = scrollFrame:FindFirstChild("Row_" .. currentPickerSlot); if row then local cl = row:FindFirstChild("CurrentLabel"); if cl then cl.Text = item.name end end end
                         pickerApplying = false
@@ -1001,6 +1047,8 @@ ContextActionService:BindCoreActionAtPriority("Emote Menu", function(name, state
 end, true, 2001, Enum.KeyCode.Comma)
 
 -- ============ CHARACTER & DATA LOGIC ============ --
+local lastReapplyTime = 0
+
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
     State.applyingAnim = false; originalAnimData = nil
@@ -1009,6 +1057,10 @@ local function onCharacterAdded(char)
         task.wait(1.5)
         if not animate or not char:IsDescendantOf(game) then return end
         if hum.Health <= 0 then return end
+        -- FIXED: Prevent reapply spam (minimum 5 seconds between reapplies)
+        local now = tick()
+        if now - lastReapplyTime < 5 then return end
+        lastReapplyTime = now
         captureOriginalAnims()
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
         if hasCustomSlots then reapplyCustomSlots()
@@ -1021,8 +1073,16 @@ task.spawn(function()
     LoadConfig(); loadLastAnim()
     local rawEmoteFavs = loadFile(State.favFileName); State.favEmotes = {}
     if type(rawEmoteFavs) == "table" then for _, v in ipairs(rawEmoteFavs) do if type(v) == "table" and v.id then State.favEmotes[#State.favEmotes + 1] = {id = v.id, name = v.name or ("Emote_" .. tostring(v.id))} end end end
+    -- FIXED: Also convert bundledAnimations for loaded favorites
     local rawAnimFavs = loadFile(State.favAnimFileName); State.favAnims = {}
-    if type(rawAnimFavs) == "table" then for _, v in ipairs(rawAnimFavs) do if type(v) == "table" and v.id then State.favAnims[#State.favAnims + 1] = {id = v.id, name = v.name or ("Anim_" .. tostring(v.id)), bundledItems = v.bundledItems} end end end
+    if type(rawAnimFavs) == "table" then
+        for _, v in ipairs(rawAnimFavs) do
+            if type(v) == "table" and v.id then
+                local bundled = v.bundledItems or convertBundledAnimations(v)
+                State.favAnims[#State.favAnims + 1] = {id = v.id, name = v.name or ("Anim_" .. tostring(v.id)), bundledItems = bundled}
+            end
+        end
+    end
     rebuildFavLookup(); fetchEmotes(); fetchAnims(); notify("PinkWards", "Emote Sniper loaded successfully. Press ',' to open.", 4)
 end)
 
