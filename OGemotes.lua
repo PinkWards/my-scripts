@@ -44,6 +44,10 @@ local State = {
 getgenv().lastAnim = getgenv().lastAnim or nil
 local ConfigPath = "PinkWards/Config.json"
 
+-- [FIX] Generation counter – every respawn increments this so stale
+-- animation-apply threads know to abort early.
+local applyGeneration = 0
+
 local function SaveConfig()
     if not isfolder then return end
     if not isfolder("PinkWards") then pcall(function() makefolder("PinkWards") end) end
@@ -244,23 +248,46 @@ local function setSlotAnimations(animate, slotName, anims)
     return applied
 end
 
--- ===== FIXED: Replaced freeze/unfreeze with Animate script disable/re-enable =====
--- This prevents the character from getting stuck (anchored parts / PlatformStand)
--- after respawn because we never touch Anchored or PlatformStand anymore.
+-- [FIX] Instead of disabling/re-enabling the Animate script (which can leave
+-- it in a broken state after respawn), we clone it, destroy the original, and
+-- parent the clone.  The clone starts executing from scratch – guaranteed clean.
+local function restartAnimate(char)
+    local animate = char:FindFirstChild("Animate")
+    if not animate then return nil end
+    local parent = animate.Parent
+    local clone = animate:Clone()
+    animate:Destroy()
+    clone.Parent = parent
+    return clone
+end
+
+-- [FIX] Safety net – un-stick the character if anything left it frozen.
+local function ensureCharacterCanMove(char)
+    if not char or not char:IsDescendantOf(game) then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+    for _, part in pairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Anchored = false
+        end
+    end
+    if hum.PlatformStand then hum.PlatformStand = false end
+    if hum.Sit then hum.Sit = false end
+end
+
+-- [FIX] All four "safely" functions now use restartAnimate instead of
+-- Enabled = false / true.  No more Anchored / PlatformStand tricks either.
 
 local function applySlotSafely(animate, slotName, anims)
     local char = player.Character; if not char then return 0 end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
 
     stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.05)
-
     local applied = 0
     pcall(function() applied = setSlotAnimations(animate, slotName, anims) end)
 
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.05)
+    restartAnimate(char)
+    task.wait(0.1)
     return applied
 end
 
@@ -269,9 +296,6 @@ local function applyAllSlotsSafely(animate, allAnimData)
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
 
     stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.05)
-
     local totalApplied = 0
     pcall(function()
         for slotName, anims in pairs(allAnimData) do
@@ -279,8 +303,8 @@ local function applyAllSlotsSafely(animate, allAnimData)
         end
     end)
 
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.05)
+    restartAnimate(char)
+    task.wait(0.1)
     return totalApplied
 end
 
@@ -290,14 +314,11 @@ local function revertSlotSafely(slotName)
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
 
     stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.05)
-
     local reverted = false
     pcall(function() reverted = revertSlot(slotName) end)
 
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.05)
+    restartAnimate(char)
+    task.wait(0.1)
     return reverted
 end
 
@@ -307,9 +328,6 @@ local function revertAllSlotsSafely()
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
 
     stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.05)
-
     local anyReverted = false
     pcall(function()
         for _, slotName in ipairs(ANIM_SLOT_NAMES) do
@@ -317,19 +335,22 @@ local function revertAllSlotsSafely()
         end
     end)
 
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.05)
+    restartAnimate(char)
+    task.wait(0.1)
     return anyReverted
 end
 
--- ===== END FIX =====
-
+-- [FIX] applyAnim now captures the character reference up front and aborts
+-- if the character changes mid-load (e.g. player died while assets were
+-- still downloading).
 local function applyAnim(data)
     if not data then return end; if State.applyingAnim then return end
     State.applyingAnim = true
+    local myChar = player.Character
+    local myGen  = applyGeneration
     task.spawn(function()
-        local char = player.Character; if not char then State.applyingAnim = false; return end
-        local hum = char:FindFirstChild("Humanoid"); local animate = char:FindFirstChild("Animate")
+        if not myChar then State.applyingAnim = false; return end
+        local hum = myChar:FindFirstChild("Humanoid"); local animate = myChar:FindFirstChild("Animate")
         if not animate or not hum then State.applyingAnim = false; return end
         captureOriginalAnims(); local bundled = data.bundledItems or getBundled(data.id)
         if not bundled then State.applyingAnim = false; return end
@@ -338,6 +359,8 @@ local function applyAnim(data)
         local allAnimData = {}
         for key, assetIds in pairs(bundled) do
             for _, assetId in pairs(assetIds) do
+                -- [FIX] bail out if character changed while loading
+                if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
                 local objs = loadAssetObjects(assetId)
                 if objs then
                     for _, obj in pairs(objs) do
@@ -348,12 +371,15 @@ local function applyAnim(data)
                 end
             end
         end
+        -- [FIX] one last check before we touch the new Animate script
+        if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData)
         notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " slots)", 3)
         State.applyingAnim = false
     end)
 end
 
+-- [FIX] same generation-guard for slot-from-bundle
 local function applySlotFromBundle(slotName, bundleData)
     if not bundleData then return false end
     local char = player.Character; if not char then return false end
@@ -361,9 +387,12 @@ local function applySlotFromBundle(slotName, bundleData)
     if not animate or not hum then return false end
     captureOriginalAnims(); local bundled = bundleData.bundledItems or getBundled(bundleData.id)
     if not bundled then return false end
+    local myChar = char
+    local myGen  = applyGeneration
     local targetAnims = nil
     for key, assetIds in pairs(bundled) do
         for _, assetId in pairs(assetIds) do
+            if player.Character ~= myChar or applyGeneration ~= myGen then return false end
             local objs = loadAssetObjects(assetId)
             if objs then
                 for _, obj in pairs(objs) do
@@ -375,27 +404,33 @@ local function applySlotFromBundle(slotName, bundleData)
         end
     end
     if not targetAnims or #targetAnims == 0 then return false end
+    if player.Character ~= myChar or applyGeneration ~= myGen then return false end
     local applied = applySlotSafely(animate, slotName, targetAnims)
     if applied > 0 then State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}; SaveConfig(); return true end
     return false
 end
 
+-- [FIX] generation-guard for applyAllCustomSlots
 local function applyAllCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then notify("Custom Anim", "No custom slots configured", 3); return end
     if State.applyingAnim then notify("Custom Anim", "Already applying, please wait...", 3); return end
     State.applyingAnim = true
+    local myChar = player.Character
+    local myGen  = applyGeneration
     task.spawn(function()
-        local char = player.Character; if not char then State.applyingAnim = false; return end
-        local animate = char:FindFirstChild("Animate"); local hum = char:FindFirstChild("Humanoid")
+        if not myChar then State.applyingAnim = false; return end
+        local animate = myChar:FindFirstChild("Animate"); local hum = myChar:FindFirstChild("Humanoid")
         if not animate or not hum then State.applyingAnim = false; return end
         captureOriginalAnims(); notify("Custom Anim", "Applying all custom slots...", 2); local allAnimData = {}
         for slotName, info in pairs(State.config.CustomAnimSlots) do
+            if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
             if type(info) == "table" and info.id then
                 local bundled = getBundled(info.id)
                 if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
                 if bundled then
                     for key, assetIds in pairs(bundled) do
                         for _, assetId in pairs(assetIds) do
+                            if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
                             local objs = loadAssetObjects(assetId)
                             if objs then
                                 for _, obj in pairs(objs) do
@@ -409,23 +444,29 @@ local function applyAllCustomSlots()
                 end
             end
         end
+        if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData); local slotCount = 0; for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
         notify("Custom Anim", "Applied " .. slotCount .. " slots (" .. totalApplied .. " anims)", 3); State.applyingAnim = false
     end)
 end
 
+-- [FIX] generation-guard for reapplyCustomSlots
 local function reapplyCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then return end
     local char = player.Character; if not char then return end
     local animate = char:FindFirstChild("Animate"); local hum = char:FindFirstChild("Humanoid"); if not animate or not hum then return end
     originalAnimData = nil; captureOriginalAnims(); local allAnimData = {}
+    local myChar = char
+    local myGen  = applyGeneration
     for slotName, info in pairs(State.config.CustomAnimSlots) do
+        if player.Character ~= myChar or applyGeneration ~= myGen then return end
         if type(info) == "table" and info.id then
             local bundled = getBundled(info.id)
             if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
             if bundled then
                 for key, assetIds in pairs(bundled) do
                     for _, assetId in pairs(assetIds) do
+                        if player.Character ~= myChar or applyGeneration ~= myGen then return end
                         local objs = loadAssetObjects(assetId)
                         if objs then
                             for _, obj in pairs(objs) do
@@ -439,6 +480,7 @@ local function reapplyCustomSlots()
             end
         end
     end
+    if player.Character ~= myChar or applyGeneration ~= myGen then return end
     if next(allAnimData) then applyAllSlotsSafely(animate, allAnimData) end
 end
 
@@ -1001,9 +1043,17 @@ ContextActionService:BindCoreActionAtPriority("Emote Menu", function(name, state
 end, true, 2001, Enum.KeyCode.Comma)
 
 -- ============ CHARACTER & DATA LOGIC ============ --
+-- [FIX] onCharacterAdded now:
+--   1) increments applyGeneration so stale threads abort
+--   2) runs ensureCharacterCanMove as a safety net after reapply
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
-    State.applyingAnim = false; originalAnimData = nil
+
+    -- [FIX] cancel any in-flight animation apply from the old character
+    applyGeneration = applyGeneration + 1
+    State.applyingAnim = false
+    originalAnimData = nil
+
     if State.autoReapplyEnabled then
         local animate = char:WaitForChild("Animate", 15)
         task.wait(1.5)
@@ -1013,6 +1063,14 @@ local function onCharacterAdded(char)
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
         if hasCustomSlots then reapplyCustomSlots()
         elseif getgenv().lastAnim and getgenv().lastAnim.id then applyAnim(getgenv().lastAnim) end
+
+        -- [FIX] safety net: wait for apply to finish, then un-stick the character
+        task.spawn(function()
+            local elapsed = 0
+            while State.applyingAnim and elapsed < 15 do task.wait(0.5); elapsed = elapsed + 0.5 end
+            task.wait(0.5)
+            ensureCharacterCanMove(char)
+        end)
     end
     hum.Died:Connect(function() State.applyingAnim = false end)
 end
