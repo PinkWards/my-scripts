@@ -139,18 +139,6 @@ local function playEmote(name, id)
     end
 end
 
-local function freezeCharacter()
-    local char = player.Character; if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid"); if hum then hum.PlatformStand = true end
-    task.spawn(function() for _, part in ipairs(char:GetDescendants()) do if part:IsA("BasePart") and not part.Anchored then part.Anchored = true end end end)
-end
-
-local function unfreezeCharacter()
-    local char = player.Character; if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid"); if hum then hum.PlatformStand = false end
-    task.spawn(function() for _, part in ipairs(char:GetDescendants()) do if part:IsA("BasePart") and part.Anchored then part.Anchored = false end end end)
-end
-
 local function stopAllTracks()
     local char = player.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return end
@@ -256,21 +244,85 @@ local function setSlotAnimations(animate, slotName, anims)
     return applied
 end
 
-local function applySlotWithFreeze(animate, slotName, anims)
+-- ===== FIXED: Replaced freeze/unfreeze with Animate script disable/re-enable =====
+-- This prevents the character from getting stuck (anchored parts / PlatformStand)
+-- after respawn because we never touch Anchored or PlatformStand anymore.
+
+local function applySlotSafely(animate, slotName, anims)
     local char = player.Character; if not char then return 0 end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
-    freezeCharacter(); wait(0.1); stopAllTracks(); local applied = setSlotAnimations(animate, slotName, anims)
-    hum:ChangeState(Enum.HumanoidStateType.Freefall); wait(0.1); unfreezeCharacter(); return applied
+
+    stopAllTracks()
+    pcall(function() animate.Enabled = false end)
+    task.wait(0.05)
+
+    local applied = 0
+    pcall(function() applied = setSlotAnimations(animate, slotName, anims) end)
+
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
+    return applied
 end
 
-local function applyAllSlotsWithFreeze(animate, allAnimData)
+local function applyAllSlotsSafely(animate, allAnimData)
     local char = player.Character; if not char then return 0 end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
-    freezeCharacter(); wait(0.1); stopAllTracks()
+
+    stopAllTracks()
+    pcall(function() animate.Enabled = false end)
+    task.wait(0.05)
+
     local totalApplied = 0
-    for slotName, anims in pairs(allAnimData) do totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims) end
-    hum:ChangeState(Enum.HumanoidStateType.Freefall); wait(0.1); unfreezeCharacter(); return totalApplied
+    pcall(function()
+        for slotName, anims in pairs(allAnimData) do
+            totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims)
+        end
+    end)
+
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
+    return totalApplied
 end
+
+local function revertSlotSafely(slotName)
+    local char = player.Character; if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
+    local animate = char:FindFirstChild("Animate"); if not animate then return false end
+
+    stopAllTracks()
+    pcall(function() animate.Enabled = false end)
+    task.wait(0.05)
+
+    local reverted = false
+    pcall(function() reverted = revertSlot(slotName) end)
+
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
+    return reverted
+end
+
+local function revertAllSlotsSafely()
+    local char = player.Character; if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
+    local animate = char:FindFirstChild("Animate"); if not animate then return false end
+
+    stopAllTracks()
+    pcall(function() animate.Enabled = false end)
+    task.wait(0.05)
+
+    local anyReverted = false
+    pcall(function()
+        for _, slotName in ipairs(ANIM_SLOT_NAMES) do
+            if revertSlot(slotName) then anyReverted = true end
+        end
+    end)
+
+    pcall(function() animate.Enabled = true end)
+    task.wait(0.05)
+    return anyReverted
+end
+
+-- ===== END FIX =====
 
 local function applyAnim(data)
     if not data then return end; if State.applyingAnim then return end
@@ -296,13 +348,13 @@ local function applyAnim(data)
                 end
             end
         end
-        local totalApplied = applyAllSlotsWithFreeze(animate, allAnimData)
+        local totalApplied = applyAllSlotsSafely(animate, allAnimData)
         notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " slots)", 3)
         State.applyingAnim = false
     end)
 end
 
-local function applySlotFromBundle(slotName, bundleData, skipFreeze)
+local function applySlotFromBundle(slotName, bundleData)
     if not bundleData then return false end
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); local hum = char:FindFirstChild("Humanoid")
@@ -323,7 +375,7 @@ local function applySlotFromBundle(slotName, bundleData, skipFreeze)
         end
     end
     if not targetAnims or #targetAnims == 0 then return false end
-    local applied = skipFreeze and setSlotAnimations(animate, slotName, targetAnims) or applySlotWithFreeze(animate, slotName, targetAnims)
+    local applied = applySlotSafely(animate, slotName, targetAnims)
     if applied > 0 then State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}; SaveConfig(); return true end
     return false
 end
@@ -357,7 +409,7 @@ local function applyAllCustomSlots()
                 end
             end
         end
-        local totalApplied = applyAllSlotsWithFreeze(animate, allAnimData); local slotCount = 0; for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
+        local totalApplied = applyAllSlotsSafely(animate, allAnimData); local slotCount = 0; for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
         notify("Custom Anim", "Applied " .. slotCount .. " slots (" .. totalApplied .. " anims)", 3); State.applyingAnim = false
     end)
 end
@@ -387,19 +439,7 @@ local function reapplyCustomSlots()
             end
         end
     end
-    if next(allAnimData) then applyAllSlotsWithFreeze(animate, allAnimData) end
-end
-
-local function revertSlotWithFreeze(slotName)
-    local char = player.Character; if not char then return false end; local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
-    freezeCharacter(); wait(0.1); stopAllTracks(); local reverted = revertSlot(slotName); hum:ChangeState(Enum.HumanoidStateType.Freefall); wait(0.1); unfreezeCharacter(); return reverted
-end
-
-local function revertAllSlotsWithFreeze()
-    local char = player.Character; if not char then return false end; local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return false end
-    freezeCharacter(); wait(0.1); stopAllTracks(); local anyReverted = false
-    for _, slotName in ipairs(ANIM_SLOT_NAMES) do if revertSlot(slotName) then anyReverted = true end end
-    hum:ChangeState(Enum.HumanoidStateType.Freefall); wait(0.1); unfreezeCharacter(); return anyReverted
+    if next(allAnimData) then applyAllSlotsSafely(animate, allAnimData) end
 end
 
 function toggleFav(id, name, bundled)
@@ -678,7 +718,7 @@ local function ensurePoolSize(count)
     end
 end
 
-ensurePoolSize(60) -- Initial pool
+ensurePoolSize(60)
 
 local function getItemsPerPage()
     local absX = Frame.AbsoluteSize.X
@@ -863,7 +903,7 @@ local function openCustomAnimEditor()
             local currentLabel = Instance.new("TextLabel", row); currentLabel.Name = "CurrentLabel"; currentLabel.BackgroundTransparency = 1; currentLabel.Position = UDim2.new(0.20, 0, 0, 0); currentLabel.Size = UDim2.new(0.36, 0, 1, 0); currentLabel.Font = Enum.Font.Gotham; currentLabel.Text = "None"; currentLabel.TextColor3 = Color3.fromRGB(150, 150, 150); currentLabel.TextSize = 10; currentLabel.TextTruncate = Enum.TextTruncate.AtEnd; currentLabel.TextXAlignment = Enum.TextXAlignment.Left; currentLabel.ZIndex = 55
             local removeBtn = Instance.new("TextButton", row); removeBtn.Name = "RemoveBtn"; removeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); removeBtn.Position = UDim2.new(0.57, 0, 0.1, 0); removeBtn.Size = UDim2.new(0.18, -2, 0.8, 0); removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"; removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255); removeBtn.TextSize = 12; removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55; Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0, 4)
             removeBtn.MouseButton1Click:Connect(function()
-                if State.applyingAnim then return end; State.config.CustomAnimSlots[slotName] = nil; SaveConfig(); captureOriginalAnims(); revertSlotWithFreeze(slotName); currentLabel.Text = "None"
+                if State.applyingAnim then return end; State.config.CustomAnimSlots[slotName] = nil; SaveConfig(); captureOriginalAnims(); revertSlotSafely(slotName); currentLabel.Text = "None"
             end)
             local selectBtn = Instance.new("TextButton", row); selectBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 220); selectBtn.Position = UDim2.new(0.76, 0, 0.1, 0); selectBtn.Size = UDim2.new(0.22, -4, 0.8, 0); selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"; selectBtn.TextColor3 = Color3.fromRGB(255, 255, 255); selectBtn.TextSize = 11; selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55; Instance.new("UICorner", selectBtn).CornerRadius = UDim.new(0, 4)
             selectBtn.MouseButton1Click:Connect(function()
@@ -877,7 +917,7 @@ local function openCustomAnimEditor()
         applyAllBtn.MouseButton1Click:Connect(function() task.spawn(applyAllCustomSlots) end)
         local clearAllBtn = Instance.new("TextButton", bottomBar); clearAllBtn.LayoutOrder = 2; clearAllBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); clearAllBtn.Size = UDim2.new(0, 130, 0, 28); clearAllBtn.Font = Enum.Font.GothamBold; clearAllBtn.Text = "Clear All"; clearAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255); clearAllBtn.TextSize = 12; clearAllBtn.BorderSizePixel = 0; clearAllBtn.ZIndex = 55; Instance.new("UICorner", clearAllBtn).CornerRadius = UDim.new(0, 6)
         clearAllBtn.MouseButton1Click:Connect(function()
-            State.config.CustomAnimSlots = {}; SaveConfig(); captureOriginalAnims(); revertAllSlotsWithFreeze()
+            State.config.CustomAnimSlots = {}; SaveConfig(); captureOriginalAnims(); revertAllSlotsSafely()
             for _, child in pairs(scrollFrame:GetChildren()) do if child:IsA("Frame") then local cl = child:FindFirstChild("CurrentLabel"); if cl then cl.Text = "None" end end end
         end)
     end
@@ -965,7 +1005,11 @@ local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
     State.applyingAnim = false; originalAnimData = nil
     if State.autoReapplyEnabled then
-        task.wait(1); captureOriginalAnims()
+        local animate = char:WaitForChild("Animate", 15)
+        task.wait(1.5)
+        if not animate or not char:IsDescendantOf(game) then return end
+        if hum.Health <= 0 then return end
+        captureOriginalAnims()
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
         if hasCustomSlots then reapplyCustomSlots()
         elseif getgenv().lastAnim and getgenv().lastAnim.id then applyAnim(getgenv().lastAnim) end
