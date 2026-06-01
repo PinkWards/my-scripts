@@ -31,9 +31,6 @@ local ANIM_SLOT_NAMES = {"idle", "walk", "run", "jump", "climb", "fall", "swim",
 local validSlotLookup = {}
 for _, name in ipairs(ANIM_SLOT_NAMES) do validSlotLookup[name:lower()] = name end
 
--- ============================================================
--- CONVERT: bundledAnimations → bundledItems {SlotName = {ids}}
--- ============================================================
 local function convertBundledAnimations(item)
     if not item then return nil end
     if item.bundledItems then return item.bundledItems end
@@ -43,23 +40,15 @@ local function convertBundledAnimations(item)
         if type(entries) == "table" then
             local ids = {}
             for _, entry in ipairs(entries) do
-                if type(entry) == "table" and entry.id then
-                    ids[#ids + 1] = entry.id
-                elseif type(entry) == "number" then
-                    ids[#ids + 1] = entry
-                end
+                if type(entry) == "table" and entry.id then ids[#ids + 1] = entry.id
+                elseif type(entry) == "number" then ids[#ids + 1] = entry end
             end
             if #ids > 0 then result[typeKey] = ids end
         end
     end
-    if next(result) then return result end
-    return nil
+    return next(result) and result or nil
 end
 
--- ============================================================
--- CORE: Build anim data from bundle — ALL IDs used directly
--- No game:GetObjects, no loading, instant, zero lag
--- ============================================================
 local function buildAllAnimData(data, slotFilter)
     local bundled = data.bundledItems or convertBundledAnimations(data) or getBundled(data.id)
     if not bundled then return {} end
@@ -72,8 +61,7 @@ local function buildAllAnimData(data, slotFilter)
             for _, id in ipairs(ids) do
                 table.insert(allAnimData[slotName], {
                     id = "rbxassetid://" .. tostring(id),
-                    name = key,
-                    weight = 1
+                    name = key, weight = 1
                 })
             end
         end
@@ -98,11 +86,7 @@ end
 
 local function notify(title, content, duration)
     if not State.config.NotifyEnabled then return end
-    pcall(function()
-        StarterGui:SetCore("SendNotification", {
-            Title = title or "PinkWards", Text = content or "", Duration = duration or 4
-        })
-    end)
+    pcall(function() StarterGui:SetCore("SendNotification", { Title = title or "PinkWards", Text = content or "", Duration = duration or 4 }) end)
 end
 
 local function saveFile(name, data)
@@ -113,11 +97,9 @@ local function saveFile(name, data)
 end
 
 local function loadFile(name)
-    local paths = {"PinkWards/" .. name, name}
-    for _, path in ipairs(paths) do
+    for _, path in ipairs({"PinkWards/" .. name, name}) do
         if readfile and isfile then
-            local exists = false
-            pcall(function() exists = isfile(path) end)
+            local exists = false; pcall(function() exists = isfile(path) end)
             if exists then
                 local ok, res = pcall(function() return HttpService:JSONDecode(readfile(path)) end)
                 if ok and res and type(res) == "table" then
@@ -131,9 +113,7 @@ local function loadFile(name)
     return {}
 end
 
-local function saveLastAnim()
-    if getgenv().lastAnim then saveFile("LastAnimation.json", getgenv().lastAnim) end
-end
+local function saveLastAnim() if getgenv().lastAnim then saveFile("LastAnimation.json", getgenv().lastAnim) end end
 
 local function loadLastAnim()
     local data = loadFile("LastAnimation.json")
@@ -144,10 +124,8 @@ local function loadLastAnim()
 end
 
 local function rebuildFavLookup()
-    State.favLookupEmote = {}
-    for _, v in ipairs(State.favEmotes) do State.favLookupEmote[tostring(v.id)] = true end
-    State.favLookupAnim = {}
-    for _, v in ipairs(State.favAnims) do State.favLookupAnim[tostring(v.id)] = true end
+    State.favLookupEmote = {}; for _, v in ipairs(State.favEmotes) do State.favLookupEmote[tostring(v.id)] = true end
+    State.favLookupAnim = {}; for _, v in ipairs(State.favAnims) do State.favLookupAnim[tostring(v.id)] = true end
     State.favSetVersion = State.favSetVersion + 1
 end
 
@@ -165,15 +143,12 @@ local function getBundled(id)
 end
 
 local function playEmote(name, id)
-    local char = player.Character if not char then return end
+    local char = player.Character; if not char then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local description = humanoid and humanoid:FindFirstChildOfClass("HumanoidDescription")
     if not humanoid or not description then return end
     if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
-        task.spawn(function()
-            pcall(function() description:AddEmote(name, id) end)
-            pcall(function() humanoid:PlayEmoteAndGetAnimTrackById(id) end)
-        end)
+        task.spawn(function() pcall(function() description:AddEmote(name, id) end); pcall(function() humanoid:PlayEmoteAndGetAnimTrackById(id) end) end)
     else notify("R6?", "You gotta be R15 dude", 3) end
 end
 
@@ -255,11 +230,7 @@ local function applyAllSlotsSafely(animate, allAnimData)
     pcall(function() animate.Enabled = false end)
     task.wait(0.01)
     local totalApplied = 0
-    pcall(function()
-        for slotName, anims in pairs(allAnimData) do
-            totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims)
-        end
-    end)
+    pcall(function() for slotName, anims in pairs(allAnimData) do totalApplied = totalApplied + setSlotAnimations(animate, slotName, anims) end end)
     pcall(function() animate.Enabled = true end)
     task.wait(0.01)
     return totalApplied
@@ -268,37 +239,27 @@ end
 local function revertSlotSafely(slotName)
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
-    stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.01)
-    local reverted = false
-    pcall(function() reverted = revertSlot(slotName) end)
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.01)
+    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    local reverted = false; pcall(function() reverted = revertSlot(slotName) end)
+    pcall(function() animate.Enabled = true end); task.wait(0.01)
     return reverted
 end
 
 local function revertAllSlotsSafely()
     local char = player.Character; if not char then return false end
     local animate = char:FindFirstChild("Animate"); if not animate then return false end
-    stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.01)
-    local anyReverted = false
-    pcall(function() for _, slotName in ipairs(ANIM_SLOT_NAMES) do if revertSlot(slotName) then anyReverted = true end end end)
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.01)
+    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    local anyReverted = false; pcall(function() for _, s in ipairs(ANIM_SLOT_NAMES) do if revertSlot(s) then anyReverted = true end end end)
+    pcall(function() animate.Enabled = true end); task.wait(0.01)
     return anyReverted
 end
 
 local function applyAnim(data)
-    if not data then return end
-    if State.applyingAnim then return end
+    if not data then return end; if State.applyingAnim then return end
     State.applyingAnim = true
     task.spawn(function()
         local char = player.Character; if not char then State.applyingAnim = false; return end
-        local animate = char:FindFirstChild("Animate")
-        if not animate then State.applyingAnim = false; return end
+        local animate = char:FindFirstChild("Animate"); if not animate then State.applyingAnim = false; return end
         captureOriginalAnims()
         local bundled = data.bundledItems or convertBundledAnimations(data) or getBundled(data.id)
         if not bundled then State.applyingAnim = false; return end
@@ -306,7 +267,7 @@ local function applyAnim(data)
         notify("Animation", "Applying: " .. tostring(data.name or "Animation") .. "...", 2)
         local allAnimData = buildAllAnimData(data)
         local totalApplied = applyAllSlotsSafely(animate, allAnimData)
-        notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " slots)", 3)
+        notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " anims)", 3)
         State.applyingAnim = false
     end)
 end
@@ -319,16 +280,10 @@ local function applySlotFromBundle(slotName, bundleData)
     local allAnimData = buildAllAnimData(bundleData, slotName)
     local targetAnims = allAnimData[validSlotLookup[slotName:lower()]]
     if not targetAnims or #targetAnims == 0 then return false end
-    stopAllTracks()
-    pcall(function() animate.Enabled = false end)
-    task.wait(0.01)
-    local applied = 0
-    pcall(function() applied = setSlotAnimations(animate, slotName, targetAnims) end)
-    pcall(function() animate.Enabled = true end)
-    task.wait(0.01)
-    if applied > 0 then
-        State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}; SaveConfig(); return true
-    end
+    stopAllTracks(); pcall(function() animate.Enabled = false end); task.wait(0.01)
+    local applied = 0; pcall(function() applied = setSlotAnimations(animate, slotName, targetAnims) end)
+    pcall(function() animate.Enabled = true end); task.wait(0.01)
+    if applied > 0 then State.config.CustomAnimSlots[slotName] = {id = bundleData.id, name = bundleData.name}; SaveConfig(); return true end
     return false
 end
 
@@ -343,14 +298,8 @@ local function applyAllCustomSlots()
         local allAnimData = {}
         for slotName, info in pairs(State.config.CustomAnimSlots) do
             if type(info) == "table" and info.id then
-                local bundleData = nil
-                for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bundleData = a; break end end
-                if bundleData then
-                    local slotData = buildAllAnimData(bundleData, slotName)
-                    for sn, anims in pairs(slotData) do
-                        if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = anims end
-                    end
-                end
+                local bd = nil; for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bd = a; break end end
+                if bd then local sd = buildAllAnimData(bd, slotName); for sn, an in pairs(sd) do if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = an end end end
             end
         end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData)
@@ -367,14 +316,8 @@ local function reapplyCustomSlots()
     local allAnimData = {}
     for slotName, info in pairs(State.config.CustomAnimSlots) do
         if type(info) == "table" and info.id then
-            local bundleData = nil
-            for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bundleData = a; break end end
-            if bundleData then
-                local slotData = buildAllAnimData(bundleData, slotName)
-                for sn, anims in pairs(slotData) do
-                    if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = anims end
-                end
-            end
+            local bd = nil; for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) then bd = a; break end end
+            if bd then local sd = buildAllAnimData(bd, slotName); for sn, an in pairs(sd) do if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = an end end end
         end
     end
     if next(allAnimData) then applyAllSlotsSafely(animate, allAnimData) end
@@ -385,24 +328,18 @@ function toggleFav(id, name, bundled)
     local found, idx = false, 0
     for i, v in ipairs(list) do if tostring(v.id) == tostring(id) then found, idx = true, i; break end end
     if found then table.remove(list, idx); notify("Favorites", "Removed: " .. name, 3)
-    else
-        local entry = {id = id, name = name}
-        if State.mode == "animation" then entry.bundledItems = bundled or getBundled(id) end
-        table.insert(list, entry); notify("Favorites", "Added: " .. name, 3)
-    end
+    else local entry = {id = id, name = name}; if State.mode == "animation" then entry.bundledItems = bundled or getBundled(id) end; table.insert(list, entry); notify("Favorites", "Added: " .. name, 3) end
     saveFile(State.mode == "animation" and State.favAnimFileName or State.favFileName, list)
     rebuildFavLookup(); State.cacheDirty = true; refreshGrid()
 end
 
 local function searchItems(term)
-    term = term:lower()
-    local source = State.mode == "animation" and State.animsData or State.emotesData
-    if term == "" then
-        if State.mode == "animation" then State.filteredAnims = State.animsData else State.filteredEmotes = State.emotesData end
+    term = term:lower(); local source = State.mode == "animation" and State.animsData or State.emotesData
+    if term == "" then if State.mode == "animation" then State.filteredAnims = State.animsData else State.filteredEmotes = State.emotesData end
     else
         local result = {}; local isIdSearch = term:match("^%d+$")
-        if isIdSearch then for i = 1, #source do if tostring(source[i].id) == term then result[#result + 1] = source[i]; break end end
-        else for i = 1, #source do if source[i].name:lower():find(term, 1, true) then result[#result + 1] = source[i] end end end
+        if isIdSearch then for i = 1, #source do if tostring(source[i].id) == term then result[#result+1] = source[i]; break end end
+        else for i = 1, #source do if source[i].name:lower():find(term, 1, true) then result[#result+1] = source[i] end end end
         if State.mode == "animation" then State.filteredAnims = result else State.filteredEmotes = result end
     end
     State.currentPage = 1; State.cacheDirty = true
@@ -411,11 +348,7 @@ end
 local function fetchEmotes()
     if State.isLoadingEmotes then return end; State.isLoadingEmotes = true
     local ok, result = pcall(function() return HttpService:JSONDecode(game:HttpGet(EMOTE_URL)) end)
-    if ok and result then
-        local rawList = result.data or result; local data = {}
-        for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id ~= 0 then data[#data + 1] = {id = id, name = item.name or ("Emote_" .. id)} end end
-        State.emotesData = data; State.filteredEmotes = data
-    end; State.isLoadingEmotes = false; State.cacheDirty = true
+    if ok and result then local rawList = result.data or result; local data = {}; for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id ~= 0 then data[#data+1] = {id = id, name = item.name or ("Emote_"..id)} end end; State.emotesData = data; State.filteredEmotes = data end; State.isLoadingEmotes = false; State.cacheDirty = true
 end
 
 local function fetchAnims()
@@ -423,122 +356,78 @@ local function fetchAnims()
     local ok, result = pcall(function() return HttpService:JSONDecode(game:HttpGet(ANIM_URL)) end)
     if ok and result then
         local rawList = result.data or result; local data = {}
-        for i = 1, #rawList do
-            local item = rawList[i]; local id = tonumber(item.id)
-            if id and id ~= 0 then
-                local bundled = convertBundledAnimations(item)
-                data[#data + 1] = {id = id, name = item.name or ("Anim_" .. id), bundledItems = bundled}
-            end
-        end
+        for i = 1, #rawList do local item = rawList[i]; local id = tonumber(item.id); if id and id ~= 0 then local bundled = convertBundledAnimations(item); data[#data+1] = {id = id, name = item.name or ("Anim_"..id), bundledItems = bundled} end end
         State.animsData = data; State.filteredAnims = data
     end; State.isLoadingAnims = false; State.cacheDirty = true
 end
 
 -- ============ GUI ============ --
-local FavoriteOff = "rbxassetid://10651060677"
-local FavoriteOn = "rbxassetid://10651061109"
-
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "Emotes"; ScreenGui.DisplayOrder = 2; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; ScreenGui.ResetOnSpawn = false; ScreenGui.Enabled = false
+local FavoriteOff = "rbxassetid://10651060677"; local FavoriteOn = "rbxassetid://10651061109"
+local ScreenGui = Instance.new("ScreenGui"); ScreenGui.Name = "Emotes"; ScreenGui.DisplayOrder = 2; ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling; ScreenGui.ResetOnSpawn = false; ScreenGui.Enabled = false
 local hiddenUI = gethui or get_hidden_gui
 if hiddenUI then ScreenGui.Parent = hiddenUI() else pcall(function() syn.protect_gui(ScreenGui) end); ScreenGui.Parent = CoreGui end
 
-local BackFrame = Instance.new("Frame")
-BackFrame.Size = UDim2.new(0.58, 0, 0.72, 0); BackFrame.AnchorPoint = Vector2.new(0.5, 0.5); BackFrame.Position = UDim2.new(0.5, 0, 0.5, 0); BackFrame.BackgroundTransparency = 1; BackFrame.BorderSizePixel = 0; BackFrame.Parent = ScreenGui
-local Corner = Instance.new("UICorner"); Corner.CornerRadius = UDim.new(0, 6)
-
-local Frame = Instance.new("ScrollingFrame")
-Frame.Size = UDim2.new(1, 0, 0.82, 0); Frame.CanvasSize = UDim2.new(0, 0, 0, 0); Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y; Frame.ScrollingDirection = Enum.ScrollingDirection.Y; Frame.AnchorPoint = Vector2.new(0.5, 0); Frame.Position = UDim2.new(0.5, 0, 0, 0); Frame.BackgroundTransparency = 1; Frame.ScrollBarThickness = 4; Frame.BorderSizePixel = 0; Frame.Parent = BackFrame
-local FramePadding = Instance.new("UIPadding", Frame); FramePadding.PaddingLeft = UDim.new(0, 5); FramePadding.PaddingRight = UDim.new(0, 8); FramePadding.PaddingTop = UDim.new(0, 5)
-local Grid = Instance.new("UIGridLayout"); Grid.CellSize = UDim2.new(0, 75, 0, 75); Grid.CellPadding = UDim2.new(0, 5, 0, 5); Grid.SortOrder = Enum.SortOrder.LayoutOrder; Grid.Parent = Frame
-
-local PageFrame = Instance.new("Frame"); PageFrame.BackgroundTransparency = 1; PageFrame.Size = UDim2.new(1, 0, 0.07, 0); PageFrame.Position = UDim2.new(0, 0, 0.84, 0); PageFrame.BorderSizePixel = 0; PageFrame.Parent = BackFrame
-local PageLeft = Instance.new("TextButton"); PageLeft.BorderSizePixel = 0; PageLeft.AnchorPoint = Vector2.new(0, 0.5); PageLeft.Position = UDim2.new(0.3, 0, 0.5, 0); PageLeft.Size = UDim2.new(0.08, 0, 0.85, 0); PageLeft.TextScaled = true; PageLeft.TextColor3 = Color3.new(1, 1, 1); PageLeft.Font = Enum.Font.GothamBold; PageLeft.BackgroundColor3 = Color3.new(0, 0, 0); PageLeft.BackgroundTransparency = 0.3; PageLeft.Text = "<"; Corner:Clone().Parent = PageLeft; PageLeft.Parent = PageFrame
-local PageLabel = Instance.new("TextBox"); PageLabel.BackgroundTransparency = 1; PageLabel.AnchorPoint = Vector2.new(0.5, 0.5); PageLabel.Position = UDim2.new(0.5, 0, 0.5, 0); PageLabel.Size = UDim2.new(0.22, 0, 0.85, 0); PageLabel.TextScaled = true; PageLabel.Font = Enum.Font.GothamBold; PageLabel.TextColor3 = Color3.new(1, 1, 1); PageLabel.Text = "1 / 1"; PageLabel.ClearTextOnFocus = false; PageLabel.BorderSizePixel = 0; PageLabel.Parent = PageFrame
-local PageRight = Instance.new("TextButton"); PageRight.BorderSizePixel = 0; PageRight.AnchorPoint = Vector2.new(1, 0.5); PageRight.Position = UDim2.new(0.7, 0, 0.5, 0); PageRight.Size = UDim2.new(0.08, 0, 0.85, 0); PageRight.TextScaled = true; PageRight.TextColor3 = Color3.new(1, 1, 1); PageRight.Font = Enum.Font.GothamBold; PageRight.BackgroundColor3 = Color3.new(0, 0, 0); PageRight.BackgroundTransparency = 0.3; PageRight.Text = ">"; Corner:Clone().Parent = PageRight; PageRight.Parent = PageFrame
-
-local EmoteName = Instance.new("TextLabel"); EmoteName.TextScaled = true; EmoteName.AnchorPoint = Vector2.new(0.5, 0.5); EmoteName.Position = UDim2.new(0.5, 0, 0.95, 0); EmoteName.Size = UDim2.new(0.65, 0, 0.055, 0); EmoteName.BackgroundColor3 = Color3.fromRGB(30, 30, 30); EmoteName.TextColor3 = Color3.new(1, 1, 1); EmoteName.Font = Enum.Font.GothamBold; EmoteName.BorderSizePixel = 0; EmoteName.Text = "Select an Emote"; EmoteName.Parent = BackFrame; Corner:Clone().Parent = EmoteName
-
-local TopBar = Instance.new("Frame"); TopBar.BackgroundTransparency = 1; TopBar.Size = UDim2.new(1, 0, 0.07, 0); TopBar.Position = UDim2.new(0, 0, -0.09, 0); TopBar.BorderSizePixel = 0; TopBar.Parent = BackFrame
-local CloseButton = Instance.new("TextButton"); CloseButton.BorderSizePixel = 0; CloseButton.AnchorPoint = Vector2.new(0, 0.5); CloseButton.Position = UDim2.new(0, 0, 0.5, 0); CloseButton.Size = UDim2.new(0.11, 0, 0.9, 0); CloseButton.TextScaled = true; CloseButton.TextColor3 = Color3.new(1, 1, 1); CloseButton.Font = Enum.Font.GothamBold; CloseButton.BackgroundColor3 = Color3.new(0, 0, 0); CloseButton.BackgroundTransparency = 0.3; CloseButton.Text = "Close"; Corner:Clone().Parent = CloseButton; CloseButton.Parent = TopBar
-local SearchBar = Instance.new("TextBox"); SearchBar.BorderSizePixel = 0; SearchBar.AnchorPoint = Vector2.new(0, 0.5); SearchBar.Position = UDim2.new(0.12, 0, 0.5, 0); SearchBar.Size = UDim2.new(0.30, 0, 0.9, 0); SearchBar.TextScaled = true; SearchBar.PlaceholderText = "Search..."; SearchBar.Font = Enum.Font.Gotham; SearchBar.PlaceholderColor3 = Color3.fromRGB(150, 150, 150); SearchBar.TextColor3 = Color3.new(1, 1, 1); SearchBar.BackgroundColor3 = Color3.new(0, 0, 0); SearchBar.BackgroundTransparency = 0.3; Corner:Clone().Parent = SearchBar; SearchBar.Parent = TopBar
-local ModeButton = Instance.new("TextButton"); ModeButton.BorderSizePixel = 0; ModeButton.AnchorPoint = Vector2.new(0, 0.5); ModeButton.Position = UDim2.new(0.43, 0, 0.5, 0); ModeButton.Size = UDim2.new(0.11, 0, 0.9, 0); ModeButton.TextScaled = true; ModeButton.TextColor3 = Color3.new(1, 1, 1); ModeButton.Font = Enum.Font.GothamBold; ModeButton.BackgroundColor3 = Color3.new(0, 0, 0); ModeButton.BackgroundTransparency = 0.3; ModeButton.Text = "EMO"; Corner:Clone().Parent = ModeButton; ModeButton.Parent = TopBar
-local AutoButton = Instance.new("TextButton"); AutoButton.BorderSizePixel = 0; AutoButton.AnchorPoint = Vector2.new(0, 0.5); AutoButton.Position = UDim2.new(0.55, 0, 0.5, 0); AutoButton.Size = UDim2.new(0.12, 0, 0.9, 0); AutoButton.TextScaled = true; AutoButton.TextColor3 = Color3.new(1, 1, 1); AutoButton.Font = Enum.Font.GothamBold; AutoButton.BackgroundColor3 = Color3.new(0, 0, 0); AutoButton.BackgroundTransparency = 0.3; AutoButton.Text = "RE"; Corner:Clone().Parent = AutoButton; AutoButton.Parent = TopBar
-local CustomAnimBtn = Instance.new("TextButton"); CustomAnimBtn.BorderSizePixel = 0; CustomAnimBtn.AnchorPoint = Vector2.new(0, 0.5); CustomAnimBtn.Position = UDim2.new(0.68, 0, 0.5, 0); CustomAnimBtn.Size = UDim2.new(0.11, 0, 0.9, 0); CustomAnimBtn.TextScaled = true; CustomAnimBtn.TextColor3 = Color3.new(1, 1, 1); CustomAnimBtn.Font = Enum.Font.GothamBold; CustomAnimBtn.BackgroundColor3 = Color3.new(0, 0, 0); CustomAnimBtn.BackgroundTransparency = 0.3; CustomAnimBtn.Text = "CUS"; Corner:Clone().Parent = CustomAnimBtn; CustomAnimBtn.Parent = TopBar
-local SortButton = Instance.new("TextButton"); SortButton.BorderSizePixel = 0; SortButton.AnchorPoint = Vector2.new(1, 0.5); SortButton.Position = UDim2.new(1, 0, 0.5, 0); SortButton.Size = UDim2.new(0.13, 0, 0.9, 0); SortButton.TextScaled = true; SortButton.TextColor3 = Color3.new(1, 1, 1); SortButton.Font = Enum.Font.GothamBold; SortButton.BackgroundColor3 = Color3.new(0, 0, 0); SortButton.BackgroundTransparency = 0.3; SortButton.Text = "Sort"; Corner:Clone().Parent = SortButton; SortButton.Parent = TopBar
-
-local SortFrame = Instance.new("Frame"); SortFrame.Visible = false; SortFrame.BorderSizePixel = 0; SortFrame.AnchorPoint = Vector2.new(1, 0); SortFrame.Position = UDim2.new(1, 0, 0.01, 0); SortFrame.Size = UDim2.new(0.3, 0, 0, 0); SortFrame.AutomaticSize = Enum.AutomaticSize.Y; SortFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20); SortFrame.BackgroundTransparency = 0.1; SortFrame.ZIndex = 100; Corner:Clone().Parent = SortFrame; SortFrame.Parent = BackFrame
-local SortList = Instance.new("UIListLayout"); SortList.Padding = UDim.new(0.02, 0); SortList.HorizontalAlignment = Enum.HorizontalAlignment.Center; SortList.VerticalAlignment = Enum.VerticalAlignment.Top; SortList.SortOrder = Enum.SortOrder.LayoutOrder; SortList.Parent = SortFrame
-local SortPadding = Instance.new("UIPadding", SortFrame); SortPadding.PaddingTop = UDim.new(0, 4); SortPadding.PaddingBottom = UDim.new(0, 4)
+local BackFrame = Instance.new("Frame"); BackFrame.Size = UDim2.new(0.58,0,0.72,0); BackFrame.AnchorPoint = Vector2.new(0.5,0.5); BackFrame.Position = UDim2.new(0.5,0,0.5,0); BackFrame.BackgroundTransparency = 1; BackFrame.BorderSizePixel = 0; BackFrame.Parent = ScreenGui
+local Corner = Instance.new("UICorner"); Corner.CornerRadius = UDim.new(0,6)
+local Frame = Instance.new("ScrollingFrame"); Frame.Size = UDim2.new(1,0,0.82,0); Frame.CanvasSize = UDim2.new(0,0,0,0); Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y; Frame.ScrollingDirection = Enum.ScrollingDirection.Y; Frame.AnchorPoint = Vector2.new(0.5,0); Frame.Position = UDim2.new(0.5,0,0,0); Frame.BackgroundTransparency = 1; Frame.ScrollBarThickness = 4; Frame.BorderSizePixel = 0; Frame.Parent = BackFrame
+local FramePadding = Instance.new("UIPadding", Frame); FramePadding.PaddingLeft = UDim.new(0,5); FramePadding.PaddingRight = UDim.new(0,8); FramePadding.PaddingTop = UDim.new(0,5)
+local Grid = Instance.new("UIGridLayout"); Grid.CellSize = UDim2.new(0,75,0,75); Grid.CellPadding = UDim2.new(0,5,0,5); Grid.SortOrder = Enum.SortOrder.LayoutOrder; Grid.Parent = Frame
+local PageFrame = Instance.new("Frame"); PageFrame.BackgroundTransparency = 1; PageFrame.Size = UDim2.new(1,0,0.07,0); PageFrame.Position = UDim2.new(0,0,0.84,0); PageFrame.BorderSizePixel = 0; PageFrame.Parent = BackFrame
+local PageLeft = Instance.new("TextButton"); PageLeft.BorderSizePixel = 0; PageLeft.AnchorPoint = Vector2.new(0,0.5); PageLeft.Position = UDim2.new(0.3,0,0.5,0); PageLeft.Size = UDim2.new(0.08,0,0.85,0); PageLeft.TextScaled = true; PageLeft.TextColor3 = Color3.new(1,1,1); PageLeft.Font = Enum.Font.GothamBold; PageLeft.BackgroundColor3 = Color3.new(0,0,0); PageLeft.BackgroundTransparency = 0.3; PageLeft.Text = "<"; Corner:Clone().Parent = PageLeft; PageLeft.Parent = PageFrame
+local PageLabel = Instance.new("TextBox"); PageLabel.BackgroundTransparency = 1; PageLabel.AnchorPoint = Vector2.new(0.5,0.5); PageLabel.Position = UDim2.new(0.5,0,0.5,0); PageLabel.Size = UDim2.new(0.22,0,0.85,0); PageLabel.TextScaled = true; PageLabel.Font = Enum.Font.GothamBold; PageLabel.TextColor3 = Color3.new(1,1,1); PageLabel.Text = "1 / 1"; PageLabel.ClearTextOnFocus = false; PageLabel.BorderSizePixel = 0; PageLabel.Parent = PageFrame
+local PageRight = Instance.new("TextButton"); PageRight.BorderSizePixel = 0; PageRight.AnchorPoint = Vector2.new(1,0.5); PageRight.Position = UDim2.new(0.7,0,0.5,0); PageRight.Size = UDim2.new(0.08,0,0.85,0); PageRight.TextScaled = true; PageRight.TextColor3 = Color3.new(1,1,1); PageRight.Font = Enum.Font.GothamBold; PageRight.BackgroundColor3 = Color3.new(0,0,0); PageRight.BackgroundTransparency = 0.3; PageRight.Text = ">"; Corner:Clone().Parent = PageRight; PageRight.Parent = PageFrame
+local EmoteName = Instance.new("TextLabel"); EmoteName.TextScaled = true; EmoteName.AnchorPoint = Vector2.new(0.5,0.5); EmoteName.Position = UDim2.new(0.5,0,0.95,0); EmoteName.Size = UDim2.new(0.65,0,0.055,0); EmoteName.BackgroundColor3 = Color3.fromRGB(30,30,30); EmoteName.TextColor3 = Color3.new(1,1,1); EmoteName.Font = Enum.Font.GothamBold; EmoteName.BorderSizePixel = 0; EmoteName.Text = "Select an Emote"; EmoteName.Parent = BackFrame; Corner:Clone().Parent = EmoteName
+local TopBar = Instance.new("Frame"); TopBar.BackgroundTransparency = 1; TopBar.Size = UDim2.new(1,0,0.07,0); TopBar.Position = UDim2.new(0,0,-0.09,0); TopBar.BorderSizePixel = 0; TopBar.Parent = BackFrame
+local CloseButton = Instance.new("TextButton"); CloseButton.BorderSizePixel = 0; CloseButton.AnchorPoint = Vector2.new(0,0.5); CloseButton.Position = UDim2.new(0,0,0.5,0); CloseButton.Size = UDim2.new(0.11,0,0.9,0); CloseButton.TextScaled = true; CloseButton.TextColor3 = Color3.new(1,1,1); CloseButton.Font = Enum.Font.GothamBold; CloseButton.BackgroundColor3 = Color3.new(0,0,0); CloseButton.BackgroundTransparency = 0.3; CloseButton.Text = "Close"; Corner:Clone().Parent = CloseButton; CloseButton.Parent = TopBar
+local SearchBar = Instance.new("TextBox"); SearchBar.BorderSizePixel = 0; SearchBar.AnchorPoint = Vector2.new(0,0.5); SearchBar.Position = UDim2.new(0.12,0,0.5,0); SearchBar.Size = UDim2.new(0.30,0,0.9,0); SearchBar.TextScaled = true; SearchBar.PlaceholderText = "Search..."; SearchBar.Font = Enum.Font.Gotham; SearchBar.PlaceholderColor3 = Color3.fromRGB(150,150,150); SearchBar.TextColor3 = Color3.new(1,1,1); SearchBar.BackgroundColor3 = Color3.new(0,0,0); SearchBar.BackgroundTransparency = 0.3; Corner:Clone().Parent = SearchBar; SearchBar.Parent = TopBar
+local ModeButton = Instance.new("TextButton"); ModeButton.BorderSizePixel = 0; ModeButton.AnchorPoint = Vector2.new(0,0.5); ModeButton.Position = UDim2.new(0.43,0,0.5,0); ModeButton.Size = UDim2.new(0.11,0,0.9,0); ModeButton.TextScaled = true; ModeButton.TextColor3 = Color3.new(1,1,1); ModeButton.Font = Enum.Font.GothamBold; ModeButton.BackgroundColor3 = Color3.new(0,0,0); ModeButton.BackgroundTransparency = 0.3; ModeButton.Text = "EMO"; Corner:Clone().Parent = ModeButton; ModeButton.Parent = TopBar
+local AutoButton = Instance.new("TextButton"); AutoButton.BorderSizePixel = 0; AutoButton.AnchorPoint = Vector2.new(0,0.5); AutoButton.Position = UDim2.new(0.55,0,0.5,0); AutoButton.Size = UDim2.new(0.12,0,0.9,0); AutoButton.TextScaled = true; AutoButton.TextColor3 = Color3.new(1,1,1); AutoButton.Font = Enum.Font.GothamBold; AutoButton.BackgroundColor3 = Color3.new(0,0,0); AutoButton.BackgroundTransparency = 0.3; AutoButton.Text = "RE"; Corner:Clone().Parent = AutoButton; AutoButton.Parent = TopBar
+local CustomAnimBtn = Instance.new("TextButton"); CustomAnimBtn.BorderSizePixel = 0; CustomAnimBtn.AnchorPoint = Vector2.new(0,0.5); CustomAnimBtn.Position = UDim2.new(0.68,0,0.5,0); CustomAnimBtn.Size = UDim2.new(0.11,0,0.9,0); CustomAnimBtn.TextScaled = true; CustomAnimBtn.TextColor3 = Color3.new(1,1,1); CustomAnimBtn.Font = Enum.Font.GothamBold; CustomAnimBtn.BackgroundColor3 = Color3.new(0,0,0); CustomAnimBtn.BackgroundTransparency = 0.3; CustomAnimBtn.Text = "CUS"; Corner:Clone().Parent = CustomAnimBtn; CustomAnimBtn.Parent = TopBar
+local SortButton = Instance.new("TextButton"); SortButton.BorderSizePixel = 0; SortButton.AnchorPoint = Vector2.new(1,0.5); SortButton.Position = UDim2.new(1,0,0.5,0); SortButton.Size = UDim2.new(0.13,0,0.9,0); SortButton.TextScaled = true; SortButton.TextColor3 = Color3.new(1,1,1); SortButton.Font = Enum.Font.GothamBold; SortButton.BackgroundColor3 = Color3.new(0,0,0); SortButton.BackgroundTransparency = 0.3; SortButton.Text = "Sort"; Corner:Clone().Parent = SortButton; SortButton.Parent = TopBar
+local SortFrame = Instance.new("Frame"); SortFrame.Visible = false; SortFrame.BorderSizePixel = 0; SortFrame.AnchorPoint = Vector2.new(1,0); SortFrame.Position = UDim2.new(1,0,0.01,0); SortFrame.Size = UDim2.new(0.3,0,0,0); SortFrame.AutomaticSize = Enum.AutomaticSize.Y; SortFrame.BackgroundColor3 = Color3.fromRGB(20,20,20); SortFrame.BackgroundTransparency = 0.1; SortFrame.ZIndex = 100; Corner:Clone().Parent = SortFrame; SortFrame.Parent = BackFrame
+local SortList = Instance.new("UIListLayout"); SortList.Padding = UDim.new(0.02,0); SortList.HorizontalAlignment = Enum.HorizontalAlignment.Center; SortList.VerticalAlignment = Enum.VerticalAlignment.Top; SortList.SortOrder = Enum.SortOrder.LayoutOrder; SortList.Parent = SortFrame
+local SortPadding = Instance.new("UIPadding", SortFrame); SortPadding.PaddingTop = UDim.new(0,4); SortPadding.PaddingBottom = UDim.new(0,4)
 local CurrentSort = "favfirst"
-local function createsort(order, text, sort)
-    local s = Instance.new("TextButton"); s.Size = UDim2.new(0.94, 0, 0, 28); s.BackgroundColor3 = Color3.fromRGB(30, 30, 30); s.LayoutOrder = order; s.TextColor3 = Color3.new(1, 1, 1); s.Text = text; s.Font = Enum.Font.GothamBold; s.TextSize = 13; s.BorderSizePixel = 0; s.ZIndex = 101; Corner:Clone().Parent = s; s.Parent = SortFrame
-    s.MouseButton1Click:Connect(function() SortFrame.Visible = false; CurrentSort = sort; State.currentPage = 1; State.cacheDirty = true; refreshGrid() end)
-end
+local function createsort(order, text, sort) local s = Instance.new("TextButton"); s.Size = UDim2.new(0.94,0,0,28); s.BackgroundColor3 = Color3.fromRGB(30,30,30); s.LayoutOrder = order; s.TextColor3 = Color3.new(1,1,1); s.Text = text; s.Font = Enum.Font.GothamBold; s.TextSize = 13; s.BorderSizePixel = 0; s.ZIndex = 101; Corner:Clone().Parent = s; s.Parent = SortFrame; s.MouseButton1Click:Connect(function() SortFrame.Visible = false; CurrentSort = sort; State.currentPage = 1; State.cacheDirty = true; refreshGrid() end) end
 createsort(1, "Favorites First", "favfirst"); createsort(2, "A - Z", "az"); createsort(3, "Z - A", "za")
 
--- ============ BUTTON POOL ============ --
 local buttonPool = {}; local btnDataMap = {}
-local function ensurePoolSize(count)
-    while #buttonPool < count do
-        local i = #buttonPool + 1
-        local btn = Instance.new("ImageButton"); btn.Name = "PoolBtn_"..i; btn.BackgroundColor3 = Color3.fromRGB(0,0,0); btn.BackgroundTransparency = 0.5; btn.BorderSizePixel = 0; btn.Visible = false; Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
-        local fav = Instance.new("ImageButton"); fav.Name = "favorite"; fav.Image = FavoriteOff; fav.AnchorPoint = Vector2.new(0.5,0.5); fav.Size = UDim2.new(0.32,0,0.32,0); fav.Position = UDim2.new(0.88,0,0.88,0); fav.BorderSizePixel = 0; fav.BackgroundTransparency = 1; fav.Parent = btn
-        btn.MouseButton1Click:Connect(function() local item = btnDataMap[btn]; if item then if State.mode == "animation" then applyAnim(item.data) else task.spawn(playEmote, item.data.name, item.data.id) end; ScreenGui.Enabled = false end end)
-        fav.MouseButton1Click:Connect(function() local item = btnDataMap[btn]; if item then toggleFav(item.data.id, item.data.name, item.data.bundledItems) end end)
-        btn.MouseEnter:Connect(function() local item = btnDataMap[btn]; if item then EmoteName.Text = item.data.name end end)
-        btn.Parent = Frame; buttonPool[i] = btn
-    end
-end
+local function ensurePoolSize(count) while #buttonPool < count do local i = #buttonPool+1; local btn = Instance.new("ImageButton"); btn.Name = "PoolBtn_"..i; btn.BackgroundColor3 = Color3.fromRGB(0,0,0); btn.BackgroundTransparency = 0.5; btn.BorderSizePixel = 0; btn.Visible = false; Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6); local fav = Instance.new("ImageButton"); fav.Name = "favorite"; fav.Image = FavoriteOff; fav.AnchorPoint = Vector2.new(0.5,0.5); fav.Size = UDim2.new(0.32,0,0.32,0); fav.Position = UDim2.new(0.88,0,0.88,0); fav.BorderSizePixel = 0; fav.BackgroundTransparency = 1; fav.Parent = btn; btn.MouseButton1Click:Connect(function() local item = btnDataMap[btn]; if item then if State.mode == "animation" then applyAnim(item.data) else task.spawn(playEmote, item.data.name, item.data.id) end; ScreenGui.Enabled = false end end); fav.MouseButton1Click:Connect(function() local item = btnDataMap[btn]; if item then toggleFav(item.data.id, item.data.name, item.data.bundledItems) end end); btn.MouseEnter:Connect(function() local item = btnDataMap[btn]; if item then EmoteName.Text = item.data.name end end); btn.Parent = Frame; buttonPool[i] = btn end end
 ensurePoolSize(60)
 
-local function getItemsPerPage()
-    local absX = Frame.AbsoluteSize.X; local absY = Frame.AbsoluteSize.Y
-    if absX > 0 and absY > 0 then return math.max(1, math.floor((absX-8)/80) * math.floor(absY/80)) end
-    return 60
-end
+local function getItemsPerPage() local aX = Frame.AbsoluteSize.X; local aY = Frame.AbsoluteSize.Y; if aX > 0 and aY > 0 then return math.max(1, math.floor((aX-8)/80)*math.floor(aY/80)) end; return 60 end
 
 function refreshGrid()
     State.itemsPerPage = getItemsPerPage(); ensurePoolSize(State.itemsPerPage)
     if State.cacheDirty then
-        local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes
-        local favs = State.mode == "animation" and State.favAnims or State.favEmotes
-        local favLookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
+        local list = State.mode == "animation" and State.filteredAnims or State.filteredEmotes; local favs = State.mode == "animation" and State.favAnims or State.favEmotes; local favLookup = State.mode == "animation" and State.favLookupAnim or State.favLookupEmote
         local normalList = {}; for i = 1, #list do if not favLookup[tostring(list[i].id)] then normalList[#normalList+1] = list[i] end end
-        if CurrentSort == "az" then table.sort(normalList, function(a,b) return a.name:lower() < b.name:lower() end); table.sort(favs, function(a,b) return a.name:lower() < b.name:lower() end)
-        elseif CurrentSort == "za" then table.sort(normalList, function(a,b) return a.name:lower() > b.name:lower() end); table.sort(favs, function(a,b) return a.name:lower() > b.name:lower() end) end
-        State.cachedCombined = {}; for _,v in ipairs(favs) do State.cachedCombined[#State.cachedCombined+1] = {data=v,isFav=true} end; for _,v in ipairs(normalList) do State.cachedCombined[#State.cachedCombined+1] = {data=v,isFav=false} end
-        State.cacheDirty = false
+        if CurrentSort == "az" then table.sort(normalList, function(a,b) return a.name:lower()<b.name:lower() end); table.sort(favs, function(a,b) return a.name:lower()<b.name:lower() end) elseif CurrentSort == "za" then table.sort(normalList, function(a,b) return a.name:lower()>b.name:lower() end); table.sort(favs, function(a,b) return a.name:lower()>b.name:lower() end) end
+        State.cachedCombined = {}; for _,v in ipairs(favs) do State.cachedCombined[#State.cachedCombined+1]={data=v,isFav=true} end; for _,v in ipairs(normalList) do State.cachedCombined[#State.cachedCombined+1]={data=v,isFav=false} end; State.cacheDirty = false
     end
-    local combined = State.cachedCombined; local totalPages = math.max(1, math.ceil(#combined / State.itemsPerPage))
+    local combined = State.cachedCombined; local totalPages = math.max(1, math.ceil(#combined/State.itemsPerPage))
     if State.currentPage > totalPages then State.currentPage = totalPages end; if State.currentPage < 1 then State.currentPage = 1 end
-    if not PageLabel:IsFocused() then PageLabel.Text = State.currentPage .. " / " .. totalPages end
+    if not PageLabel:IsFocused() then PageLabel.Text = State.currentPage.." / "..totalPages end
     local startIdx = (State.currentPage-1)*State.itemsPerPage+1; local endIdx = math.min(startIdx+State.itemsPerPage-1, #combined)
-    for i = 1, #buttonPool do
-        local btn = buttonPool[i]; local itemIdx = startIdx+i-1
-        if itemIdx <= endIdx and combined[itemIdx] then
-            local item = combined[itemIdx]; btnDataMap[btn] = item; btn.Visible = true
-            if State.mode == "animation" then
-                btn.Image = item.data.id > 0 and ("rbxthumb://type=BundleThumbnail&id="..item.data.id.."&w=420&h=420") or ("rbxthumb://type=Asset&id="..math.abs(item.data.id).."&w=150&h=150")
-            else btn.Image = "rbxthumb://type=Asset&id="..item.data.id.."&w=150&h=150" end
+    for i = 1, #buttonPool do local btn = buttonPool[i]; local itemIdx = startIdx+i-1
+        if itemIdx <= endIdx and combined[itemIdx] then local item = combined[itemIdx]; btnDataMap[btn] = item; btn.Visible = true
+            if State.mode == "animation" then btn.Image = item.data.id > 0 and ("rbxthumb://type=BundleThumbnail&id="..item.data.id.."&w=420&h=420") or ("rbxthumb://type=Asset&id="..math.abs(item.data.id).."&w=150&h=150") else btn.Image = "rbxthumb://type=Asset&id="..item.data.id.."&w=150&h=150" end
             btn:FindFirstChild("favorite").Image = item.isFav and FavoriteOn or FavoriteOff
         else btn.Visible = false; btnDataMap[btn] = nil end
     end
 end
 
-Frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() local n = getItemsPerPage(); if n ~= State.itemsPerPage then State.itemsPerPage = n; if ScreenGui.Enabled then refreshGrid() end end end)
-PageLeft.MouseButton1Click:Connect(function() local t = math.max(1, math.ceil(#State.cachedCombined/State.itemsPerPage)); if t <= 1 then return end; if State.currentPage > 1 then State.currentPage = State.currentPage-1 else State.currentPage = t end; refreshGrid() end)
-PageRight.MouseButton1Click:Connect(function() local t = math.max(1, math.ceil(#State.cachedCombined/State.itemsPerPage)); if t <= 1 then return end; if State.currentPage < t then State.currentPage = State.currentPage+1 else State.currentPage = 1 end; refreshGrid() end)
-PageLabel.Focused:Connect(function() PageLabel.Text = tostring(State.currentPage); PageLabel.CursorPosition = 1; PageLabel.SelectionStart = #PageLabel.Text+1 end)
-PageLabel.FocusLost:Connect(function() local n = tonumber(PageLabel.Text:gsub("%s","")); if n then State.currentPage = math.clamp(math.floor(n), 1, math.max(1, math.ceil(#State.cachedCombined/State.itemsPerPage))) end; refreshGrid() end)
+Frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() local n=getItemsPerPage(); if n~=State.itemsPerPage then State.itemsPerPage=n; if ScreenGui.Enabled then refreshGrid() end end end)
+PageLeft.MouseButton1Click:Connect(function() local t=math.max(1,math.ceil(#State.cachedCombined/State.itemsPerPage)); if t<=1 then return end; if State.currentPage>1 then State.currentPage=State.currentPage-1 else State.currentPage=t end; refreshGrid() end)
+PageRight.MouseButton1Click:Connect(function() local t=math.max(1,math.ceil(#State.cachedCombined/State.itemsPerPage)); if t<=1 then return end; if State.currentPage<t then State.currentPage=State.currentPage+1 else State.currentPage=1 end; refreshGrid() end)
+PageLabel.Focused:Connect(function() PageLabel.Text=tostring(State.currentPage); PageLabel.CursorPosition=1; PageLabel.SelectionStart=#PageLabel.Text+1 end)
+PageLabel.FocusLost:Connect(function() local n=tonumber(PageLabel.Text:gsub("%s","")); if n then State.currentPage=math.clamp(math.floor(n),1,math.max(1,math.ceil(#State.cachedCombined/State.itemsPerPage))) end; refreshGrid() end)
 
--- ============ CUSTOM ANIM EDITOR ============ --
 local customFrame = nil
 local function closeCustomAnimEditor() if customFrame then customFrame.Visible = false end; BackFrame.Visible = true end
-
 local function openCustomAnimEditor()
     if customFrame and customFrame.Visible then closeCustomAnimEditor(); return end
-    if #State.animsData == 0 then notify("Custom Anim", "Loading animations first...", 3); task.spawn(function() fetchAnims(); openCustomAnimEditor() end); return end
+    if #State.animsData == 0 then notify("Custom Anim","Loading animations first...",3); task.spawn(function() fetchAnims(); openCustomAnimEditor() end); return end
     BackFrame.Visible = false
     if not customFrame then
         customFrame = Instance.new("Frame", ScreenGui); customFrame.Name = "CustomAnimFrame"; customFrame.BackgroundColor3 = Color3.new(0,0,0); customFrame.BackgroundTransparency = 0.2; customFrame.BorderSizePixel = 0; customFrame.Size = UDim2.new(0.42,0,0.58,0); customFrame.AnchorPoint = Vector2.new(0.5,0.5); customFrame.Position = UDim2.new(0.5,0,0.5,0); customFrame.ClipsDescendants = true; customFrame.ZIndex = 50; Instance.new("UICorner", customFrame).CornerRadius = UDim.new(0,10)
@@ -564,14 +453,7 @@ local function openCustomAnimEditor()
             for i = 1, #State.animsData do if #matches >= 50 then break end; local item = State.animsData[i]; if filterTerm == "" or item.name:lower():find(filterTerm, 1, true) or tostring(item.id) == filterTerm then matches[#matches+1] = item end end
             for _, item in ipairs(matches) do
                 local b = Instance.new("TextButton"); b.BackgroundColor3 = Color3.new(0,0,0); b.BackgroundTransparency = 0.4; b.Size = UDim2.new(1,-4,0,30); b.Font = Enum.Font.Gotham; b.Text = "  "..item.name; b.TextColor3 = Color3.fromRGB(220,220,220); b.TextSize = 11; b.TextXAlignment = Enum.TextXAlignment.Left; b.BorderSizePixel = 0; b.ZIndex = 54; b.AutoButtonColor = true; Instance.new("UICorner", b).CornerRadius = UDim.new(0,4); b.Parent = pickerScroll
-                b.MouseButton1Click:Connect(function()
-                    if pickerApplying then return end; pickerApplying = true
-                    task.spawn(function()
-                        local success = applySlotFromBundle(currentPickerSlot, item)
-                        if success then pickerPage.Visible = false; slotPage.Visible = true; local row = scrollFrame:FindFirstChild("Row_"..currentPickerSlot); if row then local cl = row:FindFirstChild("CurrentLabel"); if cl then cl.Text = item.name end end end
-                        pickerApplying = false
-                    end)
-                end)
+                b.MouseButton1Click:Connect(function() if pickerApplying then return end; pickerApplying = true; task.spawn(function() local success = applySlotFromBundle(currentPickerSlot, item); if success then pickerPage.Visible = false; slotPage.Visible = true; local row = scrollFrame:FindFirstChild("Row_"..currentPickerSlot); if row then local cl = row:FindFirstChild("CurrentLabel"); if cl then cl.Text = item.name end end end; pickerApplying = false end) end)
             end
         end
         local pickerDebounce = nil
@@ -580,10 +462,8 @@ local function openCustomAnimEditor()
             local row = Instance.new("Frame", scrollFrame); row.Name = "Row_"..slotName; row.BackgroundColor3 = Color3.new(0,0,0); row.BackgroundTransparency = 0.4; row.Size = UDim2.new(1,0,0,38); row.LayoutOrder = idx; row.BorderSizePixel = 0; row.ZIndex = 54; Instance.new("UICorner", row).CornerRadius = UDim.new(0,6)
             local slotLabel = Instance.new("TextLabel", row); slotLabel.BackgroundTransparency = 1; slotLabel.Position = UDim2.fromOffset(8,0); slotLabel.Size = UDim2.new(0.18,0,1,0); slotLabel.Font = Enum.Font.GothamBold; slotLabel.Text = slotName; slotLabel.TextColor3 = Color3.fromRGB(220,220,220); slotLabel.TextSize = 12; slotLabel.TextXAlignment = Enum.TextXAlignment.Left; slotLabel.ZIndex = 55
             local currentLabel = Instance.new("TextLabel", row); currentLabel.Name = "CurrentLabel"; currentLabel.BackgroundTransparency = 1; currentLabel.Position = UDim2.new(0.20,0,0,0); currentLabel.Size = UDim2.new(0.36,0,1,0); currentLabel.Font = Enum.Font.Gotham; currentLabel.Text = "None"; currentLabel.TextColor3 = Color3.fromRGB(150,150,150); currentLabel.TextSize = 10; currentLabel.TextTruncate = Enum.TextTruncate.AtEnd; currentLabel.TextXAlignment = Enum.TextXAlignment.Left; currentLabel.ZIndex = 55
-            local removeBtn = Instance.new("TextButton", row); removeBtn.Name = "RemoveBtn"; removeBtn.BackgroundColor3 = Color3.fromRGB(180,50,50); removeBtn.Position = UDim2.new(0.57,0,0.1,0); removeBtn.Size = UDim2.new(0.18,-2,0.8,0); removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"; removeBtn.TextColor3 = Color3.fromRGB(255,255,255); removeBtn.TextSize = 12; removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55; Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0,4)
-            removeBtn.MouseButton1Click:Connect(function() if State.applyingAnim then return end; State.config.CustomAnimSlots[slotName] = nil; SaveConfig(); captureOriginalAnims(); revertSlotSafely(slotName); currentLabel.Text = "None" end)
-            local selectBtn = Instance.new("TextButton", row); selectBtn.BackgroundColor3 = Color3.fromRGB(0,130,220); selectBtn.Position = UDim2.new(0.76,0,0.1,0); selectBtn.Size = UDim2.new(0.22,-4,0.8,0); selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"; selectBtn.TextColor3 = Color3.fromRGB(255,255,255); selectBtn.TextSize = 11; selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55; Instance.new("UICorner", selectBtn).CornerRadius = UDim.new(0,4)
-            selectBtn.MouseButton1Click:Connect(function() currentPickerSlot = slotName; pickerTitle.Text = "Pick bundle for: "..slotName; pickerSearch.Text = ""; populatePickerList(""); slotPage.Visible = false; pickerPage.Visible = true end)
+            local removeBtn = Instance.new("TextButton", row); removeBtn.Name = "RemoveBtn"; removeBtn.BackgroundColor3 = Color3.fromRGB(180,50,50); removeBtn.Position = UDim2.new(0.57,0,0.1,0); removeBtn.Size = UDim2.new(0.18,-2,0.8,0); removeBtn.Font = Enum.Font.GothamBold; removeBtn.Text = "X"; removeBtn.TextColor3 = Color3.fromRGB(255,255,255); removeBtn.TextSize = 12; removeBtn.BorderSizePixel = 0; removeBtn.ZIndex = 55; Instance.new("UICorner", removeBtn).CornerRadius = UDim.new(0,4); removeBtn.MouseButton1Click:Connect(function() if State.applyingAnim then return end; State.config.CustomAnimSlots[slotName] = nil; SaveConfig(); captureOriginalAnims(); revertSlotSafely(slotName); currentLabel.Text = "None" end)
+            local selectBtn = Instance.new("TextButton", row); selectBtn.BackgroundColor3 = Color3.fromRGB(0,130,220); selectBtn.Position = UDim2.new(0.76,0,0.1,0); selectBtn.Size = UDim2.new(0.22,-4,0.8,0); selectBtn.Font = Enum.Font.GothamBold; selectBtn.Text = "Pick"; selectBtn.TextColor3 = Color3.fromRGB(255,255,255); selectBtn.TextSize = 11; selectBtn.BorderSizePixel = 0; selectBtn.ZIndex = 55; Instance.new("UICorner", selectBtn).CornerRadius = UDim.new(0,4); selectBtn.MouseButton1Click:Connect(function() currentPickerSlot = slotName; pickerTitle.Text = "Pick bundle for: "..slotName; pickerSearch.Text = ""; populatePickerList(""); slotPage.Visible = false; pickerPage.Visible = true end)
         end
         local bottomBar = Instance.new("Frame", slotPage); bottomBar.BackgroundTransparency = 1; bottomBar.BorderSizePixel = 0; bottomBar.Size = UDim2.new(1,0,0,36); bottomBar.Position = UDim2.new(0,0,1,-38); bottomBar.ZIndex = 54
         local bottomLayout = Instance.new("UIListLayout", bottomBar); bottomLayout.FillDirection = Enum.FillDirection.Horizontal; bottomLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center; bottomLayout.VerticalAlignment = Enum.VerticalAlignment.Center; bottomLayout.Padding = UDim.new(0,10)
@@ -594,7 +474,6 @@ local function openCustomAnimEditor()
     customFrame.Visible = true
 end
 
--- ============ EVENTS ============ --
 CloseButton.MouseButton1Click:Connect(function() ScreenGui.Enabled = false end)
 SearchBar:GetPropertyChangedSignal("Text"):Connect(function() local t = SearchBar.Text; if t ~= t:sub(1,50) then SearchBar.Text = t:sub(1,50); t = SearchBar.Text end; searchItems(t); refreshGrid() end)
 ModeButton.MouseButton1Click:Connect(function() State.mode = State.mode == "emote" and "animation" or "emote"; ModeButton.Text = State.mode == "animation" and "ANI" or "EMO"; if State.mode == "animation" and #State.animsData == 0 then task.spawn(fetchAnims) end; SearchBar.Text = ""; searchItems(""); State.cacheDirty = true; refreshGrid() end)
@@ -604,16 +483,13 @@ SortButton.MouseButton1Click:Connect(function() SortFrame.Visible = not SortFram
 
 local inputconnect
 ScreenGui:GetPropertyChangedSignal("Enabled"):Connect(function()
-    if ScreenGui.Enabled then
-        if customFrame then customFrame.Visible = false end; BackFrame.Visible = true; EmoteName.Text = "Select an Emote"; SortFrame.Visible = false; GuiService:SetEmotesMenuOpen(false); refreshGrid()
-        inputconnect = UserInputService.InputBegan:Connect(function(input, processed) if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then local mp = UserInputService.GetMouseLocation and UserInputService:GetMouseLocation() or input.Position; local fp = BackFrame.AbsolutePosition; local fs = BackFrame.AbsoluteSize; if mp.X < fp.X or mp.X > fp.X+fs.X or mp.Y < fp.Y or mp.Y > fp.Y+fs.Y then ScreenGui.Enabled = false end end end)
+    if ScreenGui.Enabled then if customFrame then customFrame.Visible = false end; BackFrame.Visible = true; EmoteName.Text = "Select an Emote"; SortFrame.Visible = false; GuiService:SetEmotesMenuOpen(false); refreshGrid(); inputconnect = UserInputService.InputBegan:Connect(function(input, processed) if not processed and input.UserInputType == Enum.UserInputType.MouseButton1 then local mp = UserInputService.GetMouseLocation and UserInputService:GetMouseLocation() or input.Position; local fp = BackFrame.AbsolutePosition; local fs = BackFrame.AbsoluteSize; if mp.X < fp.X or mp.X > fp.X+fs.X or mp.Y < fp.Y or mp.Y > fp.Y+fs.Y then ScreenGui.Enabled = false end end end)
     else if customFrame then customFrame.Visible = false; BackFrame.Visible = true end; if inputconnect then inputconnect:Disconnect() end end
 end)
 
 local menuToggleDebounce = false
 ContextActionService:BindCoreActionAtPriority("Emote Menu", function(name, state) if state == Enum.UserInputState.Begin then if menuToggleDebounce then return end; menuToggleDebounce = true; ScreenGui.Enabled = not ScreenGui.Enabled; task.delay(0.2, function() menuToggleDebounce = false end) end end, true, 2001, Enum.KeyCode.Comma)
 
--- ============ CHARACTER ============ --
 local lastReapplyTime = 0
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
