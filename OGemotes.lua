@@ -193,8 +193,13 @@ local function revertSlot(slotName)
     for i, aData in ipairs(origAnims) do
         if i <= #existingAnims then
             existingAnims[i].AnimationId = aData.id
+            existingAnims[i].Name = aData.name or existingAnims[i].Name
             local wObj = existingAnims[i]:FindFirstChild("Weight")
             if wObj and wObj:IsA("NumberValue") then wObj.Value = aData.weight end
+        else
+            local newAnim = Instance.new("Animation"); newAnim.Name = aData.name or "Anim"; newAnim.AnimationId = aData.id
+            if aData.weight ~= 1 then local w = Instance.new("NumberValue"); w.Name = "Weight"; w.Value = aData.weight; w.Parent = newAnim end
+            newAnim.Parent = folder
         end
     end
     for i = #origAnims + 1, #existingAnims do pcall(function() existingAnims[i]:Destroy() end) end
@@ -222,10 +227,22 @@ local function setSlotAnimations(animate, slotName, anims)
         end
         applied = applied + 1
     end
-    -- Fix: Destroy leftover animations to prevent overlap/freezing
-    for i = #anims + 1, #existingAnims do
-        pcall(function() existingAnims[i]:Destroy() end)
+    
+    -- CRITICAL FIX: If the new animation pack has fewer animations than the default slot
+    -- (e.g., Catwalk Glam has 1 Idle, but default R15 has 2), we must fill the remaining
+    -- existing slots with the last provided animation. If we destroy them, the default
+    -- Animate script will crash due to cached variables (e.g., local idle2 = idle.Idle2)
+    -- referencing destroyed instances, causing the character to freeze.
+    if #existingAnims > #anims then
+        local lastAnim = anims[#anims]
+        for i = #anims + 1, #existingAnims do
+            existingAnims[i].AnimationId = lastAnim.id
+            existingAnims[i].Name = lastAnim.name or existingAnims[i].Name
+            local wObj = existingAnims[i]:FindFirstChild("Weight")
+            if wObj and wObj:IsA("NumberValue") then wObj.Value = lastAnim.weight end
+        end
     end
+    
     return applied
 end
 
