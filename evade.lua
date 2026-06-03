@@ -96,12 +96,6 @@ EdgeRayParams.RespectCanCollide = true
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
--- [NEW] Cached MovementSet event and air strafe settings
-local MovementSetEvent = nil
-local AirStrafeCooldown = 0
-local PushStrength = 25       -- tweak this: higher = more speed per push
-local PushCooldown = 0.08     -- seconds between pushes (dont go too low or it may flag)
-
 local Theme = {
     Background = Color3.fromRGB(15, 15, 20),
     Surface = Color3.fromRGB(22, 22, 30),
@@ -194,7 +188,6 @@ local function CleanupAll()
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
     CachedGame = nil
-    MovementSetEvent = nil  -- [NEW] clear cache on cleanup
 end
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -235,69 +228,14 @@ local function OnStateChanged(old, new)
     end
 end
 
--- [NEW] Helper to find and cache the MovementSet event
-local function GetMovementSetEvent()
-    if MovementSetEvent then
-        if MovementSetEvent.Parent then return MovementSetEvent end
-        MovementSetEvent = nil
-    end
-    local ps = LocalPlayer:FindFirstChild("PlayerScripts")
-    if not ps then return nil end
-    local events = ps:FindFirstChild("Events")
-    if not events then return nil end
-    local ms = events:FindFirstChild("MovementSet")
-    if ms then MovementSetEvent = ms end
-    return ms
-end
-
--- [CHANGED] Replaced old velocity-based air strafe with MovementSet Push
 local function AirStrafe()
     if not holdLeftShift or not RootPart or not Humanoid then return end
     if Humanoid.Health <= 0 then return end
-
+    
     local state = Humanoid:GetState()
     if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then return end
-
-    local now = tick()
-    if now - AirStrafeCooldown < PushCooldown then return end
-    AirStrafeCooldown = now
-
-    local cam = Workspace.CurrentCamera
-    if not cam then return end
-
-    local look = cam.CFrame.LookVector
-    local right = cam.CFrame.RightVector
-
-    -- flatten to horizontal plane
-    local forward = Vector3.new(look.X, 0, look.Z)
-    local rightFlat = Vector3.new(right.X, 0, right.Z)
-
-    if forward.Magnitude < 0.01 then return end
-    forward = forward.Unit
-    if rightFlat.Magnitude < 0.01 then return end
-    rightFlat = rightFlat.Unit
-
-    -- build wish direction from all movement keys (W/A/S/D)
-    local wishDir = Vector3.zero
-    if keysDown.W then wishDir = wishDir + forward end
-    if keysDown.S then wishDir = wishDir - forward end
-    if keysDown.D then wishDir = wishDir + rightFlat end
-    if keysDown.A then wishDir = wishDir - rightFlat end
-
-    if wishDir.Magnitude < 0.01 then return end
-    wishDir = wishDir.Unit
-
-    local event = GetMovementSetEvent()
-    if event then
-        pcall(function()
-            event:Invoke("Push", wishDir * PushStrength)
-        end)
-    end
-
-    -- track speed after the push so DoHyperBounce stays in sync
-    local vel = RootPart.AssemblyLinearVelocity
-    local hVel = Vector3.new(vel.X, 0, vel.Z)
-    RecordedSpeed = math.max(RecordedSpeed, hVel.Magnitude)
+    
+    game:GetService("Players").LocalPlayer.PlayerScripts.Events.MovementSet:Invoke("Push",Vector3.new(0, 0, 1000))
 end
 
 local function DoCarry()
@@ -793,7 +731,6 @@ local function SetupCharacter(character)
     RecordedSpeed = 16
     LastBounceTime = 0
     CoyoteTimer = 0
-    MovementSetEvent = nil  -- [NEW] clear cached event on respawn
     Humanoid.JumpPower = 50 
     
     if Humanoid then 
