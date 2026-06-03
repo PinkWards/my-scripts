@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 27 -- Bumped version
+local SCRIPT_VERSION = 27
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -38,10 +38,6 @@ local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local Workspace = workspace
 
--- ═══════════════════════════════════════════════════════════════
--- STATE & CONFIG
--- ═══════════════════════════════════════════════════════════════
-
 local State = {
     UpsideDownFix = false,
     EdgeBoost = false,
@@ -52,8 +48,8 @@ local Config = {
     FOV = 120
 }
 
-local BouncePower = 90 -- LeftShift bounce height
-local BounceWalkSpeed = 100
+local BouncePower = 80
+local BounceWalkSpeed = 120
 
 local ColaSettings = {
     Speed = 1.4,
@@ -111,10 +107,6 @@ local Theme = {
     TextMuted = Color3.fromRGB(88, 95, 115),
     Border = Color3.fromRGB(40, 40, 55),
 }
-
--- ═══════════════════════════════════════════════════════════════
--- CORE UTILS
--- ═══════════════════════════════════════════════════════════════
 
 local function SafeGetPath(...)
     local args = {...}
@@ -198,10 +190,6 @@ local function CleanupAll()
     CachedGame = nil
 end
 
--- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (HYPER-RESPONSIVE BHOP + SOURCE STRAFE)
--- ═══════════════════════════════════════════════════════════════
-
 local function GetBounceDirection(hVel, hSpeed)
     if hSpeed > 1 then return hVel.Unit end
     local cam = Workspace.CurrentCamera
@@ -232,7 +220,6 @@ local function DoHyperBounce()
     CoyoteTimer = 0
 end
 
--- Restored the exact V23 StateChanged for Space bhop!
 local function OnStateChanged(old, new)
     if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
         DoHyperBounce()
@@ -271,10 +258,6 @@ local function AirStrafe()
     RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
     RecordedSpeed = math.max(RecordedSpeed, newHVel.Magnitude)
 end
-
--- ═══════════════════════════════════════════════════════════════
--- GAME LOGIC (CARRY & REVIVE)
--- ═══════════════════════════════════════════════════════════════
 
 local function DoCarry()
     if not holdQ then return end
@@ -335,10 +318,6 @@ local function Revive()
         end
     end
 end
-
--- ═══════════════════════════════════════════════════════════════
--- VISUALS & EFFECTS
--- ═══════════════════════════════════════════════════════════════
 
 local function ToggleUpsideDownFix(enabled)
     State.UpsideDownFix = enabled
@@ -578,10 +557,6 @@ local function ToggleFullbright()
     end
 end
 
--- ═══════════════════════════════════════════════════════════════
--- GUI (COMPACT + COLA SETTINGS)
--- ═══════════════════════════════════════════════════════════════
-
 local TI_FAST = TweenInfo.new(0.12, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 local TI_OPEN = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 local TI_SLOW = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -727,10 +702,6 @@ local function UpdateTimer()
     end)
 end
 
--- ═══════════════════════════════════════════════════════════════
--- INPUT
--- ═══════════════════════════════════════════════════════════════
-
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     local key = input.KeyCode
@@ -761,7 +732,7 @@ UserInputService.InputEnded:Connect(function(input)
         holdLeftShift = false 
         if Humanoid then 
             Humanoid.WalkSpeed = 16 
-            Humanoid.JumpPower = 50 -- Restore JumpPower for normal Space bhop
+            Humanoid.JumpPower = 50
         end
         RecordedSpeed = 16
     end
@@ -770,10 +741,6 @@ UserInputService.InputEnded:Connect(function(input)
     if key == Enum.KeyCode.S then keysDown.S = false end
     if key == Enum.KeyCode.D then keysDown.D = false end
 end)
-
--- ═══════════════════════════════════════════════════════════════
--- CHARACTER SETUP & LOOPS
--- ═══════════════════════════════════════════════════════════════
 
 local function SetupCharacter(character)
     if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
@@ -816,12 +783,10 @@ local function StartMainLoop()
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
-        -- Only handle LeftShift hyper bounce in the loop. Space is handled by OnStateChanged!
         if holdLeftShift then
             local vel = RootPart.AssemblyLinearVelocity
             local isOnGround = false
             
-            -- Pre-emptive Raycast Bouncing
             if vel.Y <= 0 then
                 local rayOrigin = RootPart.Position
                 local rayDir = Vector3.new(0, -((Humanoid.HipHeight or 2) + 1.5), 0)
@@ -834,20 +799,17 @@ local function StartMainLoop()
                 isOnGround = true
             end
             
-            -- Coyote Time
             if isOnGround then
                 CoyoteTimer = tick()
             end
             local inCoyoteTime = (tick() - CoyoteTimer) <= 0.15
             
-            -- Dynamic WalkSpeed Sync
             Humanoid.WalkSpeed = math.max(RecordedSpeed, BounceWalkSpeed)
             
             if isOnGround or (inCoyoteTime and vel.Y <= 0) then
                 DoHyperBounce()
             end
             
-            -- Failsafe
             if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
                 local hVel = Vector3.new(vel.X, 0, vel.Z)
                 if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
@@ -858,16 +820,13 @@ local function StartMainLoop()
             end
         end
         
-        -- Edge Boost Logic
         if State.EdgeBoost then
             edgeAccum = edgeAccum + dt
             if edgeAccum >= 0.06 then edgeAccum = 0 ReactiveEdgeBoost() end
         end
         
-        -- Carry Logic
         if holdQ then DoCarry() end
         
-        -- Cleanup & Ray Filter
         cleanupAccum = cleanupAccum + dt
         if cleanupAccum >= 10.0 then 
             cleanupAccum = 0 
@@ -896,4 +855,4 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Hyper-Responsive Velocity Bounce + Source Strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded!")
