@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 24 -- Updated version
+local SCRIPT_VERSION = 27 -- Bumped version
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -52,8 +52,8 @@ local Config = {
     FOV = 120
 }
 
-local BouncePower = 88 -- How high you bounce
-local BounceWalkSpeed = 96 -- Minimum WalkSpeed modifier while bouncing
+local BouncePower = 90 -- LeftShift bounce height
+local BounceWalkSpeed = 100
 
 local ColaSettings = {
     Speed = 1.4,
@@ -90,7 +90,7 @@ local CACHE_CLEANUP_INTERVAL = 45
 
 local RecordedSpeed = 16
 local LastBounceTime = 0
-local CoyoteTimer = 0 -- For edge trip prevention
+local CoyoteTimer = 0
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -213,26 +213,32 @@ local function GetBounceDirection(hVel, hSpeed)
     return Vector3.new(0, 0, -1)
 end
 
-local function DoBounce()
+local function DoHyperBounce()
     if not RootPart or not Humanoid or Humanoid.Health <= 0 then return end
     
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
-    -- Record highest speed, enforce minimum
     if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
     local useSpeed = math.max(RecordedSpeed, hSpeed, BounceWalkSpeed)
     
     local dir = GetBounceDirection(hVel, hSpeed)
     
-    -- Pure Velocity Jumping (Bypass JumpPower entirely)
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BouncePower, 0)
-    Humanoid.JumpPower = 0
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
     LastBounceTime = tick()
-    CoyoteTimer = 0 -- Reset coyote time on bounce
+    CoyoteTimer = 0
+end
+
+-- Restored the exact V23 StateChanged for Space bhop!
+local function OnStateChanged(old, new)
+    if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
+        DoHyperBounce()
+    elseif holdSpace and new == Enum.HumanoidStateType.Landed then
+        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
 end
 
 local function AirStrafe()
@@ -249,7 +255,6 @@ local function AirStrafe()
     if right.Magnitude < 0.01 then return end
     right = right.Unit
     
-    -- Source Engine style: Only use A/D for pure strafing speed gain
     local wishDir = Vector3.zero
     if keysDown.D then wishDir = wishDir + right end
     if keysDown.A then wishDir = wishDir - right end
@@ -260,7 +265,6 @@ local function AirStrafe()
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     
-    -- Dynamic gain that rewards mouse-flicking/turning
     local gain = 2.0 
     local newHVel = hVel + (wishDir * gain)
     
@@ -648,7 +652,6 @@ local function CreateMainGUI()
     CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 32
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
     
-    -- Cola Speed Presets
     local presetY = y
     local presetX = 10
     local presets = {
@@ -665,7 +668,6 @@ local function CreateMainGUI()
     end
     y = y + 26
     
-    -- Cola Duration Input
     local durInput = Instance.new("TextBox", content)
     durInput.Size = UDim2.new(0, 40, 0, 20) durInput.Position = UDim2.new(0, 10, 0, y)
     durInput.BackgroundColor3 = Color3.fromRGB(25,25,35) durInput.Text = tostring(ColaSettings.Duration)
@@ -680,7 +682,6 @@ local function CreateMainGUI()
     durLabel.TextSize = 9 durLabel.Font = Enum.Font.Gotham durLabel.TextXAlignment = Enum.TextXAlignment.Left
     y = y + 30
     
-    -- FOV Buttons
     local fovLabel = Instance.new("TextLabel", content) fovLabel.Size = UDim2.new(0, 40, 0, 20) fovLabel.Position = UDim2.new(0, 10, 0, y)
     fovLabel.BackgroundTransparency = 1 fovLabel.Text = "FOV:" fovLabel.TextColor3 = Color3.fromRGB(150,150,170) fovLabel.TextSize = 10 fovLabel.Font = Enum.Font.Gotham
     
@@ -758,7 +759,10 @@ UserInputService.InputEnded:Connect(function(input)
     elseif key == Enum.KeyCode.Q then holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false 
-        if Humanoid then Humanoid.WalkSpeed = 16 end
+        if Humanoid then 
+            Humanoid.WalkSpeed = 16 
+            Humanoid.JumpPower = 50 -- Restore JumpPower for normal Space bhop
+        end
         RecordedSpeed = 16
     end
     if key == Enum.KeyCode.W then keysDown.W = false end
@@ -772,6 +776,8 @@ end)
 -- ═══════════════════════════════════════════════════════════════
 
 local function SetupCharacter(character)
+    if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
+    
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter()
@@ -779,6 +785,11 @@ local function SetupCharacter(character)
     RecordedSpeed = 16
     LastBounceTime = 0
     CoyoteTimer = 0
+    Humanoid.JumpPower = 50 
+    
+    if Humanoid then 
+        Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
+    end
 end
 
 Players.PlayerAdded:Connect(function(player)
@@ -805,46 +816,45 @@ local function StartMainLoop()
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
-        local vel = RootPart.AssemblyLinearVelocity
-        local isOnGround = false
-        
-        -- 1. Pre-emptive Raycast Bouncing (Checks ground before engine does)
-        if vel.Y <= 0 then
-            local rayOrigin = RootPart.Position
-            local rayDir = Vector3.new(0, -((Humanoid.HipHeight or 2) + 1.5), 0)
-            local ray = Workspace:Raycast(rayOrigin, rayDir, EdgeRayParams)
-            isOnGround = ray ~= nil
-        end
-        
-        -- 4. Coyote Time (Prevents edge tripping)
-        if isOnGround then
-            CoyoteTimer = tick()
-        end
-        local inCoyoteTime = (tick() - CoyoteTimer) <= 0.15
-        
+        -- Only handle LeftShift hyper bounce in the loop. Space is handled by OnStateChanged!
         if holdLeftShift then
-            -- 2. Dynamic WalkSpeed Sync (Allows infinite speed stacking)
-            Humanoid.WalkSpeed = math.max(RecordedSpeed, BounceWalkSpeed)
+            local vel = RootPart.AssemblyLinearVelocity
+            local isOnGround = false
             
-            -- Bounce condition: On ground, or in coyote time and falling
-            if isOnGround or (inCoyoteTime and vel.Y <= 0) then
-                DoBounce()
+            -- Pre-emptive Raycast Bouncing
+            if vel.Y <= 0 then
+                local rayOrigin = RootPart.Position
+                local rayDir = Vector3.new(0, -((Humanoid.HipHeight or 2) + 1.5), 0)
+                local ray = Workspace:Raycast(rayOrigin, rayDir, EdgeRayParams)
+                isOnGround = ray ~= nil
             end
             
-            -- Failsafe: Instantly fix speed if engine forces a landing state
             local state = Humanoid:GetState()
+            if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
+                isOnGround = true
+            end
+            
+            -- Coyote Time
+            if isOnGround then
+                CoyoteTimer = tick()
+            end
+            local inCoyoteTime = (tick() - CoyoteTimer) <= 0.15
+            
+            -- Dynamic WalkSpeed Sync
+            Humanoid.WalkSpeed = math.max(RecordedSpeed, BounceWalkSpeed)
+            
+            if isOnGround or (inCoyoteTime and vel.Y <= 0) then
+                DoHyperBounce()
+            end
+            
+            -- Failsafe
             if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
                 local hVel = Vector3.new(vel.X, 0, vel.Z)
                 if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
                     local dir = hVel.Magnitude > 1 and hVel.Unit or GetBounceDirection(hVel, hVel.Magnitude)
                     RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, vel.Y, 0)
                 end
-                DoBounce()
-            end
-        else
-            -- Normal jump handling when not bouncing
-            if holdSpace and isOnGround then
-                Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                DoHyperBounce()
             end
         end
         
