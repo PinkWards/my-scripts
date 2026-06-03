@@ -235,7 +235,63 @@ local function AirStrafe()
     local state = Humanoid:GetState()
     if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then return end
     
-    game:GetService("Players").LocalPlayer.PlayerScripts.Events.MovementSet:Invoke("Push",Vector3.new(0, 0, 500))
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    
+    local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+    if right.Magnitude < 0.01 then return end
+    right = right.Unit
+    
+    local wishDir = Vector3.zero
+    if keysDown.D then wishDir = wishDir + right end
+    if keysDown.A then wishDir = wishDir - right end
+    
+    if wishDir.Magnitude < 0.01 then return end
+    wishDir = wishDir.Unit
+    
+    local vel = RootPart.AssemblyLinearVelocity
+    local hVel = Vector3.new(vel.X, 0, vel.Z)
+    
+    local gain = 2.0 
+    local newHVel = hVel + (wishDir * gain)
+    
+    RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
+    RecordedSpeed = math.max(RecordedSpeed, newHVel.Magnitude)
+end
+
+-- [FIXED] Real Air Strafe using MovementSet
+-- Now calculates the TRUE left/right direction of your camera so you actually gain speed forward.
+local function EvadeAirStrafe()
+    if not RootPart or not Humanoid then return end
+    if Humanoid.Health <= 0 then return end
+    
+    local state = Humanoid:GetState()
+    if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then return end
+    
+    if keysDown.A or keysDown.D then
+        local cam = Workspace.CurrentCamera
+        if cam then
+            -- Get the actual left/right direction based on your camera
+            local rightDir = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z).Unit
+            
+            local pushDir = Vector3.zero
+            if keysDown.A then pushDir = pushDir - rightDir end
+            if keysDown.D then pushDir = pushDir + rightDir end
+            
+            if pushDir.Magnitude > 0.01 then
+                pushDir = pushDir.Unit
+                
+                -- Your MovementSet Push line, but fixed to go left/right instead of backwards into a wall
+                -- Change the 2 to a 3 or 4 if you want faster strafing. Do NOT use 1000.
+                game:GetService("Players").LocalPlayer.PlayerScripts.Events.MovementSet:Invoke("Push", pushDir * 10)
+                
+                -- Save the speed so your Left Shift bounce inherits it!
+                local vel = RootPart.AssemblyLinearVelocity
+                local hVel = Vector3.new(vel.X, 0, vel.Z)
+                RecordedSpeed = math.max(RecordedSpeed, hVel.Magnitude)
+            end
+        end
+    end
 end
 
 local function DoCarry()
@@ -755,7 +811,8 @@ local function StartMainLoop()
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
-        AirStrafe()
+        AirStrafe()      -- Left Shift bounce strafe
+        EvadeAirStrafe() -- Always-working MovementSet air strafe
     end)
     
     local edgeAccum, cleanupAccum = 0, 0
