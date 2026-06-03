@@ -1,8 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 23
-
--- Auto-execute removed
+local SCRIPT_VERSION = 24 -- Updated version
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -45,29 +43,17 @@ local Workspace = workspace
 -- ═══════════════════════════════════════════════════════════════
 
 local State = {
-    Border = false,
-    AntiNextbot = false,
-    AutoFarm = false,
-    VoteMap = false,
-    VoteMode = false,
-    MapIndex = 1,
-    ModeIndex = 1,
-    MapSearch = "",
-    GamemodeSearch = "",
-    InfiniteCola = false,
     UpsideDownFix = false,
     EdgeBoost = false,
     ExchangeUnlocked = false
 }
 
 local Config = {
-    FOV = 120,
-    DangerThreshold = 60,
-    SafeDistance = 90
+    FOV = 120
 }
 
 local BouncePower = 88 -- How high you bounce
-local BounceWalkSpeed = 96 -- WalkSpeed modifier while bouncing
+local BounceWalkSpeed = 96 -- Minimum WalkSpeed modifier while bouncing
 
 local ColaSettings = {
     Speed = 1.4,
@@ -84,14 +70,10 @@ local TimerLabel, StatusLabel = nil, nil
 local holdQ, holdSpace, holdLeftShift = false, false, false
 local keysDown = { W = false, A = false, S = false, D = false }
 
-local LastAntiCheck, LastCarry = 0, 0
-local SelfResCD = 0
+local LastCarry = 0
 local LastRayFilterUpdate = 0
 
-local CurrentTarget, FarmStart = nil, 0
-local NPCNames = {}
-local NPCLoaded = false
-local CachedBots, CachedItems = {}, {}
+local CachedGame = nil
 local Maps, Modes = {}, {}
 local FullbrightEnabled = false
 local SavedLighting = nil
@@ -100,7 +82,6 @@ local LastCamera = nil
 local Connections = {}
 local EdgeTouchConnections = {}
 local ExchangeConnections = {}
-local CachedGame = nil
 
 local LastGCTime = 0
 local GC_INTERVAL = 120
@@ -109,8 +90,7 @@ local CACHE_CLEANUP_INTERVAL = 45
 
 local RecordedSpeed = 16
 local LastBounceTime = 0
-
-local bounceWalkSpeedConn = nil
+local CoyoteTimer = 0 -- For edge trip prevention
 
 local EdgeRayParams = RaycastParams.new()
 EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -146,13 +126,6 @@ local function SafeGetPath(...)
     return current
 end
 
-local function IsEvadeGame()
-    local hasNPCs = ReplicatedStorage:FindFirstChild("NPCs") ~= nil
-    local hasEvents = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact") ~= nil
-    local hasGame = Workspace:FindFirstChild("Game") ~= nil or Workspace:FindFirstChild("SecurityPart") ~= nil
-    return hasNPCs or hasEvents or hasGame
-end
-
 local function UpdateRayFilter()
     local now = tick()
     if now - LastRayFilterUpdate < 3.0 then return end
@@ -181,18 +154,6 @@ local function SafeCall(func, ...)
     return success and result
 end
 
-local function GetDistanceSq(position, bots)
-    local minDistSq = math.huge
-    for _, botPos in ipairs(bots) do
-        local dx = position.X - botPos.X
-        local dy = position.Y - botPos.Y
-        local dz = position.Z - botPos.Z
-        local distSq = dx*dx + dy*dy + dz*dz
-        if distSq < minDistSq then minDistSq = distSq end
-    end
-    return minDistSq
-end
-
 local function GetNamesFromPath(path)
     local names = {}
     local folder = ReplicatedStorage
@@ -216,16 +177,6 @@ local function PeriodicCleanup()
     local now = tick()
     if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
         LastCacheCleanup = now
-        for i = 1, #CachedBots do CachedBots[i] = nil end
-        local validCount = 0
-        for i = 1, #CachedItems do
-            local item = CachedItems[i]
-            if item and item.object and item.object.Parent then
-                validCount = validCount + 1
-                if validCount ~= i then CachedItems[validCount] = item end
-            end
-        end
-        for i = validCount + 1, #CachedItems do CachedItems[i] = nil end
         if CachedGame and not CachedGame.Parent then CachedGame = Workspace:FindFirstChild("Game") end
     end
     if now - LastGCTime >= GC_INTERVAL then
@@ -244,24 +195,11 @@ local function CleanupAll()
     getgenv().var156_upvw_arg1 = nil
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) TimerGUI = nil end
     if GUI then SafeCall(function() GUI:Destroy() end) GUI = nil end
-    table.clear(CachedBots)
-    table.clear(CachedItems)
     CachedGame = nil
 end
 
-local function LoadNPCs()
-    table.clear(NPCNames)
-    local folder = ReplicatedStorage:FindFirstChild("NPCs")
-    if folder then
-        for _, npc in ipairs(folder:GetChildren()) do NPCNames[npc.Name] = true end
-        NPCLoaded = true
-    else
-        NPCLoaded = false
-    end
-end
-
 -- ═══════════════════════════════════════════════════════════════
--- MOVEMENT (VELOCITY BOUNCE + WALKSPEED BOOST + AIR STRAFE)
+-- MOVEMENT (HYPER-RESPONSIVE BHOP + SOURCE STRAFE)
 -- ═══════════════════════════════════════════════════════════════
 
 local function GetBounceDirection(hVel, hSpeed)
@@ -282,72 +220,19 @@ local function DoBounce()
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     local hSpeed = hVel.Magnitude
     
-    -- Record the highest speed we've hit, and enforce a minimum of BounceWalkSpeed so we never slow down on landing
+    -- Record highest speed, enforce minimum
     if hSpeed > RecordedSpeed then RecordedSpeed = hSpeed end
     local useSpeed = math.max(RecordedSpeed, hSpeed, BounceWalkSpeed)
     
     local dir = GetBounceDirection(hVel, hSpeed)
     
-    -- Forcefully set velocity and immediately jump to completely bypass landing friction/delay
+    -- Pure Velocity Jumping (Bypass JumpPower entirely)
     RootPart.AssemblyLinearVelocity = dir * useSpeed + Vector3.new(0, BouncePower, 0)
+    Humanoid.JumpPower = 0
     Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
     
     LastBounceTime = tick()
-end
-
-local function OnStateChanged(old, new)
-    -- Catch Landed AND Running to instantly bounce the moment the engine thinks we're on the ground
-    if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
-        DoBounce()
-    elseif holdSpace and new == Enum.HumanoidStateType.Landed then
-        Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
-    end
-end
-
-local function OnTouchPart(hit)
-    if not holdLeftShift or not hit then return end
-    local character = LocalPlayer.Character
-    if not character or hit:IsDescendantOf(character) then return end
-    
-    -- If we touch something and we're falling/flat, bounce immediately
-    local vel = RootPart.AssemblyLinearVelocity
-    if vel.Y <= 1 then
-        local now = tick()
-        if now - LastBounceTime > 0.05 then 
-            DoBounce()
-        end
-    end
-end
-
-local function StartBounceWalkSpeed()
-    if bounceWalkSpeedConn then return end
-    bounceWalkSpeedConn = RunService.Heartbeat:Connect(function()
-        if Humanoid and holdLeftShift then
-            Humanoid.WalkSpeed = BounceWalkSpeed
-            
-            local state = Humanoid:GetState()
-            -- Failsafe: if the engine forces us into Landed/Running, fix speed and bounce immediately
-            if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
-                local vel = RootPart.AssemblyLinearVelocity
-                local hVel = Vector3.new(vel.X, 0, vel.Z)
-                -- Enforce recorded speed so landing friction has zero effect
-                if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
-                    local dir = hVel.Magnitude > 1 and hVel.Unit or GetBounceDirection(hVel, hVel.Magnitude)
-                    RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, vel.Y, 0)
-                end
-                DoBounce()
-            end
-        end
-    end)
-end
-
-local function StopBounceWalkSpeed()
-    if bounceWalkSpeedConn then
-        bounceWalkSpeedConn:Disconnect()
-        bounceWalkSpeedConn = nil
-    end
-    if Humanoid then Humanoid.WalkSpeed = 16 end
-    RecordedSpeed = 16
+    CoyoteTimer = 0 -- Reset coyote time on bounce
 end
 
 local function AirStrafe()
@@ -364,6 +249,7 @@ local function AirStrafe()
     if right.Magnitude < 0.01 then return end
     right = right.Unit
     
+    -- Source Engine style: Only use A/D for pure strafing speed gain
     local wishDir = Vector3.zero
     if keysDown.D then wishDir = wishDir + right end
     if keysDown.A then wishDir = wishDir - right end
@@ -374,201 +260,81 @@ local function AirStrafe()
     local vel = RootPart.AssemblyLinearVelocity
     local hVel = Vector3.new(vel.X, 0, vel.Z)
     
-    local gain = 1.5 
+    -- Dynamic gain that rewards mouse-flicking/turning
+    local gain = 2.0 
     local newHVel = hVel + (wishDir * gain)
-    
-    if newHVel.Magnitude > 1000 then
-        newHVel = newHVel.Unit * 1000
-    end
     
     RootPart.AssemblyLinearVelocity = Vector3.new(newHVel.X, vel.Y, newHVel.Z)
     RecordedSpeed = math.max(RecordedSpeed, newHVel.Magnitude)
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- GAME LOGIC
+-- GAME LOGIC (CARRY & REVIVE)
 -- ═══════════════════════════════════════════════════════════════
 
-local LastBotCheck = 0
-local function GetBots()
+local function DoCarry()
+    if not holdQ then return end
     local now = tick()
-    if now - LastBotCheck < 0.3 then return CachedBots end
-    LastBotCheck = now
-    if not NPCLoaded then LoadNPCs() end
-    local count = 0
-    if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
-    if CachedGame then
-        local gamePlayers = CachedGame:FindFirstChild("Players")
-        if gamePlayers then
-            for _, model in ipairs(gamePlayers:GetChildren()) do
-                if model:IsA("Model") and NPCNames[model.Name] then
-                    local hrp = model:FindFirstChild("HumanoidRootPart")
-                    if hrp then count = count + 1 CachedBots[count] = hrp.Position end
-                end
-            end
-        end
-    end
-    for i = count + 1, #CachedBots do CachedBots[i] = nil end
-    return CachedBots
-end
-
-local LastItemCheck = 0
-local function GetItems()
-    local now = tick()
-    if now - LastItemCheck < 0.3 then return CachedItems end
-    LastItemCheck = now
-    local count = 0
-    if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
-    if not CachedGame then for i = 1, #CachedItems do CachedItems[i] = nil end return CachedItems end
-    local effects = CachedGame:FindFirstChild("Effects")
-    if not effects then for i = 1, #CachedItems do CachedItems[i] = nil end return CachedItems end
-    for _, containerName in ipairs({"Tickets", "Collectables"}) do
-        local container = effects:FindFirstChild(containerName)
-        if container then
-            for _, item in ipairs(container:GetChildren()) do
-                if item and item.Parent then
-                    local part
-                    if item:IsA("Model") then part = item:FindFirstChild("HumanoidRootPart") or item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart")
-                    elseif item:IsA("BasePart") then part = item end
-                    if part and part.Parent then
-                        count = count + 1
-                        local entry = CachedItems[count]
-                        if entry then entry.object = item entry.position = part.Position
-                        else CachedItems[count] = {object = item, position = part.Position} end
-                    end
-                end
-            end
-        end
-    end
-    for i = count + 1, #CachedItems do CachedItems[i] = nil end
-    return CachedItems
-end
-
-local function FindSafeSpot(myPos, bots)
-    local safeLocations = {}
-    if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
-    if CachedGame then
-        local mapFolder = CachedGame:FindFirstChild("Map")
-        local partsFolder = mapFolder and mapFolder:FindFirstChild("Parts")
-        local spawnsFolder = partsFolder and partsFolder:FindFirstChild("Spawns")
-        if spawnsFolder then
-            for _, spawn in ipairs(spawnsFolder:GetChildren()) do
-                if spawn:IsA("BasePart") then safeLocations[#safeLocations + 1] = spawn.Position + Vector3.new(0, 5, 0) end
-            end
-        end
-    end
-    local securityPart = Workspace:FindFirstChild("SecurityPart")
-    if securityPart then safeLocations[#safeLocations + 1] = securityPart.Position + Vector3.new(0, 5, 0) end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local isDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
-            if hrp and not isDowned then safeLocations[#safeLocations + 1] = hrp.Position + Vector3.new(0, 3, 0) end
-        end
-    end
-    local bestLocation, bestDistSq = nil, 0
-    local safeSq = Config.SafeDistance * Config.SafeDistance
-    for _, location in ipairs(safeLocations) do
-        local minDistSq = GetDistanceSq(location, bots)
-        if minDistSq > bestDistSq and minDistSq >= safeSq then bestDistSq = minDistSq bestLocation = location end
-    end
-    if not bestLocation and securityPart then bestLocation = securityPart.Position + Vector3.new(0, 5, 0) end
-    return bestLocation
-end
-
-local function Teleport(pos)
-    local character = LocalPlayer.Character
-    if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local rayParams = RaycastParams.new()
-    rayParams.FilterDescendantsInstances = {character}
-    rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    local ray = Workspace:Raycast(pos, Vector3.new(0, -50, 0), rayParams)
-    local finalPos = ray and (ray.Position + Vector3.new(0, 5, 0)) or pos
-    hrp.CFrame = CFrame.new(finalPos)
-    task.defer(function()
-        if hrp and hrp.Parent then
-            hrp.AssemblyLinearVelocity = VEC3_ZERO
-            hrp.AssemblyAngularVelocity = VEC3_ZERO
-        end
-    end)
-end
-
-local function AntiNextbot()
-    if not State.AntiNextbot then return end
-    local now = tick()
-    if now - LastAntiCheck < 0.35 then return end
-    LastAntiCheck = now
+    if now - LastCarry < 0.5 then return end
+    LastCarry = now
     local character = LocalPlayer.Character
     if not character then return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if not hrp or isDowned then return end
-    local bots = GetBots()
-    if #bots == 0 then return end
     local myPos = hrp.Position
-    local closestDistSq = GetDistanceSq(myPos, bots)
-    if closestDistSq <= Config.DangerThreshold * Config.DangerThreshold then
-        local safeSpot = FindSafeSpot(myPos, bots)
-        if safeSpot then Teleport(safeSpot) end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
+            if otherHrp then
+                local dx = myPos.X - otherHrp.Position.X
+                local dy = myPos.Y - otherHrp.Position.Y
+                local dz = myPos.Z - otherHrp.Position.Z
+                if dx*dx + dy*dy + dz*dz <= 64 then
+                    local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
+                    local otherHum = player.Character:FindFirstChild("Humanoid")
+                    local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
+                    if otherDowned or isPhysics then
+                        SafeCall(function()
+                            local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                            if event then event:FireServer("Carry", nil, player.Name) end
+                        end)
+                        return
+                    end
+                end
+            end
+        end
     end
 end
 
-local LastFarmTick = 0
-local function AutoFarm()
-    if not State.AutoFarm then return end
-    local now = tick()
-    if now - LastFarmTick < 0.15 then return end
-    LastFarmTick = now
+local function Revive()
     local character = LocalPlayer.Character
     if not character then return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if isDowned then
-        SafeCall(function()
-            local event = SafeGetPath(ReplicatedStorage, "Events", "Player", "ChangePlayerMode")
-            if event then event:FireServer(true) end
-        end)
-        local securityPart = Workspace:FindFirstChild("SecurityPart")
-        if securityPart then Teleport(securityPart.Position) end
-        CurrentTarget = nil
-        return
-    end
-    local items = GetItems()
-    if #items == 0 then
-        local securityPart = Workspace:FindFirstChild("SecurityPart")
-        if securityPart then Teleport(securityPart.Position) end
-        CurrentTarget = nil
-        return
-    end
-    if CurrentTarget then
-        if not CurrentTarget.object or not CurrentTarget.object.Parent then
-            CurrentTarget = nil FarmStart = 0
-        else
-            local obj = CurrentTarget.object
-            local part
-            if obj:IsA("Model") then part = obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-            elseif obj:IsA("BasePart") then part = obj end
-            if part and part.Parent then Teleport(part.Position) CurrentTarget.position = part.Position end
-            if now - FarmStart >= 0.25 then CurrentTarget = nil FarmStart = 0 end
-            return
-        end
-    end
     local myPos = hrp.Position
-    local nearestItem, nearestDistSq = nil, math.huge
-    for _, item in ipairs(items) do
-        if item.object and item.object.Parent then
-            local dx = myPos.X - item.position.X
-            local dy = myPos.Y - item.position.Y
-            local dz = myPos.Z - item.position.Z
-            local distSq = dx*dx + dy*dy + dz*dz
-            if distSq < nearestDistSq then nearestDistSq = distSq nearestItem = item end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
+            local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
+            if otherHrp and otherDowned then
+                local dx = myPos.X - otherHrp.Position.X
+                local dy = myPos.Y - otherHrp.Position.Y
+                local dz = myPos.Z - otherHrp.Position.Z
+                if dx*dx + dy*dy + dz*dz <= 225 then
+                    SafeCall(function()
+                        local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                        if event then event:FireServer("Revive", true, player.Name) end
+                    end)
+                end
+            end
         end
     end
-    if nearestItem then CurrentTarget = nearestItem FarmStart = now Teleport(nearestItem.position) end
 end
+
+-- ═══════════════════════════════════════════════════════════════
+-- VISUALS & EFFECTS
+-- ═══════════════════════════════════════════════════════════════
 
 local function ToggleUpsideDownFix(enabled)
     State.UpsideDownFix = enabled
@@ -711,93 +477,6 @@ local function SetupEdgeBoost()
     end
 end
 
-local function DoCarry()
-    if not holdQ then return end
-    local now = tick()
-    if now - LastCarry < 0.5 then return end
-    LastCarry = now
-    local character = LocalPlayer.Character
-    if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if not hrp or isDowned then return end
-    local myPos = hrp.Position
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
-            if otherHrp then
-                local dx = myPos.X - otherHrp.Position.X
-                local dy = myPos.Y - otherHrp.Position.Y
-                local dz = myPos.Z - otherHrp.Position.Z
-                if dx*dx + dy*dy + dz*dz <= 64 then
-                    local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
-                    local otherHum = player.Character:FindFirstChild("Humanoid")
-                    local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
-                    if otherDowned or isPhysics then
-                        SafeCall(function()
-                            local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
-                            if event then event:FireServer("Carry", nil, player.Name) end
-                        end)
-                        return
-                    end
-                end
-            end
-        end
-    end
-end
-
-local function Revive()
-    local character = LocalPlayer.Character
-    if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    local myPos = hrp.Position
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
-            local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
-            if otherHrp and otherDowned then
-                local dx = myPos.X - otherHrp.Position.X
-                local dy = myPos.Y - otherHrp.Position.Y
-                local dz = myPos.Z - otherHrp.Position.Z
-                if dx*dx + dy*dy + dz*dz <= 225 then
-                    SafeCall(function()
-                        local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
-                        if event then event:FireServer("Revive", true, player.Name) end
-                    end)
-                end
-            end
-        end
-    end
-end
-
-local function SelfResurrect()
-    local now = tick()
-    if now - SelfResCD < 3 then return end
-    local character = LocalPlayer.Character
-    local isDowned = SafeCall(function() return character and character:GetAttribute("Downed") end)
-    if not isDowned then return end
-    SelfResCD = now
-    SafeCall(function()
-        local event = SafeGetPath(ReplicatedStorage, "Events", "Player", "ChangePlayerMode")
-        if event then event:FireServer(true) end
-    end)
-end
-
-local function ToggleBorder()
-    State.Border = not State.Border
-    if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
-    if not CachedGame then return end
-    local mapFolder = CachedGame:FindFirstChild("Map")
-    local invisParts = mapFolder and mapFolder:FindFirstChild("InvisParts")
-    if invisParts then
-        local targetCollide = not State.Border
-        for _, obj in ipairs(invisParts:GetDescendants()) do
-            if obj:IsA("BasePart") then obj.CanCollide = targetCollide end
-        end
-    end
-end
-
 local function SetFOV()
     local camera = Workspace.CurrentCamera
     if camera and camera.FieldOfView ~= Config.FOV then camera.FieldOfView = Config.FOV end
@@ -907,19 +586,6 @@ local function Tween(obj, props, tweenInfo)
     TweenService:Create(obj, tweenInfo or TI_FAST, props):Play()
 end
 
-local function MakeDraggable(frame)
-    local dragging, dragStart, startPos = false, nil, nil
-    local dragArea = Instance.new("Frame") dragArea.Name = "DragArea" dragArea.Size = UDim2.new(1, 0, 0, 30) dragArea.BackgroundTransparency = 1 dragArea.ZIndex = 10 dragArea.Parent = frame
-    dragArea.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true dragStart = input.Position startPos = frame.Position end end)
-    dragArea.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
-    Connections["Drag_" .. frame.Name] = UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local delta = input.Position - dragStart
-            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
-end
-
 local function CreateToggle(parent, name, text, yPos, callback)
     local btn = Instance.new("TextButton")
     btn.Name = name btn.Size = UDim2.new(1, -20, 0, 28) btn.Position = UDim2.new(0, 10, 0, yPos)
@@ -977,9 +643,6 @@ local function CreateMainGUI()
     
     local y = 8
     CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
-    CreateToggle(content, "Border", "No Borders", y, function(s) ToggleBorder() end) y = y + 32
-    CreateToggle(content, "Anti", "Anti-Nextbot", y, function(s) State.AntiNextbot = s if s then LoadNPCs() end end) y = y + 32
-    CreateToggle(content, "Farm", "Auto Farm", y, function(s) State.AutoFarm = s if not s then CurrentTarget = nil end end) y = y + 32
     CreateToggle(content, "EdgeBoost", "Edge Boost", y, function(s) State.EdgeBoost = s SetupEdgeBoost() end) y = y + 32
     CreateToggle(content, "UpFix", "Upside Fix", y, function(s) State.UpsideDownFix = s ToggleUpsideDownFix(s) end) y = y + 32
     CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 32
@@ -1031,9 +694,8 @@ local function CreateMainGUI()
     CreateFovBtn("F120", "120", 100, 120)
     
     content.CanvasSize = UDim2.new(0, 0, 0, y + 50)
-    MakeDraggable(main)
     main.Size = UDim2.new(0, 180, 0, 0) main.Visible = true
-    Tween(main, {Size = UDim2.new(0, 180, 0, 310)}, TI_OPEN)
+    Tween(main, {Size = UDim2.new(0, 180, 0, 240)}, TI_OPEN)
 end
 
 local function CreateTimerGUI()
@@ -1073,17 +735,15 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then holdSpace = true
     elseif key == Enum.KeyCode.E then Revive()
-    elseif key == Enum.KeyCode.R then SelfResurrect()
     elseif key == Enum.KeyCode.Q then holdQ = true
     elseif key == Enum.KeyCode.P then ToggleFullbright()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
-        StartBounceWalkSpeed()
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local m = GUI.Main
             if m.Visible then Tween(m, {Size = UDim2.new(0, 180, 0, 0)}, TI_SLOW) task.delay(0.3, function() m.Visible = false end)
-            else m.Visible = true m.Size = UDim2.new(0, 180, 0, 0) Tween(m, {Size = UDim2.new(0, 180, 0, 310)}, TI_OPEN) end
+            else m.Visible = true m.Size = UDim2.new(0, 180, 0, 0) Tween(m, {Size = UDim2.new(0, 180, 0, 240)}, TI_OPEN) end
         end
     end
     if key == Enum.KeyCode.W then keysDown.W = true end
@@ -1098,7 +758,8 @@ UserInputService.InputEnded:Connect(function(input)
     elseif key == Enum.KeyCode.Q then holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false 
-        StopBounceWalkSpeed()
+        if Humanoid then Humanoid.WalkSpeed = 16 end
+        RecordedSpeed = 16
     end
     if key == Enum.KeyCode.W then keysDown.W = false end
     if key == Enum.KeyCode.A then keysDown.A = false end
@@ -1111,27 +772,13 @@ end)
 -- ═══════════════════════════════════════════════════════════════
 
 local function SetupCharacter(character)
-    if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
-    if Connections.TouchConn then Connections.TouchConn:Disconnect() Connections.TouchConn = nil end
-    
     Humanoid = character:WaitForChild("Humanoid", 5)
     RootPart = character:WaitForChild("HumanoidRootPart", 5)
     ForceUpdateRayFilter()
     SetupEdgeBoost()
-    CurrentTarget, FarmStart = nil, 0
     RecordedSpeed = 16
     LastBounceTime = 0
-    
-    if Humanoid then 
-        Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
-    end
-    if RootPart then
-        Connections.TouchConn = RootPart.Touched:Connect(OnTouchPart)
-    end
-    
-    if holdLeftShift then
-        StartBounceWalkSpeed()
-    end
+    CoyoteTimer = 0
 end
 
 Players.PlayerAdded:Connect(function(player)
@@ -1154,22 +801,69 @@ local function StartMainLoop()
         AirStrafe()
     end)
     
-    local slowAccum, edgeAccum, cleanupAccum = 0, 0, 0
+    local edgeAccum, cleanupAccum = 0, 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
+        if not RootPart or not Humanoid then return end
+        
+        local vel = RootPart.AssemblyLinearVelocity
+        local isOnGround = false
+        
+        -- 1. Pre-emptive Raycast Bouncing (Checks ground before engine does)
+        if vel.Y <= 0 then
+            local rayOrigin = RootPart.Position
+            local rayDir = Vector3.new(0, -((Humanoid.HipHeight or 2) + 1.5), 0)
+            local ray = Workspace:Raycast(rayOrigin, rayDir, EdgeRayParams)
+            isOnGround = ray ~= nil
+        end
+        
+        -- 4. Coyote Time (Prevents edge tripping)
+        if isOnGround then
+            CoyoteTimer = tick()
+        end
+        local inCoyoteTime = (tick() - CoyoteTimer) <= 0.15
+        
+        if holdLeftShift then
+            -- 2. Dynamic WalkSpeed Sync (Allows infinite speed stacking)
+            Humanoid.WalkSpeed = math.max(RecordedSpeed, BounceWalkSpeed)
+            
+            -- Bounce condition: On ground, or in coyote time and falling
+            if isOnGround or (inCoyoteTime and vel.Y <= 0) then
+                DoBounce()
+            end
+            
+            -- Failsafe: Instantly fix speed if engine forces a landing state
+            local state = Humanoid:GetState()
+            if state == Enum.HumanoidStateType.Landed or state == Enum.HumanoidStateType.Running then
+                local hVel = Vector3.new(vel.X, 0, vel.Z)
+                if hVel.Magnitude < RecordedSpeed and RecordedSpeed > 0 then
+                    local dir = hVel.Magnitude > 1 and hVel.Unit or GetBounceDirection(hVel, hVel.Magnitude)
+                    RootPart.AssemblyLinearVelocity = dir * RecordedSpeed + Vector3.new(0, vel.Y, 0)
+                end
+                DoBounce()
+            end
+        else
+            -- Normal jump handling when not bouncing
+            if holdSpace and isOnGround then
+                Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end
+        
+        -- Edge Boost Logic
         if State.EdgeBoost then
             edgeAccum = edgeAccum + dt
             if edgeAccum >= 0.06 then edgeAccum = 0 ReactiveEdgeBoost() end
         end
+        
+        -- Carry Logic
         if holdQ then DoCarry() end
-        slowAccum = slowAccum + dt
-        if slowAccum >= 0.2 then
-            slowAccum = 0
-            UpdateRayFilter()
-            if State.AntiNextbot then AntiNextbot() end
-            if State.AutoFarm then AutoFarm() end
-        end
+        
+        -- Cleanup & Ray Filter
         cleanupAccum = cleanupAccum + dt
-        if cleanupAccum >= 10.0 then cleanupAccum = 0 PeriodicCleanup() end
+        if cleanupAccum >= 10.0 then 
+            cleanupAccum = 0 
+            PeriodicCleanup() 
+            UpdateRayFilter() 
+        end
     end)
 end
 
@@ -1179,8 +873,7 @@ LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
-        NPCLoaded = false CurrentTarget, FarmStart = nil, 0 RecordedSpeed = 16 LastBounceTime = 0
-        table.clear(CachedBots) table.clear(CachedItems)
+        RecordedSpeed = 16 LastBounceTime = 0 CoyoteTimer = 0
         if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
     end
 end)
@@ -1191,6 +884,6 @@ LocalPlayer.Idled:Connect(function()
     VirtualUser:Button2Up(VEC2_ZERO, Workspace.CurrentCamera.CFrame)
 end)
 
-CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() LoadNPCs() ForceUpdateRayFilter() StartMainLoop()
+CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Hyper-Responsive Velocity Bounce + Air Strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! Hyper-Responsive Velocity Bounce + Source Strafe!")
