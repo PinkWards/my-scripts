@@ -44,9 +44,13 @@ local State = {
 getgenv().lastAnim = getgenv().lastAnim or nil
 local ConfigPath = "PinkWards/Config.json"
 
--- [FIX] Generation counter – every respawn increments this so stale
+-- [LAG FIX] Generation counter – every respawn increments this so stale
 -- animation-apply threads know to abort early.
 local applyGeneration = 0
+
+-- [LAG FIX] Cache extracted animation data per bundle so we never
+-- re-download / re-parse the same bundle twice in one session.
+local _animDataCache = {} -- tostring(bundleId) -> {slotName = {id,name,weight}}
 
 local function SaveConfig()
     if not isfolder then return end
@@ -225,6 +229,40 @@ local function extractAnimDataFromObject(obj)
     scanContainer(obj); return result
 end
 
+-- [LAG FIX] Centralised bundle loader WITH caching.
+-- First call downloads + parses assets (with yields between each).
+-- Every subsequent call for the same bundleId returns instantly from cache.
+local function getAnimDataForBundle(bundleId, bundled)
+    local cacheKey = tostring(bundleId)
+    if _animDataCache[cacheKey] then
+        return _animDataCache[cacheKey]
+    end
+
+    local allAnimData = {}
+    for key, assetIds in pairs(bundled) do
+        for _, assetId in pairs(assetIds) do
+            local objs = loadAssetObjects(assetId)
+            if objs then
+                for _, obj in pairs(objs) do
+                    local extracted = extractAnimDataFromObject(obj)
+                    for slotName, anims in pairs(extracted) do
+                        if not allAnimData[slotName] or #allAnimData[slotName] == 0 then
+                            allAnimData[slotName] = anims
+                        end
+                    end
+                    pcall(function() obj:Destroy() end)
+                end
+            end
+            -- [LAG FIX] yield at least one frame between each asset load
+            -- so the engine can render and the game never freezes.
+            task.wait()
+        end
+    end
+
+    _animDataCache[cacheKey] = allAnimData
+    return allAnimData
+end
+
 local function setSlotAnimations(animate, slotName, anims)
     local folder = nil
     for _, child in pairs(animate:GetChildren()) do if child.Name:lower() == slotName:lower() then folder = child; break end end
@@ -248,17 +286,18 @@ local function setSlotAnimations(animate, slotName, anims)
     return applied
 end
 
--- [FIX] Instead of disabling/re-enabling the Animate script (which can leave
--- it in a broken state after respawn), we clone it, destroy the original, and
--- parent the clone.  The clone starts executing from scratch – guaranteed clean.
+-- [LAG FIX] Re-parent instead of clone+destroy.  Moving the Animate
+-- LocalScript to nil stops it; moving it back starts it fresh — same
+-- effect as clone/destroy but without the heavy instance allocation.
 local function restartAnimate(char)
     local animate = char:FindFirstChild("Animate")
     if not animate then return nil end
     local parent = animate.Parent
-    local clone = animate:Clone()
-    animate:Destroy()
-    clone.Parent = parent
-    return clone
+    animate.Parent = nil
+    task.wait(0.05)
+    animate.Parent = parent
+    task.wait(0.1)
+    return animate
 end
 
 -- [FIX] Safety net – un-stick the character if anything left it frozen.
@@ -275,9 +314,6 @@ local function ensureCharacterCanMove(char)
     if hum.Sit then hum.Sit = false end
 end
 
--- [FIX] All four "safely" functions now use restartAnimate instead of
--- Enabled = false / true.  No more Anchored / PlatformStand tricks either.
-
 local function applySlotSafely(animate, slotName, anims)
     local char = player.Character; if not char then return 0 end
     local hum = char:FindFirstChildOfClass("Humanoid"); if not hum then return 0 end
@@ -287,7 +323,6 @@ local function applySlotSafely(animate, slotName, anims)
     pcall(function() applied = setSlotAnimations(animate, slotName, anims) end)
 
     restartAnimate(char)
-    task.wait(0.1)
     return applied
 end
 
@@ -304,7 +339,6 @@ local function applyAllSlotsSafely(animate, allAnimData)
     end)
 
     restartAnimate(char)
-    task.wait(0.1)
     return totalApplied
 end
 
@@ -318,7 +352,6 @@ local function revertSlotSafely(slotName)
     pcall(function() reverted = revertSlot(slotName) end)
 
     restartAnimate(char)
-    task.wait(0.1)
     return reverted
 end
 
@@ -336,13 +369,11 @@ local function revertAllSlotsSafely()
     end)
 
     restartAnimate(char)
-    task.wait(0.1)
     return anyReverted
 end
 
--- [FIX] applyAnim now captures the character reference up front and aborts
--- if the character changes mid-load (e.g. player died while assets were
--- still downloading).
+-- [LAG FIX] applyAnim now uses the cache – only the very first apply of a
+-- given bundle ever hits GetObjects, and even then we yield between loads.
 local function applyAnim(data)
     if not data then return end; if State.applyingAnim then return end
     State.applyingAnim = true
@@ -356,22 +387,11 @@ local function applyAnim(data)
         if not bundled then State.applyingAnim = false; return end
         getgenv().lastAnim = {id = data.id, name = data.name, bundledItems = bundled}; saveLastAnim()
         notify("Animation", "Loading: " .. tostring(data.name or "Animation") .. "...", 2)
-        local allAnimData = {}
-        for key, assetIds in pairs(bundled) do
-            for _, assetId in pairs(assetIds) do
-                -- [FIX] bail out if character changed while loading
-                if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
-                local objs = loadAssetObjects(assetId)
-                if objs then
-                    for _, obj in pairs(objs) do
-                        local extracted = extractAnimDataFromObject(obj)
-                        for slotName, anims in pairs(extracted) do if not allAnimData[slotName] or #allAnimData[slotName] == 0 then allAnimData[slotName] = anims end end
-                        pcall(function() obj:Destroy() end)
-                    end
-                end
-            end
-        end
-        -- [FIX] one last check before we touch the new Animate script
+
+        -- [LAG FIX] single cached call instead of a tight GetObjects loop
+        if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
+        local allAnimData = getAnimDataForBundle(data.id, bundled)
+
         if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData)
         notify("Animation", "Applied: " .. tostring(data.name or "Animation") .. " (" .. totalApplied .. " slots)", 3)
@@ -379,7 +399,7 @@ local function applyAnim(data)
     end)
 end
 
--- [FIX] same generation-guard for slot-from-bundle
+-- [LAG FIX] applySlotFromBundle uses cache too
 local function applySlotFromBundle(slotName, bundleData)
     if not bundleData then return false end
     local char = player.Character; if not char then return false end
@@ -389,20 +409,20 @@ local function applySlotFromBundle(slotName, bundleData)
     if not bundled then return false end
     local myChar = char
     local myGen  = applyGeneration
+
+    -- [LAG FIX] use cached loader
+    if player.Character ~= myChar or applyGeneration ~= myGen then return false end
+    local allData = getAnimDataForBundle(bundleData.id, bundled)
+    if player.Character ~= myChar or applyGeneration ~= myGen then return false end
+
     local targetAnims = nil
-    for key, assetIds in pairs(bundled) do
-        for _, assetId in pairs(assetIds) do
-            if player.Character ~= myChar or applyGeneration ~= myGen then return false end
-            local objs = loadAssetObjects(assetId)
-            if objs then
-                for _, obj in pairs(objs) do
-                    local extracted = extractAnimDataFromObject(obj)
-                    for sn, anims in pairs(extracted) do if sn:lower() == slotName:lower() then if not targetAnims or #targetAnims == 0 then targetAnims = anims end end end
-                    pcall(function() obj:Destroy() end)
-                end
-            end
+    for sn, anims in pairs(allData) do
+        if sn:lower() == slotName:lower() then
+            targetAnims = anims
+            break
         end
     end
+
     if not targetAnims or #targetAnims == 0 then return false end
     if player.Character ~= myChar or applyGeneration ~= myGen then return false end
     local applied = applySlotSafely(animate, slotName, targetAnims)
@@ -410,7 +430,7 @@ local function applySlotFromBundle(slotName, bundleData)
     return false
 end
 
--- [FIX] generation-guard for applyAllCustomSlots
+-- [LAG FIX] applyAllCustomSlots uses cache
 local function applyAllCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then notify("Custom Anim", "No custom slots configured", 3); return end
     if State.applyingAnim then notify("Custom Anim", "Already applying, please wait...", 3); return end
@@ -428,21 +448,19 @@ local function applyAllCustomSlots()
                 local bundled = getBundled(info.id)
                 if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
                 if bundled then
-                    for key, assetIds in pairs(bundled) do
-                        for _, assetId in pairs(assetIds) do
-                            if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
-                            local objs = loadAssetObjects(assetId)
-                            if objs then
-                                for _, obj in pairs(objs) do
-                                    local extracted = extractAnimDataFromObject(obj)
-                                    for sn, anims in pairs(extracted) do if sn:lower() == slotName:lower() then if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = anims end end end
-                                    pcall(function() obj:Destroy() end)
-                                end
+                    -- [LAG FIX] single cached call per bundle
+                    if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
+                    local bundleData = getAnimDataForBundle(info.id, bundled)
+                    for sn, anims in pairs(bundleData) do
+                        if sn:lower() == slotName:lower() then
+                            if not allAnimData[sn] or #allAnimData[sn] == 0 then
+                                allAnimData[sn] = anims
                             end
                         end
                     end
                 end
             end
+            task.wait() -- [LAG FIX] yield between bundles
         end
         if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData); local slotCount = 0; for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
@@ -450,7 +468,7 @@ local function applyAllCustomSlots()
     end)
 end
 
--- [FIX] generation-guard for reapplyCustomSlots
+-- [LAG FIX] reapplyCustomSlots uses cache + sets applyingAnim flag
 local function reapplyCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then return end
     local char = player.Character; if not char then return end
@@ -458,30 +476,30 @@ local function reapplyCustomSlots()
     originalAnimData = nil; captureOriginalAnims(); local allAnimData = {}
     local myChar = char
     local myGen  = applyGeneration
+    State.applyingAnim = true
     for slotName, info in pairs(State.config.CustomAnimSlots) do
-        if player.Character ~= myChar or applyGeneration ~= myGen then return end
+        if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         if type(info) == "table" and info.id then
             local bundled = getBundled(info.id)
             if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
             if bundled then
-                for key, assetIds in pairs(bundled) do
-                    for _, assetId in pairs(assetIds) do
-                        if player.Character ~= myChar or applyGeneration ~= myGen then return end
-                        local objs = loadAssetObjects(assetId)
-                        if objs then
-                            for _, obj in pairs(objs) do
-                                local extracted = extractAnimDataFromObject(obj)
-                                for sn, anims in pairs(extracted) do if sn:lower() == slotName:lower() then if not allAnimData[sn] or #allAnimData[sn] == 0 then allAnimData[sn] = anims end end end
-                                pcall(function() obj:Destroy() end)
-                            end
+                -- [LAG FIX] single cached call per bundle
+                if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
+                local bundleData = getAnimDataForBundle(info.id, bundled)
+                for sn, anims in pairs(bundleData) do
+                    if sn:lower() == slotName:lower() then
+                        if not allAnimData[sn] or #allAnimData[sn] == 0 then
+                            allAnimData[sn] = anims
                         end
                     end
                 end
             end
         end
+        task.wait() -- [LAG FIX] yield between bundles
     end
-    if player.Character ~= myChar or applyGeneration ~= myGen then return end
+    if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
     if next(allAnimData) then applyAllSlotsSafely(animate, allAnimData) end
+    State.applyingAnim = false
 end
 
 function toggleFav(id, name, bundled)
@@ -687,7 +705,7 @@ SortFrame.ZIndex = 100
 Corner:Clone().Parent = SortFrame; SortFrame.Parent = BackFrame
 
 local SortList = Instance.new("UIListLayout")
-SortList.Padding = UDim.new(0.02, 0); SortList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+SortList.Padding = UDim.new(0, 0.02, 0); SortList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 SortList.VerticalAlignment = Enum.VerticalAlignment.Top; SortList.SortOrder = Enum.SortOrder.LayoutOrder; SortList.Parent = SortFrame
 
 local SortPadding = Instance.new("UIPadding", SortFrame)
@@ -1043,13 +1061,10 @@ ContextActionService:BindCoreActionAtPriority("Emote Menu", function(name, state
 end, true, 2001, Enum.KeyCode.Comma)
 
 -- ============ CHARACTER & DATA LOGIC ============ --
--- [FIX] onCharacterAdded now:
---   1) increments applyGeneration so stale threads abort
---   2) runs ensureCharacterCanMove as a safety net after reapply
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
 
-    -- [FIX] cancel any in-flight animation apply from the old character
+    -- cancel any in-flight animation apply from the old character
     applyGeneration = applyGeneration + 1
     State.applyingAnim = false
     originalAnimData = nil
@@ -1061,10 +1076,15 @@ local function onCharacterAdded(char)
         if hum.Health <= 0 then return end
         captureOriginalAnims()
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
-        if hasCustomSlots then reapplyCustomSlots()
-        elseif getgenv().lastAnim and getgenv().lastAnim.id then applyAnim(getgenv().lastAnim) end
 
-        -- [FIX] safety net: wait for apply to finish, then un-stick the character
+        -- [LAG FIX] run reapply in a separate thread so it never blocks the main thread
+        if hasCustomSlots then
+            task.spawn(reapplyCustomSlots)
+        elseif getgenv().lastAnim and getgenv().lastAnim.id then
+            applyAnim(getgenv().lastAnim)
+        end
+
+        -- safety net: wait for apply to finish, then un-stick the character
         task.spawn(function()
             local elapsed = 0
             while State.applyingAnim and elapsed < 15 do task.wait(0.5); elapsed = elapsed + 0.5 end
