@@ -235,7 +235,7 @@ local function AirStrafe()
     local state = Humanoid:GetState()
     if state ~= Enum.HumanoidStateType.Freefall and state ~= Enum.HumanoidStateType.Jumping then return end
     
-    game:GetService("Players").LocalPlayer.PlayerScripts.Events.MovementSet:Invoke("Push",Vector3.new(0, 0, 1000))
+    game:GetService("Players").LocalPlayer.PlayerScripts.Events.MovementSet:Invoke("Push",Vector3.new(0, 0, 500))
 end
 
 local function DoCarry()
