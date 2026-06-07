@@ -173,7 +173,7 @@ local function MovementValueSet(MovementType, Num)
     end)
 end
 
--- OP Air Exploit Applier
+-- OP Air Exploit Applier (FIXED: Strict targeting to prevent backslide bug)
 local function ApplyAirExploit()
     if AirExploitValue <= 0 then return end
     pcall(function()
@@ -182,12 +182,13 @@ local function ApplyAirExploit()
             if instance and instance.defaultMovementStats and instance.overrideMovementStats then
                 for k, val in pairs(instance.defaultMovementStats) do
                     local lowerK = string.lower(k)
-                    -- Only target Air/Strafe related stats to avoid bugging ground movement
-                    if string.find(lowerK, "air") or string.find(lowerK, "strafe") then
-                        -- Destroy caps and crank acceleration
-                        if string.find(lowerK, "accel") or string.find(lowerK, "max") or string.find(lowerK, "cap") or string.find(lowerK, "limit") or string.find(lowerK, "speed") then
-                            instance.overrideMovementStats[k] = AirExploitValue
-                        end
+                    -- STRICT TARGETING: Only modify acceleration and the main speed cap.
+                    -- This avoids touching directional speeds (like AirForwardSpeed) which caused the backslide bug.
+                    if lowerK == "airacceleration" or 
+                       lowerK == "airstrafeacceleration" or 
+                       lowerK == "maxairspeed" or 
+                       lowerK == "airspeedcap" then
+                        instance.overrideMovementStats[k] = AirExploitValue
                     end
                 end
             end
@@ -1297,4 +1298,4 @@ end)
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 ApplyAirExploit() -- Apply instantly on load
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! OP Air Strafe active.")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! OP Air Strafe active (Backslide fixed).")
