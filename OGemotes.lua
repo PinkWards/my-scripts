@@ -52,6 +52,32 @@ local applyGeneration = 0
 -- re-download / re-parse the same bundle twice in one session.
 local _animDataCache = {} -- tostring(bundleId) -> {slotName = {id,name,weight}}
 
+-- [LAG FIX #2] Persistent disk cache so we never download the same bundle twice EVER.
+local animDataCachePath = "PinkWards/AnimDataCache.json"
+local diskCache = {}
+
+local function loadDiskCache()
+    if readfile and isfile then
+        pcall(function()
+            if isfile(animDataCachePath) then
+                local data = HttpService:JSONDecode(readfile(animDataCachePath))
+                if type(data) == "table" then
+                    diskCache = data
+                end
+            end
+        end)
+    end
+end
+
+local function saveDiskCache()
+    if writefile then
+        pcall(function()
+            if not isfolder("PinkWards") then makefolder("PinkWards") end
+            writefile(animDataCachePath, HttpService:JSONEncode(diskCache))
+        end)
+    end
+end
+
 local function SaveConfig()
     if not isfolder then return end
     if not isfolder("PinkWards") then pcall(function() makefolder("PinkWards") end) end
@@ -229,15 +255,22 @@ local function extractAnimDataFromObject(obj)
     scanContainer(obj); return result
 end
 
--- [LAG FIX] Centralised bundle loader WITH caching.
--- First call downloads + parses assets (with yields between each).
--- Every subsequent call for the same bundleId returns instantly from cache.
+-- [LAG FIX #2] Centralised bundle loader WITH Memory + Disk caching.
 local function getAnimDataForBundle(bundleId, bundled)
     local cacheKey = tostring(bundleId)
+    
+    -- 1. Check memory cache
     if _animDataCache[cacheKey] then
         return _animDataCache[cacheKey]
     end
+    
+    -- 2. Check disk cache
+    if diskCache[cacheKey] then
+        _animDataCache[cacheKey] = diskCache[cacheKey]
+        return _animDataCache[cacheKey]
+    end
 
+    -- 3. Download and extract (Only happens once ever per bundle)
     local allAnimData = {}
     for key, assetIds in pairs(bundled) do
         for _, assetId in pairs(assetIds) do
@@ -253,13 +286,14 @@ local function getAnimDataForBundle(bundleId, bundled)
                     pcall(function() obj:Destroy() end)
                 end
             end
-            -- [LAG FIX] yield at least one frame between each asset load
-            -- so the engine can render and the game never freezes.
             task.wait()
         end
     end
 
     _animDataCache[cacheKey] = allAnimData
+    diskCache[cacheKey] = allAnimData
+    saveDiskCache()
+    
     return allAnimData
 end
 
@@ -286,9 +320,6 @@ local function setSlotAnimations(animate, slotName, anims)
     return applied
 end
 
--- [LAG FIX] Re-parent instead of clone+destroy.  Moving the Animate
--- LocalScript to nil stops it; moving it back starts it fresh — same
--- effect as clone/destroy but without the heavy instance allocation.
 local function restartAnimate(char)
     local animate = char:FindFirstChild("Animate")
     if not animate then return nil end
@@ -300,7 +331,6 @@ local function restartAnimate(char)
     return animate
 end
 
--- [FIX] Safety net – un-stick the character if anything left it frozen.
 local function ensureCharacterCanMove(char)
     if not char or not char:IsDescendantOf(game) then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -372,8 +402,6 @@ local function revertAllSlotsSafely()
     return anyReverted
 end
 
--- [LAG FIX] applyAnim now uses the cache – only the very first apply of a
--- given bundle ever hits GetObjects, and even then we yield between loads.
 local function applyAnim(data)
     if not data then return end; if State.applyingAnim then return end
     State.applyingAnim = true
@@ -386,9 +414,10 @@ local function applyAnim(data)
         captureOriginalAnims(); local bundled = data.bundledItems or getBundled(data.id)
         if not bundled then State.applyingAnim = false; return end
         getgenv().lastAnim = {id = data.id, name = data.name, bundledItems = bundled}; saveLastAnim()
-        notify("Animation", "Loading: " .. tostring(data.name or "Animation") .. "...", 2)
+        
+        notify("Animation", "Loading: " .. tostring(data.name or "Animation") .. "... (First time may take a moment)", 8)
+        task.wait(0.2) -- Yield to let the notification render before the potential freeze
 
-        -- [LAG FIX] single cached call instead of a tight GetObjects loop
         if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local allAnimData = getAnimDataForBundle(data.id, bundled)
 
@@ -399,7 +428,6 @@ local function applyAnim(data)
     end)
 end
 
--- [LAG FIX] applySlotFromBundle uses cache too
 local function applySlotFromBundle(slotName, bundleData)
     if not bundleData then return false end
     local char = player.Character; if not char then return false end
@@ -410,7 +438,9 @@ local function applySlotFromBundle(slotName, bundleData)
     local myChar = char
     local myGen  = applyGeneration
 
-    -- [LAG FIX] use cached loader
+    notify("Animation", "Loading slot: " .. slotName .. "...", 5)
+    task.wait(0.15)
+
     if player.Character ~= myChar or applyGeneration ~= myGen then return false end
     local allData = getAnimDataForBundle(bundleData.id, bundled)
     if player.Character ~= myChar or applyGeneration ~= myGen then return false end
@@ -430,7 +460,6 @@ local function applySlotFromBundle(slotName, bundleData)
     return false
 end
 
--- [LAG FIX] applyAllCustomSlots uses cache
 local function applyAllCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then notify("Custom Anim", "No custom slots configured", 3); return end
     if State.applyingAnim then notify("Custom Anim", "Already applying, please wait...", 3); return end
@@ -441,14 +470,18 @@ local function applyAllCustomSlots()
         if not myChar then State.applyingAnim = false; return end
         local animate = myChar:FindFirstChild("Animate"); local hum = myChar:FindFirstChild("Humanoid")
         if not animate or not hum then State.applyingAnim = false; return end
-        captureOriginalAnims(); notify("Custom Anim", "Applying all custom slots...", 2); local allAnimData = {}
+        captureOriginalAnims(); 
+        
+        notify("Custom Anim", "Applying all custom slots... (First time may take a moment)", 8)
+        task.wait(0.15)
+        
+        local allAnimData = {}
         for slotName, info in pairs(State.config.CustomAnimSlots) do
             if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
             if type(info) == "table" and info.id then
                 local bundled = getBundled(info.id)
                 if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
                 if bundled then
-                    -- [LAG FIX] single cached call per bundle
                     if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
                     local bundleData = getAnimDataForBundle(info.id, bundled)
                     for sn, anims in pairs(bundleData) do
@@ -460,7 +493,7 @@ local function applyAllCustomSlots()
                     end
                 end
             end
-            task.wait() -- [LAG FIX] yield between bundles
+            task.wait()
         end
         if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
         local totalApplied = applyAllSlotsSafely(animate, allAnimData); local slotCount = 0; for _ in pairs(State.config.CustomAnimSlots) do slotCount = slotCount + 1 end
@@ -468,7 +501,6 @@ local function applyAllCustomSlots()
     end)
 end
 
--- [LAG FIX] reapplyCustomSlots uses cache + sets applyingAnim flag
 local function reapplyCustomSlots()
     if not State.config.CustomAnimSlots or not next(State.config.CustomAnimSlots) then return end
     local char = player.Character; if not char then return end
@@ -483,7 +515,6 @@ local function reapplyCustomSlots()
             local bundled = getBundled(info.id)
             if not bundled then for _, a in ipairs(State.animsData) do if tostring(a.id) == tostring(info.id) and a.bundledItems then bundled = a.bundledItems; break end end end
             if bundled then
-                -- [LAG FIX] single cached call per bundle
                 if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
                 local bundleData = getAnimDataForBundle(info.id, bundled)
                 for sn, anims in pairs(bundleData) do
@@ -495,7 +526,7 @@ local function reapplyCustomSlots()
                 end
             end
         end
-        task.wait() -- [LAG FIX] yield between bundles
+        task.wait()
     end
     if player.Character ~= myChar or applyGeneration ~= myGen then State.applyingAnim = false; return end
     if next(allAnimData) then applyAllSlotsSafely(animate, allAnimData) end
@@ -1064,7 +1095,6 @@ end, true, 2001, Enum.KeyCode.Comma)
 local function onCharacterAdded(char)
     local hum = char:WaitForChild("Humanoid", 15); if not hum then return end
 
-    -- cancel any in-flight animation apply from the old character
     applyGeneration = applyGeneration + 1
     State.applyingAnim = false
     originalAnimData = nil
@@ -1077,14 +1107,12 @@ local function onCharacterAdded(char)
         captureOriginalAnims()
         local hasCustomSlots = State.config.CustomAnimSlots and next(State.config.CustomAnimSlots)
 
-        -- [LAG FIX] run reapply in a separate thread so it never blocks the main thread
         if hasCustomSlots then
             task.spawn(reapplyCustomSlots)
         elseif getgenv().lastAnim and getgenv().lastAnim.id then
             applyAnim(getgenv().lastAnim)
         end
 
-        -- safety net: wait for apply to finish, then un-stick the character
         task.spawn(function()
             local elapsed = 0
             while State.applyingAnim and elapsed < 15 do task.wait(0.5); elapsed = elapsed + 0.5 end
@@ -1097,6 +1125,7 @@ end
 
 task.spawn(function()
     LoadConfig(); loadLastAnim()
+    loadDiskCache() -- Load the animation data cache
     local rawEmoteFavs = loadFile(State.favFileName); State.favEmotes = {}
     if type(rawEmoteFavs) == "table" then for _, v in ipairs(rawEmoteFavs) do if type(v) == "table" and v.id then State.favEmotes[#State.favEmotes + 1] = {id = v.id, name = v.name or ("Emote_" .. tostring(v.id))} end end end
     local rawAnimFavs = loadFile(State.favAnimFileName); State.favAnims = {}
