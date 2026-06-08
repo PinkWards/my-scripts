@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 31
+local SCRIPT_VERSION = 33
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -33,15 +33,12 @@ local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local TweenService = game:GetService("TweenService")
-local Debris = game:GetService("Debris")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
 local Workspace = workspace
 
 local State = {
-    UpsideDownFix = false,
-    EdgeBoost = false,
     ExchangeUnlocked = false,
 }
 
@@ -52,9 +49,7 @@ local Config = {
 -- =====================
 -- BHOP VARIABLES
 -- =====================
-local Bhop = false
 local BhopHold = false
-local autoJumpEnabled = false
 local bhopHoldActive = false
 local autoJumpType = "Simulation"
 local wallRunJumpEnabled = false
@@ -62,12 +57,10 @@ local bhopConnection = nil
 local bhopLoaded = false
 local characterBhopConn = nil
 local Character = LocalPlayer.Character
-local LastJump = 0
 local currentSpeed = 0
 local GROUND_CHECK_DISTANCE = 3.5
 local MAX_SLOPE_ANGLE = 45
 
--- Bhop acceleration
 local accelerationMethod = "Acceleration"
 local accelerationValue = -0.5
 local autoAccelerationEnabled = false
@@ -76,7 +69,7 @@ local minAcceleration = -1
 local maxAutoAccelSpeed = 70
 
 -- =====================
--- NEW BOUNCE / EDGE TRIMP VARIABLES
+-- BOUNCE VARIABLES
 -- =====================
 local BounceSpeed = 140
 local BounceHeight = 90
@@ -88,17 +81,16 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (GC table)
+-- AIR STRAFE VARIABLES (OPTIMIZED + EMOTE FIX)
 -- =====================
 local movementInstances = {}
-local AirExploitValue = 500 -- The OP air strafe value
+local AirExploitValue = 500
+local isCurrentlyEmoting = false
 
 -- =====================
 -- SELF REVIVE VARIABLES
 -- =====================
-local SelfReviveMethod = "Spawnpoint"
 local hasRevived = false
-local lastSavedPosition = nil
 
 -- =====================
 -- COLA VARIABLES
@@ -119,19 +111,16 @@ local GUI, TimerGUI = nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
-local keysDown = { W = false, A = false, S = false, D = false }
 
 local LastCarry = 0
 local LastRayFilterUpdate = 0
 
 local CachedGame = nil
-local Maps, Modes = {}, {}
 local FullbrightEnabled = false
 local SavedLighting = nil
 local LastCamera = nil
 
 local Connections = {}
-local EdgeTouchConnections = {}
 local ExchangeConnections = {}
 
 local LastGCTime = 0
@@ -139,18 +128,13 @@ local GC_INTERVAL = 120
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 45
 
-local EdgeRayParams = RaycastParams.new()
-EdgeRayParams.FilterType = Enum.RaycastFilterType.Exclude
-EdgeRayParams.IgnoreWater = true
-EdgeRayParams.RespectCanCollide = true
-
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- AIR STRAFE FUNCTIONS (GC table)
+-- AIR STRAFE ENGINE (ZERO LAG + EMOTE FIX)
 -- =====================
-local function findMovementInstances()
+local function CacheMovementInstances()
     movementInstances = {}
     pcall(function()
         for _, v in pairs(getgc(true)) do
@@ -159,35 +143,16 @@ local function findMovementInstances()
             end
         end
     end)
-    return #movementInstances > 0
 end
 
-local function MovementValueSet(MovementType, Num)
-    pcall(function()
-        findMovementInstances()
-        for _, instance in ipairs(movementInstances) do
-            if instance and instance.overrideMovementStats then
-                instance.overrideMovementStats[MovementType] = tonumber(Num)
-            end
-        end
-    end)
-end
-
--- OP Air Exploit Applier (FIXED: Strict targeting to prevent backslide bug)
 local function ApplyAirExploit()
     if AirExploitValue <= 0 then return end
     pcall(function()
-        findMovementInstances()
         for _, instance in ipairs(movementInstances) do
             if instance and instance.defaultMovementStats and instance.overrideMovementStats then
                 for k, val in pairs(instance.defaultMovementStats) do
                     local lowerK = string.lower(k)
-                    -- STRICT TARGETING: Only modify acceleration and the main speed cap.
-                    -- This avoids touching directional speeds (like AirForwardSpeed) which caused the backslide bug.
-                    if lowerK == "airacceleration" or 
-                       lowerK == "airstrafeacceleration" or 
-                       lowerK == "maxairspeed" or 
-                       lowerK == "airspeedcap" then
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
                         instance.overrideMovementStats[k] = AirExploitValue
                     end
                 end
@@ -196,15 +161,50 @@ local function ApplyAirExploit()
     end)
 end
 
+local function RevertAirStatsForSlide()
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        -- Revert to exact game defaults (1 and 182)
+                        instance.overrideMovementStats[k] = val
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function SetupEmoteDetector(character)
+    if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
+    
+    -- Listen to the state change event (0 lag, only fires when you actually emote)
+    Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
+        local currentState = character:GetAttribute("State") or ""
+        local nowEmoting = string.find(currentState, "Emoting") ~= nil
+        
+        if nowEmoting ~= isCurrentlyEmoting then
+            isCurrentlyEmoting = nowEmoting
+            if isCurrentlyEmoting then
+                RevertAirStatsForSlide()
+            else
+                ApplyAirExploit()
+            end
+        end
+    end)
+end
+
 -- =====================
--- MOVEMENT MODULE HOOK (Bhop friction)
+-- MOVEMENT MODULE HOOK
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
     local originalGetStats = m.getStats
     m.getStats = function(s, p)
         local v = originalGetStats(s, p)
-        local isBhopActive = autoJumpEnabled or bhopHoldActive
+        local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
@@ -267,18 +267,6 @@ local function UpdateRayFilter()
     local now = tick()
     if now - LastRayFilterUpdate < 3.0 then return end
     LastRayFilterUpdate = now
-    local filterList = {}
-    local character = LocalPlayer.Character
-    if character then filterList[#filterList + 1] = character end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then filterList[#filterList + 1] = player.Character end
-    end
-    local gameFolder = Workspace:FindFirstChild("Game")
-    if gameFolder then
-        local gamePlayers = gameFolder:FindFirstChild("Players")
-        if gamePlayers then filterList[#filterList + 1] = gamePlayers end
-    end
-    EdgeRayParams.FilterDescendantsInstances = filterList
 end
 
 local function ForceUpdateRayFilter()
@@ -290,25 +278,6 @@ local function SafeCall(func, ...)
     local success, result = pcall(func, ...)
     return success and result
 end
-
-local function GetNamesFromPath(path)
-    local names = {}
-    local folder = ReplicatedStorage
-    for part in path:gmatch("[^%.]+") do
-        folder = folder and folder:FindFirstChild(part)
-    end
-    if folder then
-        for _, child in ipairs(folder:GetChildren()) do
-            names[#names + 1] = child.Name
-        end
-    end
-    return names
-end
-
-task.spawn(function()
-    Maps = GetNamesFromPath("Info.Maps")
-    Modes = GetNamesFromPath("Info.Gamemodes")
-end)
 
 local function PeriodicCleanup()
     local now = tick()
@@ -325,8 +294,6 @@ end
 local function CleanupAll()
     for _, conn in pairs(Connections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(Connections)
-    for _, conn in pairs(EdgeTouchConnections) do SafeCall(function() conn:Disconnect() end) end
-    table.clear(EdgeTouchConnections)
     for _, conn in pairs(ExchangeConnections) do SafeCall(function() conn:Disconnect() end) end
     table.clear(ExchangeConnections)
     if edgeTrimpConnection then SafeCall(function() edgeTrimpConnection:Disconnect() end) edgeTrimpConnection = nil end
@@ -339,7 +306,7 @@ local function CleanupAll()
 end
 
 -- =====================
--- NEW BOUNCE / EDGE TRIMP SYSTEM
+-- BOUNCE SYSTEM
 -- =====================
 local function startBounce()
     if edgeTrimpConnection then edgeTrimpConnection:Disconnect() end
@@ -364,9 +331,6 @@ local function startBounce()
     
     edgeTrimpConnection = RunService.Heartbeat:Connect(function(dt)
         if not (Character and Humanoid and RootPart) then return end
-        
-        local speed = RootPart.Velocity.Magnitude
-        Humanoid.WalkSpeed = (speed > 0.1) and BounceSpeed or 0
         
         local isOnGround = false
         local ray = workspace:Raycast(RootPart.Position, Vector3.new(0, -3.5, 0), bounceRayParams)
@@ -394,7 +358,6 @@ local function startBounce()
             wasInAir = true
         end
         
-        -- Edge trimp logic
         local CurrentPosition = RootPart.Position
         local Velocity = (CurrentPosition - LastPosition) / dt
         LastPosition = CurrentPosition
@@ -426,9 +389,6 @@ local function stopBounce()
     if edgeTrimpConnection then
         edgeTrimpConnection:Disconnect()
         edgeTrimpConnection = nil
-    end
-    if Humanoid then
-        Humanoid.WalkSpeed = 16
     end
 end
 
@@ -464,8 +424,7 @@ local function updateBhop()
     if RootPart then
         currentSpeed = (RootPart.Velocity * Vector3.new(1, 0, 1)).Magnitude
     end
-    local isBhopActive = autoJumpEnabled or bhopHoldActive
-    if isBhopActive then
+    if bhopHoldActive then
         if IsOnGround() then
             if autoJumpType == "Realistic" then
                 pcall(function()
@@ -504,7 +463,7 @@ local function unloadBhop()
 end
 
 local function checkBhopState()
-    if autoJumpEnabled or bhopHoldActive then
+    if bhopHoldActive then
         loadBhop()
     else
         unloadBhop()
@@ -538,44 +497,21 @@ end
 local function manualRevive()
     local character = LocalPlayer.Character
     if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
     local isDowned = character:GetAttribute("Downed")
     if not isDowned then return end
-    if SelfReviveMethod == "Spawnpoint" then
-        if not hasRevived then
-            hasRevived = true
-            pcall(function()
-                ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(true)
-            end)
-            task.delay(10, function()
-                hasRevived = false
-            end)
-        end
-    elseif SelfReviveMethod == "Fake Revive" then
-        if hrp then lastSavedPosition = hrp.Position end
-        local oldCharacter = character
-        task.spawn(function()
-            pcall(function()
-                ReplicatedStorage:WaitForChild("Events"):WaitForChild("Player"):WaitForChild("ChangePlayerMode"):FireServer(true)
-            end)
-            local newCharacter
-            repeat
-                newCharacter = LocalPlayer.Character
-                task.wait()
-            until newCharacter and newCharacter:FindFirstChild("HumanoidRootPart") and newCharacter ~= oldCharacter
-            if newCharacter then
-                local newHRP = newCharacter:FindFirstChild("HumanoidRootPart")
-                if lastSavedPosition and newHRP then
-                    newHRP.CFrame = CFrame.new(lastSavedPosition)
-                    lastSavedPosition = nil
-                end
-            end
+    if not hasRevived then
+        hasRevived = true
+        pcall(function()
+            ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(true)
+        end)
+        task.delay(10, function()
+            hasRevived = false
         end)
     end
 end
 
 -- =====================
--- STATE CHANGED (FALLBACK SAFETY NET)
+-- STATE CHANGED
 -- =====================
 local function OnStateChanged(old, new)
     if holdLeftShift and (new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running) then
@@ -663,23 +599,6 @@ local function Revive()
 end
 
 -- =====================
--- UPSIDE DOWN FIX
--- =====================
-local function ToggleUpsideDownFix(enabled)
-    State.UpsideDownFix = enabled
-    if Connections.UpsideDown then Connections.UpsideDown:Disconnect() Connections.UpsideDown = nil end
-    if enabled then
-        Connections.UpsideDown = RunService.RenderStepped:Connect(function()
-            local camera = Workspace.CurrentCamera
-            if not camera then return end
-            local cf = camera.CFrame
-            local rx, ry, rz = cf:ToEulerAnglesXYZ()
-            if math.abs(rz) > 1.5708 then camera.CFrame = CFrame.new(cf.Position) * CFrame.Angles(rx, ry, 0) end
-        end)
-    end
-end
-
--- =====================
 -- EXCHANGE
 -- =====================
 local function ForceEnableExchange()
@@ -709,107 +628,6 @@ local function ForceEnableExchange()
     patchExchange()
     if ExchangeConnections.DescendantAdded then ExchangeConnections.DescendantAdded:Disconnect() end
     ExchangeConnections.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function() task.wait(0.1) patchExchange() end)
-end
-
--- =====================
--- EDGE BOOST
--- =====================
-local EdgeConfig = { Boost = 35, MinSpeed = 3, Cooldown = 0.12, MinEdge = 0.5, LastTime = 0, DetectionRange = 2.5, RayDepth = 5 }
-
-local function DetectEdge(position, direction)
-    local centerRay = Workspace:Raycast(position, Vector3.new(0, -EdgeConfig.RayDepth, 0), EdgeRayParams)
-    if not centerRay then return false, nil end
-    local checkPos = position + direction * EdgeConfig.DetectionRange
-    local edgeRay = Workspace:Raycast(checkPos, Vector3.new(0, -EdgeConfig.RayDepth - 2, 0), EdgeRayParams)
-    if not edgeRay then return true, centerRay.Position.Y end
-    if centerRay.Position.Y - edgeRay.Position.Y >= EdgeConfig.MinEdge then return true, centerRay.Position.Y end
-    return false, nil
-end
-
-local function ReactiveEdgeBoost()
-    if not State.EdgeBoost or not Humanoid or not RootPart then return end
-    if Humanoid.Health <= 0 then return end
-    local now = tick()
-    if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if isDowned then return end
-    local vel = RootPart.AssemblyLinearVelocity
-    local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-    if hSpeedSq < EdgeConfig.MinSpeed * EdgeConfig.MinSpeed then return end
-    local playerPos = RootPart.Position
-    local invSpeed = 1 / math.sqrt(hSpeedSq)
-    local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
-    local rightVec = RootPart.CFrame.RightVector
-    local checkDirs = {
-        Vector3.new(moveDirX, 0, moveDirZ),
-        Vector3.new(moveDirX * 0.7 + rightVec.X * 0.7, 0, moveDirZ * 0.7 + rightVec.Z * 0.7).Unit,
-        Vector3.new(moveDirX * 0.7 - rightVec.X * 0.7, 0, moveDirZ * 0.7 - rightVec.Z * 0.7).Unit,
-    }
-    for _, dir in ipairs(checkDirs) do
-        local isEdge, groundY = DetectEdge(playerPos, dir)
-        if isEdge and groundY then
-            local heightAboveGround = (playerPos.Y - (Humanoid.HipHeight + 0.5)) - groundY
-            if heightAboveGround < 1.5 and heightAboveGround > -0.5 then
-                local boostAmount = EdgeConfig.Boost
-                if vel.Y < 0 then boostAmount = boostAmount * 1.2 end
-                RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + boostAmount, vel.Z)
-                EdgeConfig.LastTime = now
-                return
-            end
-        end
-    end
-end
-
-local function SetupEdgeBoost()
-    for _, conn in pairs(EdgeTouchConnections) do SafeCall(function() conn:Disconnect() end) end
-    table.clear(EdgeTouchConnections)
-    if not State.EdgeBoost then return end
-    local character = LocalPlayer.Character
-    if not character then return end
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") then EdgeTouchConnections[#EdgeTouchConnections + 1] = part.Touched:Connect(function(hit)
-            if not State.EdgeBoost or not hit or not hit.Parent then return end
-            local char = LocalPlayer.Character
-            if not char or not Humanoid or not RootPart then return end
-            if hit:IsDescendantOf(char) then return end
-            local hitModel = hit:FindFirstAncestorOfClass("Model")
-            if hitModel then
-                if Players:GetPlayerFromCharacter(hitModel) or hitModel:FindFirstChildOfClass("Humanoid") then return end
-            end
-            if not hit.CanCollide or hit.Transparency > 0.9 or hit.Size.Magnitude < 0.5 then return end
-            local now = tick()
-            if now - EdgeConfig.LastTime < EdgeConfig.Cooldown then return end
-            local vel = RootPart.AssemblyLinearVelocity
-            local hSpeedSq = vel.X * vel.X + vel.Z * vel.Z
-            local minSq = (EdgeConfig.MinSpeed * 0.5) ^ 2
-            if hSpeedSq < minSq then return end
-            local partTop = hit.Position.Y + (hit.Size.Y * 0.5)
-            local hitPos = hit.Position
-            local halfX, halfZ = hit.Size.X * 0.5 + 0.5, hit.Size.Z * 0.5 + 0.5
-            local playerPos = RootPart.Position
-            local invSpeed = 1 / math.sqrt(hSpeedSq)
-            local moveDirX, moveDirZ = vel.X * invSpeed, vel.Z * invSpeed
-            local offsets = {
-                Vector3.new(moveDirX > 0 and halfX or -halfX, 0, 0),
-                Vector3.new(0, 0, moveDirZ > 0 and halfZ or -halfZ),
-            }
-            for _, offset in ipairs(offsets) do
-                local checkPos = Vector3.new(hitPos.X + offset.X, partTop + 1, hitPos.Z + offset.Z)
-                local ray = Workspace:Raycast(checkPos, Vector3.new(0, -3, 0), EdgeRayParams)
-                if not ray or math.abs(partTop - ray.Position.Y) >= EdgeConfig.MinEdge then
-                    local dx = playerPos.X - (hitPos.X + offset.X)
-                    local dz = playerPos.Z - (hitPos.Z + offset.Z)
-                    if dx*dx + dz*dz < (EdgeConfig.DetectionRange + 1)^2 then
-                        RootPart.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, 0) + EdgeConfig.Boost * 0.8, vel.Z)
-                        EdgeConfig.LastTime = now
-                        return
-                    end
-                end
-            end
-        end) end
-    end
 end
 
 -- =====================
@@ -889,10 +707,8 @@ end
 local function ToggleInfiniteCola(state)
     if state then
         ColaSettings.Active = true
-        State.InfiniteCola = true
         InstallColaHook()
     else
-        State.InfiniteCola = false
         UninstallColaHook()
     end
 end
@@ -1045,17 +861,14 @@ local function CreateMainGUI()
     -- GENERAL
     y = CreateSection(content, "GENERAL", y)
     CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
-    CreateToggle(content, "EdgeBoost", "Edge Boost", y, function(s) State.EdgeBoost = s SetupEdgeBoost() end) y = y + 32
-    CreateToggle(content, "UpFix", "Upside Fix", y, function(s) State.UpsideDownFix = s ToggleUpsideDownFix(s) end) y = y + 32
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
 
     -- REVIVE
     y = CreateSection(content, "SELF REVIVE [R]", y)
-    CreateButtonGroup(content, y, {"Spawnpoint", "Fake Revive"}, SelfReviveMethod, function(v) SelfReviveMethod = v end) y = y + 28
+    y = y + 28
 
     -- BHOP
     y = CreateSection(content, "BHOP", y)
-    CreateToggle(content, "Bhop", "Bhop", y, function(s) Bhop = s autoJumpEnabled = s checkBhopState() end) y = y + 32
     CreateToggle(content, "BhopHold", "Bhop Hold (Space)", y, function(s) BhopHold = s if not s then bhopHoldActive = false checkBhopState() end end) y = y + 32
     CreateToggle(content, "WallRun", "WallRun Jump", y, function(s) wallRunJumpEnabled = s end) y = y + 28
     CreateButtonGroup(content, y, {"Simulation", "Realistic"}, autoJumpType, function(v) autoJumpType = v end) y = y + 28
@@ -1065,23 +878,15 @@ local function CreateMainGUI()
         else accelerationMethod = "Acceleration" end
     end) y = y + 28
     CreateInput(content, "Friction", y, accelerationValue, function(v) local n = tonumber(v) if n then accelerationValue = n end end) y = y + 26
-    CreateToggle(content, "AutoAccel", "Auto Acceleration", y, function(s) autoAccelerationEnabled = s end) y = y + 28
-    CreateInput(content, "Max Accel", y, maxAcceleration, function(v) local n = tonumber(v) if n then maxAcceleration = n end end) y = y + 26
-    CreateInput(content, "Min Accel", y, minAcceleration, function(v) local n = tonumber(v) if n then minAcceleration = n end end) y = y + 26
-    CreateInput(content, "Max Speed", y, maxAutoAccelSpeed, function(v) local n = tonumber(v) if n and n > 0 then maxAutoAccelSpeed = n end end) y = y + 32
+    CreateToggle(content, "AutoAccel", "Auto Acceleration", y, function(s) autoAccelerationEnabled = s end) y = y + 32
 
     -- BOUNCE
     y = CreateSection(content, "BOUNCE [Hold LShift]", y)
-    CreateInput(content, "Speed", y, BounceSpeed, function(v) BounceSpeed = tonumber(v) or 140 end) y = y + 26
-    CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 26
-    CreateInput(content, "Edge Mult", y, BounceMultiplier, function(v) BounceMultiplier = tonumber(v) or 5 end) y = y + 26
-    CreateInput(content, "Fall Thresh", y, FallSpeedThreshold, function(v) FallSpeedThreshold = tonumber(v) or 69 end) y = y + 32
+    CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 32
 
     -- AIR STRAFE
     y = CreateSection(content, "AIR STRAFE (OP)", y)
-    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n ApplyAirExploit() end end) y = y + 26
-    CreateInput(content, "Strafe Accel", y, 182, function(v) MovementValueSet("AirStrafeAcceleration", v) end) y = y + 26
-    CreateInput(content, "Air Accel", y, 1, function(v) MovementValueSet("AirAcceleration", v) end) y = y + 32
+    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n if not isCurrentlyEmoting then ApplyAirExploit() end end end) y = y + 32
 
     -- COLA
     y = CreateSection(content, "CUSTOM COLA", y)
@@ -1150,7 +955,7 @@ local function UpdateTimer()
 end
 
 -- =====================
--- INPUT HANDLING (FIXED)
+-- INPUT HANDLING
 -- =====================
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
@@ -1175,10 +980,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             else m.Visible = true m.Size = UDim2.new(0, 180, 0, 0) Tween(m, {Size = UDim2.new(0, 180, 0, GUI_HEIGHT)}, TI_OPEN) end
         end
     end
-    if key == Enum.KeyCode.W then keysDown.W = true end
-    if key == Enum.KeyCode.A then keysDown.A = true end
-    if key == Enum.KeyCode.S then keysDown.S = true end
-    if key == Enum.KeyCode.D then keysDown.D = true end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
@@ -1194,10 +995,6 @@ UserInputService.InputEnded:Connect(function(input)
         holdLeftShift = false
         stopBounce()
     end
-    if key == Enum.KeyCode.W then keysDown.W = false end
-    if key == Enum.KeyCode.A then keysDown.A = false end
-    if key == Enum.KeyCode.S then keysDown.S = false end
-    if key == Enum.KeyCode.D then keysDown.D = false end
 end)
 
 -- =====================
@@ -1212,16 +1009,17 @@ local function SetupCharacter(character)
     HumanoidRootPart = RootPart
     
     ForceUpdateRayFilter()
-    SetupEdgeBoost()
     hasRevived = false
     
     if Humanoid then 
         Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
     
+    SetupEmoteDetector(character)
+    
     setupJumpButton()
     
-    if autoJumpEnabled or bhopHoldActive then
+    if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
     end
 end
@@ -1251,22 +1049,20 @@ local function StartMainLoop()
     Connections.MainLoop = RunService.RenderStepped:Connect(function()
     end)
     
-    local edgeAccum, cleanupAccum, airExploitAccum = 0, 0, 0
+    local cleanupAccum, airExploitAccum = 0, 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
-        if State.EdgeBoost then
-            edgeAccum = edgeAccum + dt
-            if edgeAccum >= 0.06 then edgeAccum = 0 ReactiveEdgeBoost() end
-        end
-        
         if holdQ then DoCarry() end
         
-        -- Auto-refresh Air Exploit every 3 seconds to keep it enforced
+        -- Refresh cache every 3 seconds to keep OP Air Strafe alive
         airExploitAccum = airExploitAccum + dt
         if airExploitAccum >= 3.0 then
             airExploitAccum = 0
-            ApplyAirExploit()
+            CacheMovementInstances()
+            if not isCurrentlyEmoting then
+                ApplyAirExploit()
+            end
         end
         
         cleanupAccum = cleanupAccum + dt
@@ -1285,7 +1081,6 @@ Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
         CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
         hasRevived = false
-        if State.UpsideDownFix then State.UpsideDownFix = false ToggleUpsideDownFix(false) end
     end
 end)
 
@@ -1296,6 +1091,7 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
-ApplyAirExploit() -- Apply instantly on load
+CacheMovementInstances()
+ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! OP Air Strafe active (Backslide fixed).")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! OP Air + Emote Backslide fixed.")
