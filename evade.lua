@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 33
+local SCRIPT_VERSION = 34
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -69,6 +69,26 @@ local minAcceleration = -1
 local maxAutoAccelSpeed = 70
 
 -- =====================
+-- SHARED RAYCAST PARAMS (reuse, never recreate)
+-- =====================
+local sharedRayParams = RaycastParams.new()
+sharedRayParams.FilterType = Enum.RaycastFilterType.Blacklist
+sharedRayParams.IgnoreWater = true
+local rayBlacklist = {}
+
+local function RebuildRayBlacklist()
+    local newBlacklist = {}
+    if Character then table.insert(newBlacklist, Character) end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and player.Character ~= Character then
+            table.insert(newBlacklist, player.Character)
+        end
+    end
+    rayBlacklist = newBlacklist
+    sharedRayParams.FilterDescendantsInstances = rayBlacklist
+end
+
+-- =====================
 -- BOUNCE VARIABLES
 -- =====================
 local BounceSpeed = 140
@@ -81,11 +101,13 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (OPTIMIZED + EMOTE FIX)
+-- AIR STRAFE VARIABLES
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
+local lastAirCacheTime = 0
+local AIR_CACHE_INTERVAL = 30 -- was 3, now 30 seconds
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -124,25 +146,26 @@ local Connections = {}
 local ExchangeConnections = {}
 
 local LastGCTime = 0
-local GC_INTERVAL = 120
+local GC_INTERVAL = 90 -- was 120, more aggressive
 local LastCacheCleanup = 0
-local CACHE_CLEANUP_INTERVAL = 45
+local CACHE_CLEANUP_INTERVAL = 60
 
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- AIR STRAFE ENGINE (ZERO LAG + EMOTE FIX)
+-- AIR STRAFE ENGINE (OPTIMIZED)
 -- =====================
 local function CacheMovementInstances()
-    movementInstances = {}
+    local newList = {}
     pcall(function()
         for _, v in pairs(getgc(true)) do
             if type(v) == "table" and rawget(v, "defaultMovementStats") then
-                table.insert(movementInstances, v)
+                table.insert(newList, v)
             end
         end
     end)
+    movementInstances = newList
 end
 
 local function ApplyAirExploit()
@@ -168,7 +191,6 @@ local function RevertAirStatsForSlide()
                 for k, val in pairs(instance.defaultMovementStats) do
                     local lowerK = string.lower(k)
                     if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
-                        -- Revert to exact game defaults (1 and 182)
                         instance.overrideMovementStats[k] = val
                     end
                 end
@@ -179,12 +201,9 @@ end
 
 local function SetupEmoteDetector(character)
     if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
-    
-    -- Listen to the state change event (0 lag, only fires when you actually emote)
     Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
         local currentState = character:GetAttribute("State") or ""
         local nowEmoting = string.find(currentState, "Emoting") ~= nil
-        
         if nowEmoting ~= isCurrentlyEmoting then
             isCurrentlyEmoting = nowEmoting
             if isCurrentlyEmoting then
@@ -267,6 +286,7 @@ local function UpdateRayFilter()
     local now = tick()
     if now - LastRayFilterUpdate < 3.0 then return end
     LastRayFilterUpdate = now
+    RebuildRayBlacklist()
 end
 
 local function ForceUpdateRayFilter()
@@ -287,7 +307,15 @@ local function PeriodicCleanup()
     end
     if now - LastGCTime >= GC_INTERVAL then
         LastGCTime = now
-        pcall(function() collectgarbage("step", 50) end)
+        pcall(function() collectgarbage("step", 100) end)
+    end
+end
+
+local function CleanupRoundConnections()
+    -- Clean timer connection to prevent stacking
+    if Connections.Timer then
+        Connections.Timer:Disconnect()
+        Connections.Timer = nil
     end
 end
 
@@ -306,7 +334,7 @@ local function CleanupAll()
 end
 
 -- =====================
--- BOUNCE SYSTEM
+-- BOUNCE SYSTEM (uses shared ray params)
 -- =====================
 local function startBounce()
     if edgeTrimpConnection then edgeTrimpConnection:Disconnect() end
@@ -319,30 +347,19 @@ local function startBounce()
     end
     
     wasInAir = false
-    
-    local bounceRayParams = RaycastParams.new()
-    bounceRayParams.FilterType = Enum.RaycastFilterType.Blacklist
-    bounceRayParams.IgnoreWater = true
-    local blacklist = {Character}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then table.insert(blacklist, player.Character) end
-    end
-    bounceRayParams.FilterDescendantsInstances = blacklist
+    RebuildRayBlacklist()
     
     edgeTrimpConnection = RunService.Heartbeat:Connect(function(dt)
         if not (Character and Humanoid and RootPart) then return end
         
         local isOnGround = false
-        local ray = workspace:Raycast(RootPart.Position, Vector3.new(0, -3.5, 0), bounceRayParams)
-        if ray then
-            isOnGround = true
-        end
+        local ray = workspace:Raycast(RootPart.Position, Vector3.new(0, -3.5, 0), sharedRayParams)
+        if ray then isOnGround = true end
         
         if isOnGround and wasInAir then
             local vel = RootPart.Velocity
             local hVel = Vector3.new(vel.X, 0, vel.Z)
             local hSpeed = hVel.Magnitude
-            
             local preservedSpeed = math.max(hSpeed, BounceSpeed)
             
             if hSpeed > 1 then
@@ -351,7 +368,6 @@ local function startBounce()
             else
                 RootPart.Velocity = Vector3.new(vel.X, BounceHeight, vel.Z)
             end
-            
             Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
             wasInAir = false
         elseif not isOnGround then
@@ -393,25 +409,13 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM
+-- BHOP SYSTEM (uses shared ray params)
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    
-    local blacklist = {Character}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player.Character then
-            table.insert(blacklist, player.Character)
-        end
-    end
-    raycastParams.FilterDescendantsInstances = blacklist
-    raycastParams.IgnoreWater = true
-    
     local rayOrigin = RootPart.Position
     local rayDirection = Vector3.new(0, -GROUND_CHECK_DISTANCE, 0)
-    local raycastResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+    local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
     if not raycastResult then return false end
     local surfaceNormal = raycastResult.Normal
     local angle = math.deg(math.acos(surfaceNormal:Dot(Vector3.new(0, 1, 0))))
@@ -463,11 +467,7 @@ local function unloadBhop()
 end
 
 local function checkBhopState()
-    if bhopHoldActive then
-        loadBhop()
-    else
-        unloadBhop()
-    end
+    if bhopHoldActive then loadBhop() else unloadBhop() end
 end
 
 local function setupJumpButton()
@@ -479,14 +479,10 @@ local function setupJumpButton()
         local jumpButton = touchControlFrame:WaitForChild("JumpButton", 5)
         if not jumpButton then return end
         jumpButton.MouseButton1Down:Connect(function()
-            if BhopHold then
-                bhopHoldActive = true
-                checkBhopState()
-            end
+            if BhopHold then bhopHoldActive = true checkBhopState() end
         end)
         jumpButton.MouseButton1Up:Connect(function()
-            bhopHoldActive = false
-            checkBhopState()
+            bhopHoldActive = false checkBhopState()
         end)
     end)
 end
@@ -504,9 +500,7 @@ local function manualRevive()
         pcall(function()
             ReplicatedStorage.Events.Player.ChangePlayerMode:FireServer(true)
         end)
-        task.delay(10, function()
-            hasRevived = false
-        end)
+        task.delay(10, function() hasRevived = false end)
     end
 end
 
@@ -520,7 +514,6 @@ local function OnStateChanged(old, new)
             local hVel = Vector3.new(vel.X, 0, vel.Z)
             local hSpeed = hVel.Magnitude
             local preservedSpeed = math.max(hSpeed, BounceSpeed)
-            
             if hSpeed > 1 then
                 local dir = hVel.Unit
                 RootPart.Velocity = Vector3.new(dir.X * preservedSpeed, BounceHeight, dir.Z * preservedSpeed)
@@ -656,7 +649,7 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
 end)
 
 -- =====================
--- COLA HOOK
+-- COLA HOOK (optimized - early exit when inactive)
 -- =====================
 local function InstallColaHook()
     if ColaSettings.HookInstalled then return end
@@ -669,21 +662,26 @@ local function InstallColaHook()
     local lastBlock = 0
     setreadonly(mt, false)
     mt.__namecall = newcclosure(function(self, ...)
+        -- Early exit when cola is off - minimal overhead
+        if not ColaSettings.Active then
+            return ColaSettings.OldNamecall(self, ...)
+        end
         local method = getnamecallmethod()
+        if method ~= "FireServer" then
+            return ColaSettings.OldNamecall(self, ...)
+        end
         local args = {...}
-        if method == "FireServer" and self == ToolAction and args[1] == 0 and args[2] == 20 then
-            if ColaSettings.Active then
-                local now = tick()
-                if now - lastBlock < 0.5 then return nil end
-                lastBlock = now
-                task.spawn(function()
-                    task.wait(0.3)
-                    if ColaSettings.Active then
-                        firesignal(SpeedBoost.OnClientEvent, "Cola", ColaSettings.Speed, ColaSettings.Duration, Color3.fromRGB(199, 141, 93))
-                    end
-                end)
-                return nil
-            end
+        if self == ToolAction and args[1] == 0 and args[2] == 20 then
+            local now = tick()
+            if now - lastBlock < 0.5 then return nil end
+            lastBlock = now
+            task.spawn(function()
+                task.wait(0.3)
+                if ColaSettings.Active then
+                    firesignal(SpeedBoost.OnClientEvent, "Cola", ColaSettings.Speed, ColaSettings.Duration, Color3.fromRGB(199, 141, 93))
+                end
+            end)
+            return nil
         end
         return ColaSettings.OldNamecall(self, ...)
     end)
@@ -858,16 +856,13 @@ local function CreateMainGUI()
     
     local y = 8
     
-    -- GENERAL
     y = CreateSection(content, "GENERAL", y)
     CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
 
-    -- REVIVE
     y = CreateSection(content, "SELF REVIVE [R]", y)
     y = y + 28
 
-    -- BHOP
     y = CreateSection(content, "BHOP", y)
     CreateToggle(content, "BhopHold", "Bhop Hold (Space)", y, function(s) BhopHold = s if not s then bhopHoldActive = false checkBhopState() end end) y = y + 32
     CreateToggle(content, "WallRun", "WallRun Jump", y, function(s) wallRunJumpEnabled = s end) y = y + 28
@@ -880,15 +875,12 @@ local function CreateMainGUI()
     CreateInput(content, "Friction", y, accelerationValue, function(v) local n = tonumber(v) if n then accelerationValue = n end end) y = y + 26
     CreateToggle(content, "AutoAccel", "Auto Acceleration", y, function(s) autoAccelerationEnabled = s end) y = y + 32
 
-    -- BOUNCE
     y = CreateSection(content, "BOUNCE [Hold LShift]", y)
     CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 32
 
-    -- AIR STRAFE
     y = CreateSection(content, "AIR STRAFE (OP)", y)
     CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n if not isCurrentlyEmoting then ApplyAirExploit() end end end) y = y + 32
 
-    -- COLA
     y = CreateSection(content, "CUSTOM COLA", y)
     CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 28
     local presetX = 10
@@ -904,7 +896,6 @@ local function CreateMainGUI()
     y = y + 26
     CreateInput(content, "Duration", y, ColaSettings.Duration, function(v) local n = tonumber(v) if n and n > 0 then ColaSettings.Duration = n end end) y = y + 32
 
-    -- FOV
     y = CreateSection(content, "FOV", y)
     local fovX = 10
     for _, f in ipairs({{n="70",v=70},{n="90",v=90},{n="120",v=120}}) do
@@ -945,7 +936,8 @@ local function UpdateTimer()
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
     local stats = CachedGame and CachedGame:FindFirstChild("Stats")
     if not stats then if TimerLabel then TimerLabel.Text = "0:00" end if StatusLabel then StatusLabel.Text = "WAITING" end return end
-    if Connections.Timer then Connections.Timer:Disconnect() end
+    -- Prevent stacking: disconnect old before connecting new
+    if Connections.Timer then Connections.Timer:Disconnect() Connections.Timer = nil end
     Connections.Timer = stats:GetAttributeChangedSignal("Timer"):Connect(function()
         local timer = stats:GetAttribute("Timer") local roundStarted = stats:GetAttribute("RoundStarted")
         if TimerLabel then local m = math.floor((timer or 0) / 60) local s = (timer or 0) % 60 TimerLabel.Text = string.format("%d:%02d", m, s)
@@ -962,10 +954,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then
         holdSpace = true
-        if BhopHold then
-            bhopHoldActive = true
-            checkBhopState()
-        end
+        if BhopHold then bhopHoldActive = true checkBhopState() end
     elseif key == Enum.KeyCode.E then Revive()
     elseif key == Enum.KeyCode.R then manualRevive()
     elseif key == Enum.KeyCode.Q then holdQ = true
@@ -986,10 +975,7 @@ UserInputService.InputEnded:Connect(function(input)
     local key = input.KeyCode
     if key == Enum.KeyCode.Space then
         holdSpace = false
-        if bhopHoldActive then
-            bhopHoldActive = false
-            checkBhopState()
-        end
+        if bhopHoldActive then bhopHoldActive = false checkBhopState() end
     elseif key == Enum.KeyCode.Q then holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false
@@ -1016,8 +1002,11 @@ local function SetupCharacter(character)
     end
     
     SetupEmoteDetector(character)
-    
     setupJumpButton()
+    
+    -- Re-cache air strafe instances on new character (instead of every 3s)
+    CacheMovementInstances()
+    if not isCurrentlyEmoting then ApplyAirExploit() end
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -1040,36 +1029,30 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP
+-- MAIN LOOP (no empty RenderStepped, throttled heartbeat)
 -- =====================
 local function StartMainLoop()
-    if Connections.MainLoop then Connections.MainLoop:Disconnect() end
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
-    Connections.MainLoop = RunService.RenderStepped:Connect(function()
-    end)
-    
-    local cleanupAccum, airExploitAccum = 0, 0
+    local cleanupAccum = 0
+    local airAccum = 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
         if holdQ then DoCarry() end
         
-        -- Refresh cache every 3 seconds to keep OP Air Strafe alive
-        airExploitAccum = airExploitAccum + dt
-        if airExploitAccum >= 3.0 then
-            airExploitAccum = 0
+        -- Only re-cache air instances on long interval as fallback
+        airAccum = airAccum + dt
+        if airAccum >= AIR_CACHE_INTERVAL then
+            airAccum = 0
             CacheMovementInstances()
-            if not isCurrentlyEmoting then
-                ApplyAirExploit()
-            end
+            if not isCurrentlyEmoting then ApplyAirExploit() end
         end
         
         cleanupAccum = cleanupAccum + dt
         if cleanupAccum >= 10.0 then 
             cleanupAccum = 0 
             PeriodicCleanup() 
-            UpdateRayFilter() 
         end
     end)
 end
@@ -1079,8 +1062,16 @@ characterBhopConn = LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
-        CachedGame = child task.wait(0.5) ForceUpdateRayFilter() CreateTimerGUI() UpdateTimer()
+        -- Clean up old round connections first
+        CleanupRoundConnections()
+        CachedGame = child
+        task.wait(0.5)
+        ForceUpdateRayFilter()
+        CreateTimerGUI()
+        UpdateTimer()
         hasRevived = false
+        -- Force GC on map change to clear leftover debris
+        pcall(function() collectgarbage("step", 200) end)
     end
 end)
 
@@ -1094,4 +1085,4 @@ CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUp
 CacheMovementInstances()
 ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded! OP Air + Emote Backslide fixed.")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Lag Optimized!")
