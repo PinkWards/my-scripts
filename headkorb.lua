@@ -10,40 +10,44 @@ local DARK_GREY_COLOR = Color3.fromRGB(64, 64, 64)
 local MIN_VAL, MAX_VAL, STEP = -2, 2, 0.05
 local CONFIG_FILE = "KorbloxLegConfig.txt"
 
--- // Config (persists during session)
+-- // Config
 local Config = {
     LegYOffset = 0,
 }
 
--- // Load saved config from file
 pcall(function()
     local savedData = readfile(CONFIG_FILE)
     if savedData then
         local savedNum = tonumber(savedData)
-        if savedNum then
-            Config.LegYOffset = math.clamp(savedNum, MIN_VAL, MAX_VAL)
-        end
+        if savedNum then Config.LegYOffset = math.clamp(savedNum, MIN_VAL, MAX_VAL) end
     end
 end)
 
 -- // Notification
 local function notify(title, text, icon)
     StarterGui:SetCore("SendNotification", {
-        Title = title,
-        Text = text,
-        Icon = icon or "",
-        Duration = 5
+        Title = title, Text = text, Icon = icon or "", Duration = 5
     })
 end
 
 local player = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
 
--- // References for the heartbeat loop
+-- // State
 local korbloxWeld = nil
 local isR15 = true
-local currentYOffset = 0 -- Used for smooth lerping in R15
+local currentYOffset = 0
+local lastSetupTime = 0
+local SETUP_COOLDOWN = 1 -- Minimum seconds between setupKorblox calls
+local cachedScaleW = 1
+local cachedScaleH = 1
+local cachedScaleD = 1
+local lastScaleCheck = 0
+local SCALE_CHECK_INTERVAL = 0.5
 
--- // Helper to safely get scale
+-- // Head/leg cleanup tracking (event-driven instead of per-frame polling)
+local headCleanupConn = nil
+local legCleanupConns = {}
+
 local function getScaleProp(humanoid, propName)
     local success, val = pcall(function() return humanoid[propName] end)
     if success then
@@ -54,7 +58,7 @@ local function getScaleProp(humanoid, propName)
     return 1.0
 end
 
--- // ============ GUI (Created First) ============
+-- // ============ GUI ============
 local sg = Instance.new("ScreenGui")
 sg.Name = "KorbloxLegGui"
 sg.ResetOnSpawn = false
@@ -69,7 +73,7 @@ frm.BackgroundTransparency = 0.15
 frm.BorderSizePixel = 0
 frm.Active = true
 frm.Draggable = true
-frm.Visible = false -- Hidden by default until R15 is confirmed
+frm.Visible = false
 frm.Parent = sg
 
 Instance.new("UICorner", frm).CornerRadius = UDim.new(0, 6)
@@ -191,10 +195,7 @@ local function setValue(val)
     if not n then return end
     Config.LegYOffset = math.clamp(math.round(n * 100) / 100, MIN_VAL, MAX_VAL)
     updateVisuals()
-    
-    pcall(function()
-        writefile(CONFIG_FILE, tostring(Config.LegYOffset))
-    end)
+    pcall(function() writefile(CONFIG_FILE, tostring(Config.LegYOffset)) end)
 end
 
 local dragging = false
@@ -226,17 +227,11 @@ end)
 
 txB.FocusLost:Connect(function()
     local val = tonumber(txB.Text)
-    if val then
-        setValue(val)
-    else
-        txB.Text = string.format("%.2f", Config.LegYOffset)
-    end
+    if val then setValue(val) else txB.Text = string.format("%.2f", Config.LegYOffset) end
 end)
 
 txB.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
 local function setupArrow(btn, vis, delta)
@@ -267,12 +262,108 @@ setupArrow(upBtn, upVis, STEP)
 setupArrow(dnBtn, dnVis, -STEP)
 updateVisuals()
 
--- // Korblox Setup (Re-built automatically if destroyed by games like Evade)
+-- // Event-driven head cleanup (replaces per-frame iteration)
+local function cleanHeadChildren(head)
+    for _, v in ipairs(head:GetChildren()) do
+        if v:IsA("Decal") or v:IsA("Texture") or v:IsA("SurfaceAppearance") then
+            v:Destroy()
+        elseif v:IsA("SpecialMesh") then
+            if v.Scale ~= Vector3.new(0.001, 0.001, 0.001) then
+                v.Scale = Vector3.new(0.001, 0.001, 0.001)
+            end
+        end
+    end
+end
+
+local function setupHeadWatcher(char)
+    if headCleanupConn then headCleanupConn:Disconnect() end
+    local head = char:FindFirstChild("Head")
+    if not head then
+        -- Wait for head to be added
+        headCleanupConn = char.ChildAdded:Connect(function(child)
+            if child.Name == "Head" then
+                headCleanupConn:Disconnect()
+                head = child
+                head.Transparency = 1
+                cleanHeadChildren(head)
+                -- Watch for game adding things back
+                head.ChildAdded:Connect(function(c)
+                    if c:IsA("Decal") or c:IsA("Texture") or c:IsA("SurfaceAppearance") then
+                        c:Destroy()
+                    elseif c:IsA("SpecialMesh") then
+                        c.Scale = Vector3.new(0.001, 0.001, 0.001)
+                    end
+                end)
+                head:GetPropertyChangedSignal("Transparency"):Connect(function()
+                    if head.Transparency ~= 1 then head.Transparency = 1 end
+                end)
+            end
+        end)
+        return
+    end
+    
+    head.Transparency = 1
+    cleanHeadChildren(head)
+    -- Watch for game re-adding face/mesh
+    headCleanupConn = head.ChildAdded:Connect(function(c)
+        if c:IsA("Decal") or c:IsA("Texture") or c:IsA("SurfaceAppearance") then
+            c:Destroy()
+        elseif c:IsA("SpecialMesh") then
+            c.Scale = Vector3.new(0.001, 0.001, 0.001)
+        end
+    end)
+    head:GetPropertyChangedSignal("Transparency"):Connect(function()
+        if head.Transparency ~= 1 then head.Transparency = 1 end
+    end)
+end
+
+-- // Event-driven leg cleanup
+local function cleanLegPart(part)
+    for _, c in ipairs(part:GetChildren()) do
+        if c:IsA("SpecialMesh") or c:IsA("Decal") then c:Destroy() end
+    end
+end
+
+local function setupLegWatcher(char)
+    -- Clean up old watchers
+    for _, conn in ipairs(legCleanupConns) do
+        pcall(function() conn:Disconnect() end)
+    end
+    legCleanupConns = {}
+    
+    if not isR15 then return end
+    
+    local legParts = {
+        char:FindFirstChild("RightUpperLeg"),
+        char:FindFirstChild("RightLowerLeg"),
+        char:FindFirstChild("RightFoot")
+    }
+    
+    for _, part in ipairs(legParts) do
+        if part then
+            part.Transparency = 1
+            cleanLegPart(part)
+            local conn = part.ChildAdded:Connect(function(c)
+                if c:IsA("SpecialMesh") or c:IsA("Decal") then c:Destroy() end
+            end)
+            table.insert(legCleanupConns, conn)
+            local tConn = part:GetPropertyChangedSignal("Transparency"):Connect(function()
+                if part.Transparency ~= 1 then part.Transparency = 1 end
+            end)
+            table.insert(legCleanupConns, tConn)
+        end
+    end
+end
+
+-- // Korblox Setup
 local function setupKorblox(char)
+    local now = tick()
+    if now - lastSetupTime < SETUP_COOLDOWN then return end
+    lastSetupTime = now
+    
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- Clean up old parts
     local oldLeg = char:FindFirstChild("KorbloxLeg")
     if oldLeg then oldLeg:Destroy() end
 
@@ -322,7 +413,10 @@ local function setupKorblox(char)
             weld.Parent = korbloxLeg
 
             korbloxWeld = weld
-            currentYOffset = Config.LegYOffset 
+            currentYOffset = Config.LegYOffset
+            
+            -- Setup event-driven watchers instead of per-frame polling
+            setupLegWatcher(char)
         end
     else
         isR15 = false
@@ -331,9 +425,7 @@ local function setupKorblox(char)
         local rightLeg = char:FindFirstChild("Right Leg")
         if rightLeg then
             for _, v in ipairs(char:GetChildren()) do
-                if v:IsA("CharacterMesh") and v.BodyPart == Enum.BodyPart.RightLeg then
-                    v:Destroy()
-                end
+                if v:IsA("CharacterMesh") and v.BodyPart == Enum.BodyPart.RightLeg then v:Destroy() end
             end
             for _, c in ipairs(rightLeg:GetChildren()) do
                 if c:IsA("SpecialMesh") then c:Destroy() end
@@ -350,31 +442,26 @@ local function setupKorblox(char)
             cMesh.Parent = char
         end
     end
+    
+    -- Setup head watcher
+    setupHeadWatcher(char)
 end
 
--- // Heartbeat Loop (Permanent enforcement & auto-recreation)
+-- // Throttled Heartbeat (10Hz instead of 60Hz - massive CPU savings)
+local THROTTLE_RATE = 0.1
+local throttleAccum = 0
+
 RunService.Heartbeat:Connect(function(deltaTime)
+    throttleAccum = throttleAccum + deltaTime
+    if throttleAccum < THROTTLE_RATE then return end
+    throttleAccum = 0
+    
     local char = player.Character
     if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    -- 1. Keep head invisible permanently
-    local head = char:FindFirstChild("Head")
-    if head then
-        if head.Transparency ~= 1 then head.Transparency = 1 end
-        for _, v in ipairs(head:GetChildren()) do
-            if v:IsA("Decal") or v:IsA("Texture") or v:IsA("SurfaceAppearance") then
-                v:Destroy()
-            elseif v:IsA("SpecialMesh") then
-                if v.Scale ~= Vector3.new(0.001, 0.001, 0.001) then
-                    v.Scale = Vector3.new(0.001, 0.001, 0.001)
-                end
-            end
-        end
-    end
-
-    -- 2. Check if rig type changed or if the game deleted our Korblox
+    -- Check if rig type changed or korblox was deleted
     local currentR15 = hum.RigType == Enum.HumanoidRigType.R15
     local needsSetup = false
     
@@ -387,57 +474,35 @@ RunService.Heartbeat:Connect(function(deltaTime)
     else
         local hasMesh = false
         for _, v in ipairs(char:GetChildren()) do
-            if v:IsA("CharacterMesh") and v.Name == "KorbloxR6Leg" and v.Parent == char then
+            if v:IsA("CharacterMesh") and v.Name == "KorbloxR6Leg" then
                 hasMesh = true
                 break
             end
         end
-        if not hasMesh then
-            needsSetup = true
-        end
+        if not hasMesh then needsSetup = true end
     end
 
-    -- 3. Instantly rebuild if wiped by the game (Evade round transitions etc.)
     if needsSetup then
         setupKorblox(char)
+        return -- Skip the rest this tick, setup handles it
     end
 
-    -- 4. Enforce visibility and offsets
-    if isR15 then
-        local ru = char:FindFirstChild("RightUpperLeg")
-        local rl = char:FindFirstChild("RightLowerLeg")
-        local rf = char:FindFirstChild("RightFoot")
+    -- Enforce offset (lerp)
+    if isR15 and korbloxWeld and korbloxWeld.Parent then
+        currentYOffset = currentYOffset + (Config.LegYOffset - currentYOffset) * math.min(1, 15 * throttleAccum)
+        korbloxWeld.C0 = CFrame.new(0, currentYOffset, 0)
         
-        if ru and rl and rf then
-            if ru.Transparency ~= 1 then ru.Transparency = 1 end
-            if rl.Transparency ~= 1 then rl.Transparency = 1 end
-            if rf.Transparency ~= 1 then rf.Transparency = 1 end
-            
-            -- Destroy any clothes/meshes the game tries to put back on the leg
-            for _, p in pairs({ru, rl, rf}) do
-                for _, c in pairs(p:GetChildren()) do
-                    if c:IsA("SpecialMesh") or c:IsA("Decal") then c:Destroy() end
-                end
-            end
-        end
-
-        if korbloxWeld and korbloxWeld.Parent then
-            currentYOffset = currentYOffset + (Config.LegYOffset - currentYOffset) * math.min(1, 15 * deltaTime)
-            korbloxWeld.C0 = CFrame.new(0, currentYOffset, 0)
-            
+        -- Update scale at reduced rate
+        local now = tick()
+        if now - lastScaleCheck >= SCALE_CHECK_INTERVAL then
+            lastScaleCheck = now
             local mesh = korbloxWeld.Parent:FindFirstChildOfClass("SpecialMesh")
             if mesh and hum then
-                local w = getScaleProp(hum, "BodyWidthScale")
-                local h = getScaleProp(hum, "BodyHeightScale")
-                local d = getScaleProp(hum, "BodyDepthScale")
-                mesh.Scale = Vector3.new(w, h, d)
+                cachedScaleW = getScaleProp(hum, "BodyWidthScale")
+                cachedScaleH = getScaleProp(hum, "BodyHeightScale")
+                cachedScaleD = getScaleProp(hum, "BodyDepthScale")
+                mesh.Scale = Vector3.new(cachedScaleW, cachedScaleH, cachedScaleD)
             end
-        end
-    else
-        local rightLeg = char:FindFirstChild("Right Leg")
-        if rightLeg then
-            if rightLeg.Color ~= DARK_GREY_COLOR then rightLeg.Color = DARK_GREY_COLOR end
-            if rightLeg.Transparency ~= 0 then rightLeg.Transparency = 0 end
         end
     end
 end)
@@ -445,15 +510,14 @@ end)
 -- // Character Loading
 player.CharacterAdded:Connect(function(char)
     korbloxWeld = nil
+    lastSetupTime = 0 -- Allow immediate setup on new character
     char:WaitForChild("HumanoidRootPart", 10)
-    task.wait(0.5) -- Small wait to ensure rig loads
+    task.wait(0.5)
     setupKorblox(char)
 end)
 
 if player.Character then
-    task.spawn(function()
-        setupKorblox(player.Character)
-    end)
+    task.spawn(function() setupKorblox(player.Character) end)
 end
 
-notify("Korblox + Headless", "Permanent mode! Will survive game round transitions.", "rbxassetid://101851696")
+notify("Korblox + Headless", "Optimized mode! Reduced lag on long sessions.", "rbxassetid://101851696")
