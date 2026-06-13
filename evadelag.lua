@@ -1,18 +1,13 @@
--- || EVADE ULTIMATE SAFE FPS BOOSTER || --
+-- || EVADE SAFE FPS BOOSTER || --
 -- STRICT RULE: Only touches the Map folder and Lighting.
--- Uses a safe background loop instead of global scanners so your character NEVER disappears.
+-- Leaves Cache, Menu, Players, and Effects ALONE so UI and Ghosts work perfectly.
 
 local lighting = game:GetService("Lighting")
 local workspace = game:GetService("Workspace")
 local players = game:GetService("Players")
 local lp = players.LocalPlayer
 
--- 1. UNCAP FPS
-pcall(function()
-    setfpscap(0) -- 0 = Uncapped. Change to 144 or 240 if you want a specific limit.
-end)
-
--- OPTIMIZE LIGHTING (Safely removes GPU heavers, removes Blur, keeps MenuBlur and Colors)
+-- OPTIMIZE LIGHTING (Safely removes GPU heavers, keeps MenuBlur and Colors)
 local function optimizeLighting()
     pcall(function()
         lighting.GlobalShadows = false
@@ -21,16 +16,9 @@ local function optimizeLighting()
         lighting.OutdoorAmbient = Color3.fromRGB(80, 80, 80)
         lighting.FogEnd = 1000000
         
-        -- Far render distance trick without forcing QualityLevel (which breaks ghosts)
-        lighting.EnvironmentDiffuseScale = 0
-        lighting.EnvironmentSpecularScale = 0
-        
         for _, effect in ipairs(lighting:GetChildren()) do
             -- ONLY destroy the heavy FPS killers. Leave MenuBlur, ColorCorrection, and Sky alone!
             if effect:IsA("Atmosphere") or effect:IsA("DepthOfFieldEffect") or effect:IsA("SunRaysEffect") or effect:IsA("BloomEffect") then
-                effect:Destroy()
-            -- Remove BLUR, but keep "MenuBlur" safe so your menu works!
-            elseif effect:IsA("BlurEffect") and effect.Name ~= "MenuBlur" then
                 effect:Destroy()
             end
         end
@@ -59,7 +47,6 @@ local function optimizeMap()
             -- Lower poly on map props (Massive FPS boost)
             elseif obj:IsA("MeshPart") then
                 obj.RenderFidelity = Enum.RenderFidelity.Performance
-                obj.LevelOfDetail = Enum.MeshDetailLevel.Low
             end
         end)
     end
@@ -68,16 +55,21 @@ end
 local function runOptimization()
     optimizeLighting()
     optimizeMap()
+    print("[EVADE SAFE FPS] Map and Lighting optimized. UI and Ghosts untouched!")
 end
 
--- || SAFE BACKGROUND LOOP || --
--- Runs every 15 seconds. Because it ONLY uses the safe optimizeMap() function,
--- your character/ghost/cache/menu will NEVER be touched, but new maps get auto-cleaned!
-spawn(function()
-    while task.wait(15) do
-        runOptimization()
+-- || MAP CHANGE DETECTION || --
+local gameFolder = workspace:WaitForChild("Game", 30)
+if gameFolder then
+    local mapFolder = gameFolder:FindFirstChild("Map") or gameFolder:WaitForChild("Map", 20)
+    if mapFolder then
+        -- When a new map loads for the next round, re-optimize the map
+        mapFolder.ChildAdded:Connect(function()
+            task.wait(3) -- Wait for map to load in
+            optimizeMap()
+        end)
     end
-end)
+end
 
 -- || SAFE START (Prevents Lobby Freeze) || --
 local function safeStart()
@@ -87,7 +79,6 @@ local function safeStart()
     end
     task.wait(5) -- Give the game 5 seconds to fully load
     runOptimization()
-    print("[EVADE SAFE FPS] Max FPS loaded! Auto-cleaning new maps safely.")
 end
 
 spawn(safeStart)
