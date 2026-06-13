@@ -334,7 +334,7 @@ local function CleanupAll()
 end
 
 -- =====================
--- BOUNCE SYSTEM (uses shared ray params)
+-- BOUNCE SYSTEM (FIXED: Ignores non-collidable parts like Nextbots)
 -- =====================
 local function startBounce()
     if edgeTrimpConnection then edgeTrimpConnection:Disconnect() end
@@ -354,7 +354,10 @@ local function startBounce()
         
         local isOnGround = false
         local ray = workspace:Raycast(RootPart.Position, Vector3.new(0, -3.5, 0), sharedRayParams)
-        if ray then isOnGround = true end
+        -- FIX: Only consider it the ground if the part is collidable (nextbots/players are CanCollide = false)
+        if ray and ray.Instance and ray.Instance.CanCollide then 
+            isOnGround = true 
+        end
         
         if isOnGround and wasInAir then
             local vel = RootPart.Velocity
@@ -409,7 +412,7 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM (uses shared ray params)
+-- BHOP SYSTEM (FIXED: Ignores non-collidable parts like Nextbots)
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
@@ -417,6 +420,12 @@ local function IsOnGround()
     local rayDirection = Vector3.new(0, -GROUND_CHECK_DISTANCE, 0)
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
     if not raycastResult then return false end
+    
+    -- FIX: Ignore non-collidable parts (Nextbots, Players, etc.)
+    if raycastResult.Instance and not raycastResult.Instance.CanCollide then
+        return false
+    end
+    
     local surfaceNormal = raycastResult.Normal
     local angle = math.deg(math.acos(surfaceNormal:Dot(Vector3.new(0, 1, 0))))
     return angle <= MAX_SLOPE_ANGLE
