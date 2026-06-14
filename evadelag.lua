@@ -1,32 +1,31 @@
--- || EVADE HD 620 OPTIMIZED FPS BOOSTER || --
--- Strict Map & Lighting ONLY rule (Character/Ghost 100% Safe)
--- Locked to 60 FPS, Removed reflections, Optimized for i5/Integrated Graphics
+-- || EVADE SPOOFED RENDER FPS BOOSTER || --
+-- STRICT RULE: Only touches the Map folder and Lighting.
+-- Spoofs 5-bar render distance, but removes all heavy rendering so it runs like 1-bar.
 
 local lighting = game:GetService("Lighting")
 local workspace = game:GetService("Workspace")
 local players = game:GetService("Players")
 local lp = players.LocalPlayer
 
--- 1. LOCK FPS TO 60 (Crucial for frame pacing and preventing iGPU thermal throttling)
+-- 1. LOCK FPS TO 60 (Crucial for i5/HD 620 to prevent thermal throttling and stuttering)
 pcall(function()
     setfpscap(60) 
 end)
 
--- 2. OPTIMIZE CPU PHYSICS (Frees up your i5 processor)
-pcall(function()
-    settings().Physics.AllowSleep = true -- Stops calculating physics for stationary map parts
-end)
-
--- OPTIMIZE LIGHTING (Keeps game looking colorful, removes GPU killers)
+-- OPTIMIZE LIGHTING & SPOOF RENDER DISTANCE
 local function optimizeLighting()
     pcall(function()
+        -- THE SPOOF: Force Level 5 render distance (draws map from far away)
+        -- But we strip the heavy shading below so your iGPU doesn't lag!
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level05
+        
         lighting.GlobalShadows = false
         lighting.Brightness = 2
         lighting.Ambient = Color3.fromRGB(80, 80, 80)
         lighting.OutdoorAmbient = Color3.fromRGB(80, 80, 80)
         lighting.FogEnd = 1000000
         
-        -- Removes realistic light bouncing (Huge iGPU saver, game still looks completely normal)
+        -- Kill realistic light bouncing (Massive iGPU saver, game still looks completely normal)
         lighting.EnvironmentDiffuseScale = 0
         lighting.EnvironmentSpecularScale = 0
         
@@ -59,7 +58,7 @@ local function optimizeMap()
             -- Optimize Map Parts for Integrated Graphics
             elseif obj:IsA("BasePart") then
                 obj.CastShadow = false
-                obj.Reflectance = 0 -- Removes shiny reflections (Massive HD 620 booster)
+                obj.Reflectance = 0 -- Removes shiny reflections (Massive HD 620 lag source)
                 
             -- Lower poly on map props
             elseif obj:IsA("MeshPart") then
@@ -69,14 +68,14 @@ local function optimizeMap()
         end)
     end
     
-    -- TERRAIN WATER FIX (Removes water wave and reflection calculations)
+    -- TERRAIN WATER FIX (Kills water reflections and waves that destroy iGPUs)
     pcall(function()
         local terrain = workspace:FindFirstChild("Terrain")
         if terrain then
             terrain.WaterWaveSize = 0
             terrain.WaterWaveSpeed = 0
-            terrain.WaterReflectance = 0 -- Kills heavy water mirrors
-            terrain.WaterTransparency = 0.2 -- Makes water slightly opaque so it doesn't try to render what's under it
+            terrain.WaterReflectance = 0
+            terrain.WaterTransparency = 0.2
         end
     end)
 end
@@ -86,14 +85,28 @@ local function runOptimization()
     optimizeMap()
 end
 
--- || SAFE BACKGROUND LOOP || --
--- Runs every 15 seconds. Strictly ONLY uses the safe optimizeMap() function.
--- Your character/ghost/cache/menu will NEVER be touched, but new maps get auto-cleaned!
+-- || LIGHTING ENFORCER LOOP || --
+-- This loop ONLY touches Lighting settings and QualityLevel.
+-- It does NOT touch workspace objects, so your ghost will NEVER disappear.
+-- It ensures Evade doesn't turn shadows back on or reset your render distance back to 1 bar.
 spawn(function()
-    while task.wait(15) do
-        runOptimization()
+    while task.wait(5) do
+        optimizeLighting()
     end
 end)
+
+-- || MAP CHANGE DETECTION || --
+local gameFolder = workspace:WaitForChild("Game", 30)
+if gameFolder then
+    local mapFolder = gameFolder:FindFirstChild("Map") or gameFolder:WaitForChild("Map", 20)
+    if mapFolder then
+        -- When a new map loads for the next round, re-optimize the map
+        mapFolder.ChildAdded:Connect(function()
+            task.wait(3) -- Wait for map to load in
+            optimizeMap()
+        end)
+    end
+end
 
 -- || SAFE START (Prevents Lobby Freeze) || --
 local function safeStart()
@@ -103,7 +116,7 @@ local function safeStart()
     end
     task.wait(5) -- Give the game 5 seconds to fully load
     runOptimization()
-    print("[EVADE 60FPS LOCK] Loaded for HD 620! Smooth and steady.")
+    print("[EVADE SPOOFED RENDER] 5-Bar Distance + 1-Bar FPS Active!")
 end
 
 spawn(safeStart)
