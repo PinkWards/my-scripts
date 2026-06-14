@@ -1,13 +1,13 @@
--- || EVADE SPOOFED RENDER FPS BOOSTER || --
+-- || EVADE BALANCED SMOOTH FPS BOOSTER || --
 -- STRICT RULE: Only touches the Map folder and Lighting.
--- Spoofs 5-bar render distance, but removes all heavy rendering so it runs like 1-bar.
+-- Spoofed to Level 3 for perfect mid-range render distance without the far-distance lag.
 
 local lighting = game:GetService("Lighting")
 local workspace = game:GetService("Workspace")
 local players = game:GetService("Players")
 local lp = players.LocalPlayer
 
--- 1. LOCK FPS TO 60 (Crucial for i5/HD 620 to prevent thermal throttling and stuttering)
+-- 1. LOCK FPS TO 60 (Crucial for i5/HD 620 steady frame pacing)
 pcall(function()
     setfpscap(60) 
 end)
@@ -15,9 +15,9 @@ end)
 -- OPTIMIZE LIGHTING & SPOOF RENDER DISTANCE
 local function optimizeLighting()
     pcall(function()
-        -- THE SPOOF: Force Level 5 render distance (draws map from far away)
-        -- But we strip the heavy shading below so your iGPU doesn't lag!
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level05
+        -- THE SPOOF: Level 3 is the perfect "Mid-Range" 
+        -- Not too near (Level 1), not too far/laggy (Level 5). Just right!
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level03
         
         lighting.GlobalShadows = false
         lighting.Brightness = 2
@@ -25,7 +25,7 @@ local function optimizeLighting()
         lighting.OutdoorAmbient = Color3.fromRGB(80, 80, 80)
         lighting.FogEnd = 1000000
         
-        -- Kill realistic light bouncing (Massive iGPU saver, game still looks completely normal)
+        -- Kill realistic light bouncing (Massive iGPU saver)
         lighting.EnvironmentDiffuseScale = 0
         lighting.EnvironmentSpecularScale = 0
         
@@ -88,7 +88,7 @@ end
 -- || LIGHTING ENFORCER LOOP || --
 -- This loop ONLY touches Lighting settings and QualityLevel.
 -- It does NOT touch workspace objects, so your ghost will NEVER disappear.
--- It ensures Evade doesn't turn shadows back on or reset your render distance back to 1 bar.
+-- It ensures Evade doesn't reset your render distance back to 1 bar or turn shadows back on.
 spawn(function()
     while task.wait(5) do
         optimizeLighting()
@@ -116,7 +116,7 @@ local function safeStart()
     end
     task.wait(5) -- Give the game 5 seconds to fully load
     runOptimization()
-    print("[EVADE SPOOFED RENDER] 5-Bar Distance + 1-Bar FPS Active!")
+    print("[EVADE BALANCED FPS] Mid-Range Render + Ultra Smoothness Active!")
 end
 
 spawn(safeStart)
