@@ -539,32 +539,41 @@ end
 -- =====================
 local function DoCarry()
     if not holdQ then return end
+    
     local now = tick()
-    if now - LastCarry < 0.5 then return end
-    LastCarry = now
+    if now - CarryDebounce < 0.1 then return end -- Tiny 0.1s debounce so it feels instant but doesn't spam-kick you
+    
     local character = LocalPlayer.Character
     if not character then return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
     if not hrp or isDowned then return end
+    
     local myPos = hrp.Position
+    
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
             if otherHrp then
-                local dx = myPos.X - otherHrp.Position.X
-                local dy = myPos.Y - otherHrp.Position.Y
-                local dz = myPos.Z - otherHrp.Position.Z
-                if dx*dx + dy*dy + dz*dz <= 64 then
+                local offset = myPos - otherHrp.Position
+                local distSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
+                
+                -- 20-stud range check
+                if distSq <= CARRY_RANGE_SQ then
                     local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
                     local otherHum = player.Character:FindFirstChild("Humanoid")
                     local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
+                    
                     if otherDowned or isPhysics then
                         SafeCall(function()
                             local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
-                            if event then event:FireServer("Carry", nil, player.Name) end
+                            if event then 
+                                -- Using true instead of nil based on your snippet
+                                event:FireServer("Carry", true, player.Name) 
+                            end
                         end)
-                        return
+                        CarryDebounce = now
+                        return -- Stop looping after finding a target
                     end
                 end
             end
