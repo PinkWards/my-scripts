@@ -107,7 +107,7 @@ local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
 local lastAirCacheTime = 0
-local AIR_CACHE_INTERVAL = 30 -- was 3, now 30 seconds
+local AIR_CACHE_INTERVAL = 30
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -133,10 +133,9 @@ local GUI, TimerGUI = nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
-local currentlyCarrying = false -- Added for the new carry logic
-
-local CarryDebounce = 0 -- Replaces LastCarry
-local CARRY_RANGE = 20 -- 20 studs range
+local currentlyCarrying = false
+local CarryDebounce = 0
+local CARRY_RANGE = 20
 
 local CachedGame = nil
 local FullbrightEnabled = false
@@ -147,7 +146,7 @@ local Connections = {}
 local ExchangeConnections = {}
 
 local LastGCTime = 0
-local GC_INTERVAL = 90 -- was 120, more aggressive
+local GC_INTERVAL = 90
 local LastCacheCleanup = 0
 local CACHE_CLEANUP_INTERVAL = 60
 
@@ -313,7 +312,6 @@ local function PeriodicCleanup()
 end
 
 local function CleanupRoundConnections()
-    -- Clean timer connection to prevent stacking
     if Connections.Timer then
         Connections.Timer:Disconnect()
         Connections.Timer = nil
@@ -335,7 +333,7 @@ local function CleanupAll()
 end
 
 -- =====================
--- BOUNCE SYSTEM (FIXED: Ignores non-collidable parts like Nextbots)
+-- BOUNCE SYSTEM
 -- =====================
 local function startBounce()
     if edgeTrimpConnection then edgeTrimpConnection:Disconnect() end
@@ -355,7 +353,6 @@ local function startBounce()
         
         local isOnGround = false
         local ray = workspace:Raycast(RootPart.Position, Vector3.new(0, -3.5, 0), sharedRayParams)
-        -- FIX: Only consider it the ground if the part is collidable (nextbots/players are CanCollide = false)
         if ray and ray.Instance and ray.Instance.CanCollide then 
             isOnGround = true 
         end
@@ -413,7 +410,7 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM (FIXED: Ignores non-collidable parts like Nextbots)
+-- BHOP SYSTEM
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
@@ -422,7 +419,6 @@ local function IsOnGround()
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
     if not raycastResult then return false end
     
-    -- FIX: Ignore non-collidable parts (Nextbots, Players, etc.)
     if raycastResult.Instance and not raycastResult.Instance.CanCollide then
         return false
     end
@@ -536,57 +532,62 @@ local function OnStateChanged(old, new)
 end
 
 -- =====================
--- CARRY (Hold to Grab, Tap to Drop)
+-- CARRY (Hyper-Responsive Instant Grab)
 -- =====================
 local function DoCarry()
-    -- Stop scanning if we are already carrying someone or not holding Q
-    if not holdQ or currentlyCarrying then return end 
+    -- If already carrying someone, or not pressing Q, don't scan
+    if currentlyCarrying or not holdQ then return end 
     
     local now = tick()
+    -- 0.1 second debounce is the sweet spot: fast enough to feel instant, safe enough not to get kicked for spam
     if now - CarryDebounce < 0.1 then return end 
     
-    local character = LocalPlayer.Character
-    if not character then return end
-    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     
     -- Don't try to carry if we are downed ourselves
-    local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
+    local isDowned = SafeCall(function() return char:GetAttribute("Downed") end)
     if isDowned then return end
     
     local myPos = hrp.Position
-    local foundTarget = false
+    local closestPlayer = nil
+    local closestDist = CARRY_RANGE
     
-    -- We check if a downed player is nearby so we don't fire the event into thin air
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
+    -- Find the closest downed player in range
+    for _, other in ipairs(Players:GetPlayers()) do
+        if other ~= LocalPlayer and other.Character then
+            local otherHrp = other.Character:FindFirstChild("HumanoidRootPart")
             if otherHrp then
                 local dist = (myPos - otherHrp.Position).Magnitude
                 
-                if dist <= CARRY_RANGE then
-                    local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
-                    local otherHum = player.Character:FindFirstChild("Humanoid")
+                if dist <= closestDist then
+                    -- THIS IS THE CRITICAL PART YOUR OLD SCRIPT WAS MISSING:
+                    -- It MUST check if the other player is downed, otherwise the server ignores you
+                    local otherDowned = SafeCall(function() return other.Character:GetAttribute("Downed") end)
+                    local otherHum = other.Character:FindFirstChild("Humanoid")
                     local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
                     
                     if otherDowned or isPhysics then
-                        foundTarget = true
-                        break -- Found someone close enough, no need to keep checking
+                        closestDist = dist
+                        closestPlayer = other
                     end
                 end
             end
         end
     end
     
-    -- If there's a downed player near us, fire the event!
-    if foundTarget then
+    -- If we found a downed player near us, fire instantly!
+    if closestPlayer then
         SafeCall(function()
             local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
             if event then 
-                event:FireServer("Carry") -- Exact server argument
+                -- Using the exact arguments from your snippet
+                event:FireServer("Carry", true, closestPlayer.Name) 
             end
         end)
-        currentlyCarrying = true -- Track that we are now carrying
+        currentlyCarrying = true
         CarryDebounce = now
     end
 end
@@ -690,7 +691,6 @@ local function InstallColaHook()
     local lastBlock = 0
     setreadonly(mt, false)
     mt.__namecall = newcclosure(function(self, ...)
-        -- Early exit when cola is off - minimal overhead
         if not ColaSettings.Active then
             return ColaSettings.OldNamecall(self, ...)
         end
@@ -964,7 +964,6 @@ local function UpdateTimer()
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
     local stats = CachedGame and CachedGame:FindFirstChild("Stats")
     if not stats then if TimerLabel then TimerLabel.Text = "0:00" end if StatusLabel then StatusLabel.Text = "WAITING" end return end
-    -- Prevent stacking: disconnect old before connecting new
     if Connections.Timer then Connections.Timer:Disconnect() Connections.Timer = nil end
     Connections.Timer = stats:GetAttributeChangedSignal("Timer"):Connect(function()
         local timer = stats:GetAttribute("Timer") local roundStarted = stats:GetAttribute("RoundStarted")
@@ -1036,7 +1035,7 @@ local function SetupCharacter(character)
     
     ForceUpdateRayFilter()
     hasRevived = false
-    currentlyCarrying = false -- Reset carry state on respawn/despawn
+    currentlyCarrying = false
     
     if Humanoid then 
         Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
@@ -1045,7 +1044,6 @@ local function SetupCharacter(character)
     SetupEmoteDetector(character)
     setupJumpButton()
     
-    -- Re-cache air strafe instances on new character (instead of every 3s)
     CacheMovementInstances()
     if not isCurrentlyEmoting then ApplyAirExploit() end
     
@@ -1070,7 +1068,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP (no empty RenderStepped, throttled heartbeat)
+-- MAIN LOOP
 -- =====================
 local function StartMainLoop()
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
@@ -1082,7 +1080,6 @@ local function StartMainLoop()
         
         if holdQ then DoCarry() end
         
-        -- Only re-cache air instances on long interval as fallback
         airAccum = airAccum + dt
         if airAccum >= AIR_CACHE_INTERVAL then
             airAccum = 0
@@ -1103,7 +1100,6 @@ characterBhopConn = LocalPlayer.CharacterAdded:Connect(SetupCharacter)
 
 Workspace.ChildAdded:Connect(function(child)
     if child.Name == "Game" then
-        -- Clean up old round connections first
         CleanupRoundConnections()
         CachedGame = child
         task.wait(0.5)
@@ -1111,8 +1107,7 @@ Workspace.ChildAdded:Connect(function(child)
         CreateTimerGUI()
         UpdateTimer()
         hasRevived = false
-        currentlyCarrying = false -- Reset carry on round change
-        -- Force GC on map change to clear leftover debris
+        currentlyCarrying = false
         pcall(function() collectgarbage("step", 200) end)
     end
 end)
