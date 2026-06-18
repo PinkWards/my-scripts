@@ -133,9 +133,10 @@ local GUI, TimerGUI = nil, nil
 local TimerLabel, StatusLabel = nil, nil
 
 local holdQ, holdSpace, holdLeftShift = false, false, false
+local currentlyCarrying = false -- Added for the new carry logic
 
-local LastCarry = 0
-local LastRayFilterUpdate = 0
+local CarryDebounce = 0 -- Replaces LastCarry
+local CARRY_RANGE = 20 -- 20 studs range
 
 local CachedGame = nil
 local FullbrightEnabled = false
@@ -535,49 +536,58 @@ local function OnStateChanged(old, new)
 end
 
 -- =====================
--- CARRY
+-- CARRY (Hold to Grab, Tap to Drop)
 -- =====================
 local function DoCarry()
-    if not holdQ then return end
+    -- Stop scanning if we are already carrying someone or not holding Q
+    if not holdQ or currentlyCarrying then return end 
     
     local now = tick()
-    if now - CarryDebounce < 0.1 then return end -- Tiny 0.1s debounce so it feels instant but doesn't spam-kick you
+    if now - CarryDebounce < 0.1 then return end 
     
     local character = LocalPlayer.Character
     if not character then return end
     local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    -- Don't try to carry if we are downed ourselves
     local isDowned = SafeCall(function() return character:GetAttribute("Downed") end)
-    if not hrp or isDowned then return end
+    if isDowned then return end
     
     local myPos = hrp.Position
+    local foundTarget = false
     
+    -- We check if a downed player is nearby so we don't fire the event into thin air
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local otherHrp = player.Character:FindFirstChild("HumanoidRootPart")
             if otherHrp then
-                local offset = myPos - otherHrp.Position
-                local distSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
+                local dist = (myPos - otherHrp.Position).Magnitude
                 
-                -- 20-stud range check
-                if distSq <= CARRY_RANGE_SQ then
+                if dist <= CARRY_RANGE then
                     local otherDowned = SafeCall(function() return player.Character:GetAttribute("Downed") end)
                     local otherHum = player.Character:FindFirstChild("Humanoid")
                     local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
                     
                     if otherDowned or isPhysics then
-                        SafeCall(function()
-                            local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
-                            if event then 
-                                -- Using true instead of nil based on your snippet
-                                event:FireServer("Carry", true, player.Name) 
-                            end
-                        end)
-                        CarryDebounce = now
-                        return -- Stop looping after finding a target
+                        foundTarget = true
+                        break -- Found someone close enough, no need to keep checking
                     end
                 end
             end
         end
+    end
+    
+    -- If there's a downed player near us, fire the event!
+    if foundTarget then
+        SafeCall(function()
+            local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+            if event then 
+                event:FireServer("Carry") -- Exact server argument
+            end
+        end)
+        currentlyCarrying = true -- Track that we are now carrying
+        CarryDebounce = now
     end
 end
 
@@ -975,7 +985,18 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         if BhopHold then bhopHoldActive = true checkBhopState() end
     elseif key == Enum.KeyCode.E then Revive()
     elseif key == Enum.KeyCode.R then manualRevive()
-    elseif key == Enum.KeyCode.Q then holdQ = true
+    elseif key == Enum.KeyCode.Q then 
+        if currentlyCarrying then
+            -- Tap Q to drop them
+            SafeCall(function()
+                local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
+                if event then event:FireServer("EndCarry") end
+            end)
+            currentlyCarrying = false
+        else
+            -- Hold Q to start scanning/grabbing
+            holdQ = true
+        end
     elseif key == Enum.KeyCode.P then ToggleFullbright()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
@@ -994,7 +1015,8 @@ UserInputService.InputEnded:Connect(function(input)
     if key == Enum.KeyCode.Space then
         holdSpace = false
         if bhopHoldActive then bhopHoldActive = false checkBhopState() end
-    elseif key == Enum.KeyCode.Q then holdQ = false
+    elseif key == Enum.KeyCode.Q then 
+        holdQ = false -- Stop scanning, but keep them on your back!
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false
         stopBounce()
@@ -1014,6 +1036,7 @@ local function SetupCharacter(character)
     
     ForceUpdateRayFilter()
     hasRevived = false
+    currentlyCarrying = false -- Reset carry state on respawn/despawn
     
     if Humanoid then 
         Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
@@ -1088,6 +1111,7 @@ Workspace.ChildAdded:Connect(function(child)
         CreateTimerGUI()
         UpdateTimer()
         hasRevived = false
+        currentlyCarrying = false -- Reset carry on round change
         -- Force GC on map change to clear leftover debris
         pcall(function() collectgarbage("step", 200) end)
     end
