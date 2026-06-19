@@ -75,6 +75,7 @@ local sharedRayParams = RaycastParams.new()
 sharedRayParams.FilterType = Enum.RaycastFilterType.Blacklist
 sharedRayParams.IgnoreWater = true
 local rayBlacklist = {}
+local LastRayFilterUpdate = 0
 
 local function RebuildRayBlacklist()
     local newBlacklist = {}
@@ -258,15 +259,15 @@ end)
 -- THEME
 -- =====================
 local Theme = {
-    Background = Color3.fromRGB(15, 15, 20),
-    Surface = Color3.fromRGB(22, 22, 30),
-    Accent = Color3.fromRGB(88, 101, 242),
+    Background = Color3.fromRGB(20, 20, 27),
+    Surface = Color3.fromRGB(28, 28, 38),
+    Accent = Color3.fromRGB(100, 110, 255),
     Success = Color3.fromRGB(87, 242, 135),
     Danger = Color3.fromRGB(237, 66, 69),
     TextPrimary = Color3.fromRGB(235, 235, 245),
-    TextSecondary = Color3.fromRGB(148, 155, 175),
-    TextMuted = Color3.fromRGB(88, 95, 115),
-    Border = Color3.fromRGB(40, 40, 55),
+    TextSecondary = Color3.fromRGB(160, 165, 190),
+    TextMuted = Color3.fromRGB(95, 100, 120),
+    Border = Color3.fromRGB(45, 45, 60),
 }
 
 -- =====================
@@ -535,11 +536,9 @@ end
 -- CARRY (Hyper-Responsive Instant Grab)
 -- =====================
 local function DoCarry()
-    -- If already carrying someone, or not pressing Q, don't scan
     if currentlyCarrying or not holdQ then return end 
     
     local now = tick()
-    -- 0.1 second debounce is the sweet spot: fast enough to feel instant, safe enough not to get kicked for spam
     if now - CarryDebounce < 0.1 then return end 
     
     local char = LocalPlayer.Character
@@ -547,7 +546,6 @@ local function DoCarry()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     
-    -- Don't try to carry if we are downed ourselves
     local isDowned = SafeCall(function() return char:GetAttribute("Downed") end)
     if isDowned then return end
     
@@ -555,7 +553,6 @@ local function DoCarry()
     local closestPlayer = nil
     local closestDist = CARRY_RANGE
     
-    -- Find the closest downed player in range
     for _, other in ipairs(Players:GetPlayers()) do
         if other ~= LocalPlayer and other.Character then
             local otherHrp = other.Character:FindFirstChild("HumanoidRootPart")
@@ -563,8 +560,6 @@ local function DoCarry()
                 local dist = (myPos - otherHrp.Position).Magnitude
                 
                 if dist <= closestDist then
-                    -- THIS IS THE CRITICAL PART YOUR OLD SCRIPT WAS MISSING:
-                    -- It MUST check if the other player is downed, otherwise the server ignores you
                     local otherDowned = SafeCall(function() return other.Character:GetAttribute("Downed") end)
                     local otherHum = other.Character:FindFirstChild("Humanoid")
                     local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
@@ -578,12 +573,10 @@ local function DoCarry()
         end
     end
     
-    -- If we found a downed player near us, fire instantly!
     if closestPlayer then
         SafeCall(function()
             local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
             if event then 
-                -- Using the exact arguments from your snippet
                 event:FireServer("Carry", true, closestPlayer.Name) 
             end
         end)
@@ -772,28 +765,39 @@ local function Tween(obj, props, tweenInfo)
 end
 
 -- =====================
--- GUI HELPERS
+-- GUI HELPERS (MODERNIZED)
 -- =====================
 local function CreateToggle(parent, name, text, yPos, callback)
     local btn = Instance.new("TextButton")
-    btn.Name = name btn.Size = UDim2.new(1, -20, 0, 28) btn.Position = UDim2.new(0, 10, 0, yPos)
-    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 35) btn.Text = "" btn.AutoButtonColor = false btn.BorderSizePixel = 0 btn.Parent = parent
+    btn.Name = name btn.Size = UDim2.new(1, -24, 0, 30) btn.Position = UDim2.new(0, 12, 0, yPos)
+    btn.BackgroundColor3 = Theme.Surface btn.Text = "" btn.AutoButtonColor = false btn.BorderSizePixel = 0 btn.Parent = parent
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    local label = Instance.new("TextLabel") label.Size = UDim2.new(1, -40, 1, 0) label.Position = UDim2.new(0, 10, 0, 0)
-    label.BackgroundTransparency = 1 label.Text = text label.TextColor3 = Color3.fromRGB(180, 180, 200) label.TextSize = 11
+    
+    local label = Instance.new("TextLabel") label.Size = UDim2.new(1, -55, 1, 0) label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1 label.Text = text label.TextColor3 = Theme.TextSecondary label.TextSize = 12
     label.Font = Enum.Font.Gotham label.TextXAlignment = Enum.TextXAlignment.Left label.Parent = btn
-    local dot = Instance.new("Frame") dot.Size = UDim2.new(0, 8, 0, 8) dot.Position = UDim2.new(1, -18, 0.5, -4)
-    dot.BackgroundColor3 = Color3.fromRGB(80, 80, 100) dot.BorderSizePixel = 0 dot.Parent = btn
-    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+    
+    -- Modern Toggle Switch Background
+    local toggleBg = Instance.new("Frame") toggleBg.Size = UDim2.new(0, 36, 0, 18) toggleBg.Position = UDim2.new(1, -44, 0.5, -9)
+    toggleBg.BackgroundColor3 = Color3.fromRGB(50, 50, 65) toggleBg.BorderSizePixel = 0 toggleBg.Parent = btn
+    Instance.new("UICorner", toggleBg).CornerRadius = UDim.new(1, 0)
+    
+    -- Modern Toggle Switch Circle
+    local toggleCircle = Instance.new("Frame") toggleCircle.Size = UDim2.new(0, 14, 0, 14) toggleCircle.Position = UDim2.new(0, 2, 0.5, -7)
+    toggleCircle.BackgroundColor3 = Color3.fromRGB(150, 150, 170) toggleCircle.BorderSizePixel = 0 toggleCircle.Parent = toggleBg
+    Instance.new("UICorner", toggleCircle).CornerRadius = UDim.new(1, 0)
+    
     btn.MouseButton1Click:Connect(function()
         local active = not btn:GetAttribute("Toggled")
         btn:SetAttribute("Toggled", active)
         if active then
-            Tween(btn, {BackgroundColor3 = Color3.fromRGB(40, 40, 70)})
-            Tween(dot, {BackgroundColor3 = Color3.fromRGB(88, 101, 242)})
+            Tween(btn, {BackgroundColor3 = Color3.fromRGB(35, 38, 70)})
+            Tween(toggleBg, {BackgroundColor3 = Theme.Accent})
+            Tween(toggleCircle, {Position = UDim2.new(1, -16, 0.5, -7), BackgroundColor3 = Color3.fromRGB(255, 255, 255)})
         else
-            Tween(btn, {BackgroundColor3 = Color3.fromRGB(25, 25, 35)})
-            Tween(dot, {BackgroundColor3 = Color3.fromRGB(80, 80, 100)})
+            Tween(btn, {BackgroundColor3 = Theme.Surface})
+            Tween(toggleBg, {BackgroundColor3 = Color3.fromRGB(50, 50, 65)})
+            Tween(toggleCircle, {Position = UDim2.new(0, 2, 0.5, -7), BackgroundColor3 = Color3.fromRGB(150, 150, 170)})
         end
         callback(active)
     end)
@@ -802,59 +806,58 @@ end
 
 local function CreateInput(parent, text, yPos, default, callback)
     local lbl = Instance.new("TextLabel", parent)
-    lbl.Size = UDim2.new(0, 100, 0, 20) lbl.Position = UDim2.new(0, 10, 0, yPos)
-    lbl.BackgroundTransparency = 1 lbl.Text = text lbl.TextColor3 = Color3.fromRGB(140, 140, 160)
-    lbl.TextSize = 9 lbl.Font = Enum.Font.Gotham lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Size = UDim2.new(0, 100, 0, 26) lbl.Position = UDim2.new(0, 12, 0, yPos)
+    lbl.BackgroundTransparency = 1 lbl.Text = text lbl.TextColor3 = Theme.TextMuted
+    lbl.TextSize = 11 lbl.Font = Enum.Font.Gotham lbl.TextXAlignment = Enum.TextXAlignment.Left
+    
     local inp = Instance.new("TextBox", parent)
-    inp.Size = UDim2.new(0, 45, 0, 20) inp.Position = UDim2.new(1, -55, 0, yPos)
-    inp.BackgroundColor3 = Color3.fromRGB(25, 25, 35) inp.Text = tostring(default)
-    inp.TextColor3 = Color3.fromRGB(180, 180, 200) inp.TextSize = 9 inp.Font = Enum.Font.Gotham inp.BorderSizePixel = 0
+    inp.Size = UDim2.new(0, 55, 0, 26) inp.Position = UDim2.new(1, -67, 0, yPos)
+    inp.BackgroundColor3 = Color3.fromRGB(10, 10, 15) inp.Text = tostring(default)
+    inp.TextColor3 = Theme.TextPrimary inp.TextSize = 11 inp.Font = Enum.Font.Gotham inp.BorderSizePixel = 0
     inp.ClearTextOnFocus = false
-    Instance.new("UICorner", inp).CornerRadius = UDim.new(0, 4)
+    Instance.new("UICorner", inp).CornerRadius = UDim.new(0, 6)
+    local pad = Instance.new("UIPadding", inp) pad.PaddingLeft = UDim.new(0, 6) pad.PaddingRight = UDim.new(0, 6)
+    
     inp.FocusLost:Connect(function() callback(inp.Text) end)
     return inp
 end
 
 local function CreateSection(parent, text, yPos)
-    local sep = Instance.new("Frame", parent)
-    sep.Size = UDim2.new(1, -20, 0, 1) sep.Position = UDim2.new(0, 10, 0, yPos)
-    sep.BackgroundColor3 = Color3.fromRGB(40, 40, 60) sep.BorderSizePixel = 0
     local lbl = Instance.new("TextLabel", parent)
-    lbl.Size = UDim2.new(0, 150, 0, 14) lbl.Position = UDim2.new(0, 10, 0, yPos + 4)
-    lbl.BackgroundTransparency = 1 lbl.Text = text lbl.TextColor3 = Color3.fromRGB(88, 101, 242)
-    lbl.TextSize = 9 lbl.Font = Enum.Font.GothamBold lbl.TextXAlignment = Enum.TextXAlignment.Left
-    return yPos + 22
+    lbl.Size = UDim2.new(1, -24, 0, 20) lbl.Position = UDim2.new(0, 12, 0, yPos + 6)
+    lbl.BackgroundTransparency = 1 lbl.Text = text lbl.TextColor3 = Theme.Accent
+    lbl.TextSize = 11 lbl.Font = Enum.Font.GothamBold lbl.TextXAlignment = Enum.TextXAlignment.Left
+    return yPos + 30
 end
 
 local function CreateButtonGroup(parent, yPos, options, default, callback)
     local btns = {}
-    local bx = 10
+    local bx = 12
     for _, opt in ipairs(options) do
         local b = Instance.new("TextButton", parent)
-        b.Size = UDim2.new(0, 75, 0, 20) b.Position = UDim2.new(0, bx, 0, yPos)
-        b.BackgroundColor3 = (opt == default) and Color3.fromRGB(40, 40, 70) or Color3.fromRGB(25, 25, 35)
-        b.Text = opt b.TextColor3 = (opt == default) and Color3.fromRGB(88, 101, 242) or Color3.fromRGB(150, 150, 170)
-        b.TextSize = 9 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+        b.Size = UDim2.new(0, 65, 0, 24) b.Position = UDim2.new(0, bx, 0, yPos)
+        b.BackgroundColor3 = (opt == default) and Color3.fromRGB(35, 38, 70) or Color3.fromRGB(15, 15, 20)
+        b.Text = opt b.TextColor3 = (opt == default) and Theme.Accent or Theme.TextMuted
+        b.TextSize = 10 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
         b.MouseButton1Click:Connect(function()
             callback(opt)
             for _, bb in ipairs(btns) do
-                bb.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
-                bb.TextColor3 = Color3.fromRGB(150, 150, 170)
+                Tween(bb, {BackgroundColor3 = Color3.fromRGB(15, 15, 20), TextColor3 = Theme.TextMuted})
             end
-            b.BackgroundColor3 = Color3.fromRGB(40, 40, 70)
-            b.TextColor3 = Color3.fromRGB(88, 101, 242)
+            Tween(b, {BackgroundColor3 = Color3.fromRGB(35, 38, 70), TextColor3 = Theme.Accent})
         end)
         btns[#btns + 1] = b
-        bx = bx + 79
+        bx = bx + 69
     end
     return btns
 end
 
 -- =====================
--- MAIN GUI
+-- MAIN GUI (MODERNIZED LAYOUT)
 -- =====================
 local GUI_HEIGHT = 380
+local GUI_WIDTH = 230
 
 local function CreateMainGUI()
     if GUI then SafeCall(function() GUI:Destroy() end) end
@@ -862,102 +865,113 @@ local function CreateMainGUI()
     SafeCall(function() GUI.Parent = game:GetService("CoreGui") end)
     if not GUI.Parent then GUI.Parent = PlayerGui end
     
-    local main = Instance.new("Frame") main.Name = "Main" main.Size = UDim2.new(0, 180, 0, 0) main.Position = UDim2.new(0, 20, 0, 50)
-    main.BackgroundColor3 = Color3.fromRGB(15, 15, 22) main.BackgroundTransparency = 0.1 main.BorderSizePixel = 0 main.ClipsDescendants = true main.Parent = GUI
-    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
-    Instance.new("UIStroke", main).Color = Color3.fromRGB(40, 40, 60)
+    local main = Instance.new("Frame") main.Name = "Main" main.Size = UDim2.new(0, GUI_WIDTH, 0, 0) main.Position = UDim2.new(0, 20, 0, 50)
+    main.BackgroundColor3 = Theme.Background main.BackgroundTransparency = 0.05 main.BorderSizePixel = 0 main.ClipsDescendants = true main.Parent = GUI
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
     
-    local title = Instance.new("TextLabel") title.Size = UDim2.new(1, 0, 0, 30) title.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    title.Text = "  EVADE // V" .. SCRIPT_VERSION title.TextColor3 = Color3.fromRGB(88, 101, 242) title.TextSize = 11 title.Font = Enum.Font.GothamBold
+    local stroke = Instance.new("UIStroke", main) stroke.Color = Theme.Border stroke.Thickness = 1
+    
+    -- Make it Draggable
+    local dragToggle, dragInput, dragStart, startPos
+    local title = Instance.new("TextLabel") title.Size = UDim2.new(1, -35, 0, 35) title.BackgroundColor3 = Theme.Surface
+    title.Text = "  EVADE // V" .. SCRIPT_VERSION title.TextColor3 = Theme.Accent title.TextSize = 13 title.Font = Enum.Font.GothamBold
     title.TextXAlignment = Enum.TextXAlignment.Left title.BorderSizePixel = 0 title.Parent = main
-    Instance.new("UICorner", title).CornerRadius = UDim.new(0, 10)
-    local fix = Instance.new("Frame", title) fix.Size = UDim2.new(1,0,0,10) fix.Position = UDim2.new(0,0,1,-10) fix.BackgroundColor3 = title.BackgroundColor3 fix.BorderSizePixel = 0
+    Instance.new("UICorner", title).CornerRadius = UDim.new(0, 12)
+    local fix = Instance.new("Frame", title) fix.Size = UDim2.new(1,0,0,12) fix.Position = UDim2.new(0,0,1,-12) fix.BackgroundColor3 = title.BackgroundColor3 fix.BorderSizePixel = 0
     
-    local closeBtn = Instance.new("TextButton", title) closeBtn.Size = UDim2.new(0, 30, 0, 30) closeBtn.Position = UDim2.new(1, -30, 0, 0)
-    closeBtn.BackgroundTransparency = 1 closeBtn.Text = "X" closeBtn.TextColor3 = Color3.fromRGB(200,200,220) closeBtn.TextSize = 12 closeBtn.Font = Enum.Font.GothamBold closeBtn.BorderSizePixel = 0
+    title.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then dragToggle = true dragStart = input.Position startPos = main.Position input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragToggle = false end end) end end)
+    title.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end end)
+    UserInputService.InputChanged:Connect(function(input) if input == dragInput and dragToggle then local delta = input.Position - dragStart main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y) end end)
+    
+    local closeBtn = Instance.new("TextButton", main) closeBtn.Size = UDim2.new(0, 35, 0, 35) closeBtn.Position = UDim2.new(1, -35, 0, 0)
+    closeBtn.BackgroundTransparency = 1 closeBtn.Text = "✕" closeBtn.TextColor3 = Theme.TextMuted closeBtn.TextSize = 14 closeBtn.Font = Enum.Font.GothamBold closeBtn.BorderSizePixel = 0
     closeBtn.MouseButton1Click:Connect(function()
-        Tween(main, {Size = UDim2.new(0, 180, 0, 0)}, TI_SLOW) task.delay(0.3, function() main.Visible = false end)
+        Tween(main, {Size = UDim2.new(0, GUI_WIDTH, 0, 0)}, TI_SLOW) task.delay(0.3, function() main.Visible = false end)
     end)
     
-    local content = Instance.new("ScrollingFrame") content.Size = UDim2.new(1, 0, 1, -30) content.Position = UDim2.new(0, 0, 0, 30)
-    content.BackgroundTransparency = 1 content.ScrollBarThickness = 0 content.BorderSizePixel = 0 content.CanvasSize = UDim2.new(0, 0, 0, 1200) content.Parent = main
+    local content = Instance.new("ScrollingFrame") content.Size = UDim2.new(1, 0, 1, -35) content.Position = UDim2.new(0, 0, 0, 35)
+    content.BackgroundTransparency = 1 content.ScrollBarThickness = 3 content.ScrollBarImageColor3 = Theme.Accent content.BorderSizePixel = 0 content.CanvasSize = UDim2.new(0, 0, 0, 1200) content.Parent = main
     
     local y = 8
     
     y = CreateSection(content, "GENERAL", y)
-    CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
-    CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
+    CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 36
+    CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 40
 
     y = CreateSection(content, "SELF REVIVE [R]", y)
-    y = y + 28
+    y = y + 8
 
     y = CreateSection(content, "BHOP", y)
-    CreateToggle(content, "BhopHold", "Bhop Hold (Space)", y, function(s) BhopHold = s if not s then bhopHoldActive = false checkBhopState() end end) y = y + 32
-    CreateToggle(content, "WallRun", "WallRun Jump", y, function(s) wallRunJumpEnabled = s end) y = y + 28
-    CreateButtonGroup(content, y, {"Simulation", "Realistic"}, autoJumpType, function(v) autoJumpType = v end) y = y + 28
+    CreateToggle(content, "BhopHold", "Bhop Hold (Space)", y, function(s) BhopHold = s if not s then bhopHoldActive = false checkBhopState() end end) y = y + 36
+    CreateToggle(content, "WallRun", "WallRun Jump", y, function(s) wallRunJumpEnabled = s end) y = y + 34
+    CreateButtonGroup(content, y, {"Simulation", "Realistic"}, autoJumpType, function(v) autoJumpType = v end) y = y + 32
     CreateButtonGroup(content, y, {"No Accel", "Ground", "Accel"}, "Accel", function(v)
         if v == "No Accel" then accelerationMethod = "No Acceleration"
         elseif v == "Ground" then accelerationMethod = "Ground Acceleration"
         else accelerationMethod = "Acceleration" end
-    end) y = y + 28
-    CreateInput(content, "Friction", y, accelerationValue, function(v) local n = tonumber(v) if n then accelerationValue = n end end) y = y + 26
-    CreateToggle(content, "AutoAccel", "Auto Acceleration", y, function(s) autoAccelerationEnabled = s end) y = y + 32
+    end) y = y + 32
+    CreateInput(content, "Friction", y, accelerationValue, function(v) local n = tonumber(v) if n then accelerationValue = n end end) y = y + 32
+    CreateToggle(content, "AutoAccel", "Auto Acceleration", y, function(s) autoAccelerationEnabled = s end) y = y + 40
 
     y = CreateSection(content, "BOUNCE [Hold LShift]", y)
-    CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 32
+    CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 36
 
     y = CreateSection(content, "AIR STRAFE (OP)", y)
-    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n if not isCurrentlyEmoting then ApplyAirExploit() end end end) y = y + 32
+    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n if not isCurrentlyEmoting then ApplyAirExploit() end end end) y = y + 36
 
     y = CreateSection(content, "CUSTOM COLA", y)
-    CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 28
-    local presetX = 10
+    CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 34
+    local presetX = 12
     for _, p in ipairs({{n="1.4x",s=1.4},{n="1.8x",s=1.8},{n="2.5x",s=2.5},{n="3.0x",s=3.0}}) do
         local b = Instance.new("TextButton", content)
-        b.Size = UDim2.new(0, 35, 0, 20) b.Position = UDim2.new(0, presetX, 0, y)
-        b.BackgroundColor3 = Color3.fromRGB(25,25,35) b.Text = p.n b.TextColor3 = Color3.fromRGB(150,150,170)
-        b.TextSize = 9 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
+        b.Size = UDim2.new(0, 45, 0, 24) b.Position = UDim2.new(0, presetX, 0, y)
+        b.BackgroundColor3 = Color3.fromRGB(15, 15, 20) b.Text = p.n b.TextColor3 = Theme.TextMuted
+        b.TextSize = 10 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
         b.MouseButton1Click:Connect(function() ColaSettings.Speed = p.s end)
-        presetX = presetX + 39
+        presetX = presetX + 49
     end
-    y = y + 26
-    CreateInput(content, "Duration", y, ColaSettings.Duration, function(v) local n = tonumber(v) if n and n > 0 then ColaSettings.Duration = n end end) y = y + 32
+    y = y + 32
+    CreateInput(content, "Duration", y, ColaSettings.Duration, function(v) local n = tonumber(v) if n and n > 0 then ColaSettings.Duration = n end end) y = y + 36
 
     y = CreateSection(content, "FOV", y)
-    local fovX = 10
+    local fovX = 12
     for _, f in ipairs({{n="70",v=70},{n="90",v=90},{n="120",v=120}}) do
         local b = Instance.new("TextButton", content)
-        b.Size = UDim2.new(0, 45, 0, 20) b.Position = UDim2.new(0, fovX, 0, y)
-        b.BackgroundColor3 = Color3.fromRGB(25,25,35) b.Text = f.n b.TextColor3 = Color3.fromRGB(150,150,170)
-        b.TextSize = 9 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
-        Instance.new("UICorner", b).CornerRadius = UDim.new(0,4)
+        b.Size = UDim2.new(0, 55, 0, 24) b.Position = UDim2.new(0, fovX, 0, y)
+        b.BackgroundColor3 = Color3.fromRGB(15, 15, 20) b.Text = f.n b.TextColor3 = Theme.TextMuted
+        b.TextSize = 10 b.Font = Enum.Font.Gotham b.BorderSizePixel = 0 b.AutoButtonColor = false
+        Instance.new("UICorner", b).CornerRadius = UDim.new(0,6)
         b.MouseButton1Click:Connect(function() Config.FOV = f.v SetFOV() end)
-        fovX = fovX + 49
+        fovX = fovX + 59
     end
     y = y + 30
     
     content.CanvasSize = UDim2.new(0, 0, 0, y)
-    main.Size = UDim2.new(0, 180, 0, 0) main.Visible = true
-    Tween(main, {Size = UDim2.new(0, 180, 0, GUI_HEIGHT)}, TI_OPEN)
+    main.Size = UDim2.new(0, GUI_WIDTH, 0, 0) main.Visible = true
+    Tween(main, {Size = UDim2.new(0, GUI_WIDTH, 0, GUI_HEIGHT)}, TI_OPEN)
 end
 
 -- =====================
--- TIMER GUI
+-- TIMER GUI (SLEEK HUD)
 -- =====================
 local function CreateTimerGUI()
     if TimerGUI then SafeCall(function() TimerGUI:Destroy() end) end
     TimerGUI = Instance.new("ScreenGui") TimerGUI.Name = "EvadeTimer" TimerGUI.ResetOnSpawn = false TimerGUI.Parent = PlayerGui
+    
     local container = Instance.new("Frame", TimerGUI) container.Name = "Timer" container.AnchorPoint = Vector2.new(1, 1)
-    container.Position = UDim2.new(1, -5, 1, -5) container.Size = UDim2.new(0, 80, 0, 35) container.BackgroundTransparency = 1 container.BorderSizePixel = 0
-    StatusLabel = Instance.new("TextLabel", container) StatusLabel.Position = UDim2.new(0.5, 0, 0, 0) StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
-    StatusLabel.Size = UDim2.new(1, 0, 0, 10) StatusLabel.BackgroundTransparency = 1 StatusLabel.Font = Enum.Font.GothamBold
-    StatusLabel.Text = "WAITING" StatusLabel.TextColor3 = Color3.fromRGB(0, 0, 0) StatusLabel.TextSize = 8
-    StatusLabel.TextStrokeTransparency = 0.8 StatusLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
-    TimerLabel = Instance.new("TextLabel", container) TimerLabel.Position = UDim2.new(0.5, 0, 0, 10) TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
-    TimerLabel.Size = UDim2.new(1, 0, 0, 25) TimerLabel.BackgroundTransparency = 1 TimerLabel.Font = Enum.Font.Code
-    TimerLabel.Text = "0:00" TimerLabel.TextColor3 = Color3.fromRGB(0, 0, 0) TimerLabel.TextSize = 24
-    TimerLabel.TextStrokeTransparency = 0.8 TimerLabel.TextStrokeColor3 = Color3.fromRGB(255, 255, 255)
+    container.Position = UDim2.new(1, -15, 1, -15) container.Size = UDim2.new(0, 110, 0, 50) 
+    container.BackgroundColor3 = Theme.Background container.BackgroundTransparency = 0.25 container.BorderSizePixel = 0
+    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 10)
+    local cStroke = Instance.new("UIStroke", container) cStroke.Color = Theme.Border cStroke.Thickness = 1
+    
+    StatusLabel = Instance.new("TextLabel", container) StatusLabel.Position = UDim2.new(0.5, 0, 0, 6) StatusLabel.AnchorPoint = Vector2.new(0.5, 0)
+    StatusLabel.Size = UDim2.new(1, -10, 0, 14) StatusLabel.BackgroundTransparency = 1 StatusLabel.Font = Enum.Font.GothamBold
+    StatusLabel.Text = "WAITING" StatusLabel.TextColor3 = Theme.TextMuted StatusLabel.TextSize = 10
+    
+    TimerLabel = Instance.new("TextLabel", container) TimerLabel.Position = UDim2.new(0.5, 0, 0, 20) TimerLabel.AnchorPoint = Vector2.new(0.5, 0)
+    TimerLabel.Size = UDim2.new(1, -10, 0, 26) TimerLabel.BackgroundTransparency = 1 TimerLabel.Font = Enum.Font.GothamBold
+    TimerLabel.Text = "0:00" TimerLabel.TextColor3 = Theme.TextPrimary TimerLabel.TextSize = 22
 end
 
 local function UpdateTimer()
@@ -986,14 +1000,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.R then manualRevive()
     elseif key == Enum.KeyCode.Q then 
         if currentlyCarrying then
-            -- Tap Q to drop them
             SafeCall(function()
                 local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
                 if event then event:FireServer("EndCarry") end
             end)
             currentlyCarrying = false
         else
-            -- Hold Q to start scanning/grabbing
             holdQ = true
         end
     elseif key == Enum.KeyCode.P then ToggleFullbright()
@@ -1003,8 +1015,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.RightShift then
         if GUI and GUI:FindFirstChild("Main") then
             local m = GUI.Main
-            if m.Visible then Tween(m, {Size = UDim2.new(0, 180, 0, 0)}, TI_SLOW) task.delay(0.3, function() m.Visible = false end)
-            else m.Visible = true m.Size = UDim2.new(0, 180, 0, 0) Tween(m, {Size = UDim2.new(0, 180, 0, GUI_HEIGHT)}, TI_OPEN) end
+            if m.Visible then Tween(m, {Size = UDim2.new(0, GUI_WIDTH, 0, 0)}, TI_SLOW) task.delay(0.3, function() m.Visible = false end)
+            else m.Visible = true m.Size = UDim2.new(0, GUI_WIDTH, 0, 0) Tween(m, {Size = UDim2.new(0, GUI_WIDTH, 0, GUI_HEIGHT)}, TI_OPEN) end
         end
     end
 end)
@@ -1015,7 +1027,7 @@ UserInputService.InputEnded:Connect(function(input)
         holdSpace = false
         if bhopHoldActive then bhopHoldActive = false checkBhopState() end
     elseif key == Enum.KeyCode.Q then 
-        holdQ = false -- Stop scanning, but keep them on your back!
+        holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false
         stopBounce()
