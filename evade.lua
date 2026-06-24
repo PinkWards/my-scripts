@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 39
+local SCRIPT_VERSION = 40
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,11 +102,11 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES
+-- AIR STRAFE VARIABLES (RESTORED V34 SAFE LOGIC)
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
-local isCurrentlyEmoting = false -- Now also used for Sliding to prevent flings
+local isCurrentlyEmoting = false
 
 local function CacheMovementInstances()
     local newList = {}
@@ -120,10 +120,28 @@ local function CacheMovementInstances()
     movementInstances = newList
 end
 
+-- V34 EXACT SAFE APPLY
+local function ApplyAirExploit()
+    if AirExploitValue <= 0 then return end
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = AirExploitValue
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- V34 EXACT SAFE REVERT
 local function RevertAirStatsForSlide()
     pcall(function()
         for _, instance in ipairs(movementInstances) do
-            if instance and type(instance.overrideMovementStats) == "table" then
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
                 for k, val in pairs(instance.defaultMovementStats) do
                     local lowerK = string.lower(k)
                     if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
@@ -146,21 +164,12 @@ local function SetupEmoteDetector(character)
             isCurrentlyEmoting = isAction
             if isCurrentlyEmoting then
                 RevertAirStatsForSlide()
+            else
+                ApplyAirExploit()
             end
         end
     end)
 end
-
--- UNBREAKABLE AIR STRAFE: Force-write on Stepped (runs BEFORE physics)
-RunService.Stepped:Connect(function()
-    if isCurrentlyEmoting or AirExploitValue <= 0 then return end
-    for _, instance in ipairs(movementInstances) do
-        if instance and type(instance.overrideMovementStats) == "table" then
-            instance.overrideMovementStats.AirAcceleration = AirExploitValue
-            instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
-        end
-    end
-end)
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -219,12 +228,6 @@ pcall(function()
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
         
-        -- Double injection via hook just to be safe
-        if not isCurrentlyEmoting and AirExploitValue > 0 then
-            v.AirAcceleration = AirExploitValue
-            v.AirStrafeAcceleration = AirExploitValue
-        end
-
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
 
@@ -410,7 +413,7 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM (RESTORED V34 LOGIC)
+-- BHOP SYSTEM
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
@@ -1035,10 +1038,11 @@ local function SetupCharacter(character)
     setupJumpButton()
     
     CacheMovementInstances()
+    if not isCurrentlyEmoting then ApplyAirExploit() end
     
-    task.delay(1, CacheMovementInstances)
-    task.delay(3, CacheMovementInstances)
-    task.delay(6, CacheMovementInstances)
+    task.delay(1, function() CacheMovementInstances() if not isCurrentlyEmoting then ApplyAirExploit() end end)
+    task.delay(3, function() CacheMovementInstances() if not isCurrentlyEmoting then ApplyAirExploit() end end)
+    task.delay(6, function() CacheMovementInstances() if not isCurrentlyEmoting then ApplyAirExploit() end end)
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -1074,9 +1078,12 @@ local function StartMainLoop()
         if holdQ then DoCarry() end
         
         cacheAccum = cacheAccum + dt
-        if cacheAccum >= 5.0 then 
+        if cacheAccum >= 3.0 then 
             cacheAccum = 0
             CacheMovementInstances()
+            if not isCurrentlyEmoting then
+                ApplyAirExploit()
+            end
         end
         
         cleanupAccum = cleanupAccum + dt
@@ -1102,8 +1109,10 @@ Workspace.ChildAdded:Connect(function(child)
         currentlyCarrying = false
         
         CacheMovementInstances()
-        task.delay(1, CacheMovementInstances)
-        task.delay(3, CacheMovementInstances)
+        if not isCurrentlyEmoting then ApplyAirExploit() end
+        
+        task.delay(1, function() CacheMovementInstances() if not isCurrentlyEmoting then ApplyAirExploit() end end)
+        task.delay(3, function() CacheMovementInstances() if not isCurrentlyEmoting then ApplyAirExploit() end end)
         
         pcall(function() collectgarbage("step", 200) end)
     end
@@ -1117,5 +1126,6 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 CacheMovementInstances()
+ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - V34 Bhop & Slide Fling Fix!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - No Fling + V34 Bhop!")
