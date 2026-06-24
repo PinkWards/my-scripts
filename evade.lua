@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 43
+local SCRIPT_VERSION = 44
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,10 +102,11 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (V34 BHOP/SLIDE LOGIC RESTORED)
+-- AIR STRAFE VARIABLES (ULTRA OPTIMIZED)
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
+local isCurrentlyEmoting = false
 
 local ScriptConns = {}
 local ExScriptConns = {}
@@ -120,22 +121,6 @@ local function CacheMovementInstances()
         end
     end)
     movementInstances = newList
-end
-
-local function ApplyAirExploit()
-    if AirExploitValue <= 0 then return end
-    pcall(function()
-        for _, instance in ipairs(movementInstances) do
-            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
-                for k, val in pairs(instance.defaultMovementStats) do
-                    local lowerK = string.lower(k)
-                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
-                        instance.overrideMovementStats[k] = AirExploitValue
-                    end
-                end
-            end
-        end
-    end)
 end
 
 local function RevertAirStatsForEmote()
@@ -153,37 +138,40 @@ local function RevertAirStatsForEmote()
     end)
 end
 
--- UNBREAKABLE ENFORCER + V34 BEHAVIOR RESTORED
--- Force-writes every frame so the game cannot wipe it on round changes.
--- Only turns off for EMOTES to prevent emote-slide flings (like V34).
--- Works in Bhop, Air, and Infinite Slide!
-RunService.Stepped:Connect(function()
-    if not Character then return end
-    local currentState = Character:GetAttribute("State") or ""
-    
-    -- If Emoting, turn off exploit (Prevents emote-slide slope flings, exactly like V34)
-    if string.find(currentState, "Emoting") then
-        RevertAirStatsForEmote()
-        return
-    end
-    
-    -- Safe to enforce exploit for Bhop, Inf-Slide, and Air
-    if AirExploitValue > 0 then
-        pcall(function()
-            for _, instance in ipairs(movementInstances) do
-                if instance and type(instance.overrideMovementStats) == "table" then
-                    instance.overrideMovementStats.AirAcceleration = AirExploitValue
-                    instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
-                end
+-- Event-Based Emote Detector (Saves massive CPU instead of checking 60 times a second)
+local function SetupEmoteDetector(character)
+    if ScriptConns.EmoteStateConn then ScriptConns.EmoteStateConn:Disconnect() end
+    ScriptConns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
+        local currentState = character:GetAttribute("State") or ""
+        local nowEmoting = string.find(currentState, "Emoting") ~= nil
+        
+        if nowEmoting ~= isCurrentlyEmoting then
+            isCurrentlyEmoting = nowEmoting
+            if isCurrentlyEmoting then
+                RevertAirStatsForEmote()
             end
-        end)
-    end
+        end
+    end)
+end
+
+-- UNBREAKABLE ENFORCER (Optimized to only write, no reading state inside)
+RunService.Stepped:Connect(function()
+    if isCurrentlyEmoting or AirExploitValue <= 0 then return end
+    
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and type(instance.overrideMovementStats) == "table" then
+                instance.overrideMovementStats.AirAcceleration = AirExploitValue
+                instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
+            end
+        end
+    end)
 end)
 
--- RAPID BACKGROUND SCANNER: Catches new tables instantly when the map/round changes
+-- OPTIMIZED BACKGROUND SCANNER: 15 seconds instead of 2. Stepped loop handles the rest.
 task.spawn(function()
     while true do
-        task.wait(2)
+        task.wait(15)
         CacheMovementInstances()
     end
 end)
@@ -427,10 +415,17 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM
+-- BHOP SYSTEM (OPTIMIZED RAYCASTING)
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
+    
+    -- Quick Native Check (Saves expensive raycast if we are clearly in the air)
+    local state = Humanoid:GetState()
+    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
+        return false
+    end
+    
     local rayOrigin = RootPart.Position
     local rayDirection = Vector3.new(0, -GROUND_CHECK_DISTANCE, 0)
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
@@ -861,7 +856,7 @@ local function CreateButtonGroup(parent, yPos, options, default, callback)
 end
 
 -- =====================
--- MAIN GUI
+-- MAIN GUI (FULLBRIGHT REMOVED)
 -- =====================
 local GUI_HEIGHT = 380
 
@@ -894,7 +889,7 @@ local function CreateMainGUI()
     local y = 8
     
     y = CreateSection(content, "GENERAL", y)
-    CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
+    -- Fullbright Toggle Removed (Bound to P instead)
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
 
     y = CreateSection(content, "SELF REVIVE [R]", y)
@@ -1003,7 +998,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         else
             holdQ = true
         end
-    elseif key == Enum.KeyCode.P then ToggleFullbright()
+    elseif key == Enum.KeyCode.P then ToggleFullbright() -- Fullbright is now ONLY bound to P
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
         startBounce()
@@ -1048,14 +1043,10 @@ local function SetupCharacter(character)
         ScriptConns.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
     
+    SetupEmoteDetector(character)
     setupJumpButton()
     
     CacheMovementInstances()
-    ApplyAirExploit()
-    
-    task.delay(1, function() CacheMovementInstances() ApplyAirExploit() end)
-    task.delay(3, function() CacheMovementInstances() ApplyAirExploit() end)
-    task.delay(6, function() CacheMovementInstances() ApplyAirExploit() end)
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -1112,10 +1103,6 @@ Workspace.ChildAdded:Connect(function(child)
         currentlyCarrying = false
         
         CacheMovementInstances()
-        ApplyAirExploit()
-        
-        task.delay(1, function() CacheMovementInstances() ApplyAirExploit() end)
-        task.delay(3, function() CacheMovementInstances() ApplyAirExploit() end)
         
         pcall(function() collectgarbage("step", 200) end)
     end
@@ -1129,6 +1116,5 @@ end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 CacheMovementInstances()
-ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - V34 Mechanics + Unbreakable!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Ultra Smooth + Unbreakable!")
