@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 34
+local SCRIPT_VERSION = 35
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -75,6 +75,7 @@ local sharedRayParams = RaycastParams.new()
 sharedRayParams.FilterType = Enum.RaycastFilterType.Blacklist
 sharedRayParams.IgnoreWater = true
 local rayBlacklist = {}
+local LastRayFilterUpdate = 0
 
 local function RebuildRayBlacklist()
     local newBlacklist = {}
@@ -107,7 +108,8 @@ local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
 local lastAirCacheTime = 0
-local AIR_CACHE_INTERVAL = 30
+-- CHANGED: Reduced from 30 to 10 seconds for faster recovery if tables change mid-round
+local AIR_CACHE_INTERVAL = 10 
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -154,7 +156,7 @@ local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- AIR STRAFE ENGINE (OPTIMIZED)
+-- AIR STRAFE ENGINE (OPTIMIZED & ROUND PERSISTENT)
 -- =====================
 local function CacheMovementInstances()
     local newList = {}
@@ -535,11 +537,9 @@ end
 -- CARRY (Hyper-Responsive Instant Grab)
 -- =====================
 local function DoCarry()
-    -- If already carrying someone, or not pressing Q, don't scan
     if currentlyCarrying or not holdQ then return end 
     
     local now = tick()
-    -- 0.1 second debounce is the sweet spot: fast enough to feel instant, safe enough not to get kicked for spam
     if now - CarryDebounce < 0.1 then return end 
     
     local char = LocalPlayer.Character
@@ -547,7 +547,6 @@ local function DoCarry()
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     
-    -- Don't try to carry if we are downed ourselves
     local isDowned = SafeCall(function() return char:GetAttribute("Downed") end)
     if isDowned then return end
     
@@ -555,7 +554,6 @@ local function DoCarry()
     local closestPlayer = nil
     local closestDist = CARRY_RANGE
     
-    -- Find the closest downed player in range
     for _, other in ipairs(Players:GetPlayers()) do
         if other ~= LocalPlayer and other.Character then
             local otherHrp = other.Character:FindFirstChild("HumanoidRootPart")
@@ -563,8 +561,6 @@ local function DoCarry()
                 local dist = (myPos - otherHrp.Position).Magnitude
                 
                 if dist <= closestDist then
-                    -- THIS IS THE CRITICAL PART YOUR OLD SCRIPT WAS MISSING:
-                    -- It MUST check if the other player is downed, otherwise the server ignores you
                     local otherDowned = SafeCall(function() return other.Character:GetAttribute("Downed") end)
                     local otherHum = other.Character:FindFirstChild("Humanoid")
                     local isPhysics = otherHum and otherHum:GetState() == Enum.HumanoidStateType.Physics
@@ -578,12 +574,10 @@ local function DoCarry()
         end
     end
     
-    -- If we found a downed player near us, fire instantly!
     if closestPlayer then
         SafeCall(function()
             local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
             if event then 
-                -- Using the exact arguments from your snippet
                 event:FireServer("Carry", true, closestPlayer.Name) 
             end
         end)
@@ -986,14 +980,12 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     elseif key == Enum.KeyCode.R then manualRevive()
     elseif key == Enum.KeyCode.Q then 
         if currentlyCarrying then
-            -- Tap Q to drop them
             SafeCall(function()
                 local event = SafeGetPath(ReplicatedStorage, "Events", "Character", "Interact")
                 if event then event:FireServer("EndCarry") end
             end)
             currentlyCarrying = false
         else
-            -- Hold Q to start scanning/grabbing
             holdQ = true
         end
     elseif key == Enum.KeyCode.P then ToggleFullbright()
@@ -1015,7 +1007,7 @@ UserInputService.InputEnded:Connect(function(input)
         holdSpace = false
         if bhopHoldActive then bhopHoldActive = false checkBhopState() end
     elseif key == Enum.KeyCode.Q then 
-        holdQ = false -- Stop scanning, but keep them on your back!
+        holdQ = false
     elseif key == Enum.KeyCode.LeftShift then 
         holdLeftShift = false
         stopBounce()
@@ -1044,8 +1036,15 @@ local function SetupCharacter(character)
     SetupEmoteDetector(character)
     setupJumpButton()
     
+    -- Instantly try to cache and apply
     CacheMovementInstances()
     if not isCurrentlyEmoting then ApplyAirExploit() end
+    
+    -- Delayed backup cache for when GC tables load slightly after character
+    task.delay(2, function()
+        CacheMovementInstances()
+        if not isCurrentlyEmoting then ApplyAirExploit() end
+    end)
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -1108,6 +1107,17 @@ Workspace.ChildAdded:Connect(function(child)
         UpdateTimer()
         hasRevived = false
         currentlyCarrying = false
+        
+        -- ADDED: Force recache and apply Air Strafe for the new round/map
+        CacheMovementInstances()
+        if not isCurrentlyEmoting then ApplyAirExploit() end
+        
+        -- ADDED: Delayed backup to ensure new GC tables are caught if they load late
+        task.delay(3, function()
+            CacheMovementInstances()
+            if not isCurrentlyEmoting then ApplyAirExploit() end
+        end)
+        
         pcall(function() collectgarbage("step", 200) end)
     end
 end)
@@ -1122,4 +1132,4 @@ CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUp
 CacheMovementInstances()
 ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Lag Optimized!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Lag & Round Optimized!")
