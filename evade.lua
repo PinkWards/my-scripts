@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 46
+local SCRIPT_VERSION = 48
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,12 +102,92 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (ZERO LAG DYNAMIC HOOK)
+-- AIR STRAFE VARIABLES (UNBREAKABLE + EMOTE HOP FIX + SPEED CAP)
 -- =====================
+local movementInstances = {}
 local AirExploitValue = 500
+local isCurrentlyEmoting = false
+local EMOTE_HOP_SPEED_CAP = 50 -- Limits speedometer speed to 50 when emote hopping
 
 local ScriptConns = {}
 local ExScriptConns = {}
+
+local function CacheMovementInstances()
+    local newList = {}
+    pcall(function()
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" and rawget(v, "defaultMovementStats") then
+                table.insert(newList, v)
+            end
+        end
+    end)
+    movementInstances = newList
+end
+
+local function RevertAirStatsForEmote()
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = val
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function SetupEmoteDetector(character)
+    if ScriptConns.EmoteStateConn then ScriptConns.EmoteStateConn:Disconnect() end
+    ScriptConns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
+        local currentState = character:GetAttribute("State") or ""
+        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
+    end)
+end
+
+-- UNBREAKABLE ENFORCER + EMOTE HOP SPEED LIMITER
+-- If Emoting AND NOT BhopActive -> Revert (Prevents slope fling)
+-- If Emoting AND BhopActive -> Cap speed to 50 (Emote Hop Limiter)
+-- Otherwise -> Apply Exploit
+RunService.Stepped:Connect(function()
+    if isCurrentlyEmoting and not bhopHoldActive then
+        RevertAirStatsForEmote()
+        return
+    end
+    
+    -- EMOTE HOP SPEED LIMITER
+    if isCurrentlyEmoting and bhopHoldActive then
+        if RootPart then
+            local vel = RootPart.Velocity
+            local hVel = Vector3.new(vel.X, 0, vel.Z)
+            local hSpeed = hVel.Magnitude
+            if hSpeed > EMOTE_HOP_SPEED_CAP then
+                local dir = hVel.Unit
+                RootPart.Velocity = Vector3.new(dir.X * EMOTE_HOP_SPEED_CAP, vel.Y, dir.Z * EMOTE_HOP_SPEED_CAP)
+            end
+        end
+    end
+    
+    if AirExploitValue > 0 then
+        pcall(function()
+            for _, instance in ipairs(movementInstances) do
+                if instance and type(instance.overrideMovementStats) == "table" then
+                    instance.overrideMovementStats.AirAcceleration = AirExploitValue
+                    instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
+                end
+            end
+        end)
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(20)
+        CacheMovementInstances()
+    end
+end)
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -146,7 +226,7 @@ local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- MOVEMENT MODULE HOOK (ZERO LAG AIR STRAFE + EMOTE HOP FIX)
+-- MOVEMENT MODULE HOOK
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
@@ -157,19 +237,6 @@ pcall(function()
         
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
-        
-        -- OP AIR STRAFE: Dynamic Injection (Zero Lag, Unbreakable)
-        local currentState = Character and Character:GetAttribute("State") or ""
-        local isEmoting = string.find(currentState, "Emoting") ~= nil
-        
-        -- Allow Air Strafe if NOT emoting, OR if Emoting + Holding Space (Emote Hop)
-        -- Block Air Strafe if Emoting + NOT Holding Space (Prevents emote-slide slope flings)
-        if not (isEmoting and not isBhopActive) then
-            if AirExploitValue > 0 then
-                v.AirAcceleration = AirExploitValue
-                v.AirStrafeAcceleration = AirExploitValue
-            end
-        end
         
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
@@ -352,16 +419,10 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM (OPTIMIZED RAYCASTING)
+-- BHOP SYSTEM
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
-    
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-        return false
-    end
-    
     local rayOrigin = RootPart.Position
     local rayDirection = Vector3.new(0, -GROUND_CHECK_DISTANCE, 0)
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
@@ -979,7 +1040,10 @@ local function SetupCharacter(character)
         ScriptConns.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
     
+    SetupEmoteDetector(character)
     setupJumpButton()
+    
+    CacheMovementInstances()
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -1002,7 +1066,7 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP (ULTRA LIGHTWEIGHT)
+-- MAIN LOOP
 -- =====================
 local function StartMainLoop()
     if ScriptConns.SlowLoop then ScriptConns.SlowLoop:Disconnect() end
@@ -1036,6 +1100,8 @@ Workspace.ChildAdded:Connect(function(child)
         UpdateTimer()
         hasRevived = false
         currentlyCarrying = false
+        
+        CacheMovementInstances()
     end
 end)
 
@@ -1046,5 +1112,6 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
+CacheMovementInstances()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Emote Hop Fixed + Zero Lag!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Emote Hop Speed Cap + Zero Lag!")
