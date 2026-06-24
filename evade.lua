@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 35
+local SCRIPT_VERSION = 36
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -69,7 +69,7 @@ local minAcceleration = -1
 local maxAutoAccelSpeed = 70
 
 -- =====================
--- SHARED RAYCAST PARAMS (reuse, never recreate)
+-- SHARED RAYCAST PARAMS
 -- =====================
 local sharedRayParams = RaycastParams.new()
 sharedRayParams.FilterType = Enum.RaycastFilterType.Blacklist
@@ -104,12 +104,8 @@ local wasInAir = false
 -- =====================
 -- AIR STRAFE VARIABLES
 -- =====================
-local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
-local lastAirCacheTime = 0
--- CHANGED: Reduced from 30 to 10 seconds for faster recovery if tables change mid-round
-local AIR_CACHE_INTERVAL = 10 
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -156,77 +152,36 @@ local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- AIR STRAFE ENGINE (OPTIMIZED & ROUND PERSISTENT)
+-- EMOTE DETECTOR
 -- =====================
-local function CacheMovementInstances()
-    local newList = {}
-    pcall(function()
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "table" and rawget(v, "defaultMovementStats") then
-                table.insert(newList, v)
-            end
-        end
-    end)
-    movementInstances = newList
-end
-
-local function ApplyAirExploit()
-    if AirExploitValue <= 0 then return end
-    pcall(function()
-        for _, instance in ipairs(movementInstances) do
-            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
-                for k, val in pairs(instance.defaultMovementStats) do
-                    local lowerK = string.lower(k)
-                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
-                        instance.overrideMovementStats[k] = AirExploitValue
-                    end
-                end
-            end
-        end
-    end)
-end
-
-local function RevertAirStatsForSlide()
-    pcall(function()
-        for _, instance in ipairs(movementInstances) do
-            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
-                for k, val in pairs(instance.defaultMovementStats) do
-                    local lowerK = string.lower(k)
-                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
-                        instance.overrideMovementStats[k] = val
-                    end
-                end
-            end
-        end
-    end)
-end
-
 local function SetupEmoteDetector(character)
     if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
     Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
         local currentState = character:GetAttribute("State") or ""
-        local nowEmoting = string.find(currentState, "Emoting") ~= nil
-        if nowEmoting ~= isCurrentlyEmoting then
-            isCurrentlyEmoting = nowEmoting
-            if isCurrentlyEmoting then
-                RevertAirStatsForSlide()
-            else
-                ApplyAirExploit()
-            end
-        end
+        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
+        -- No need to manually apply/revert stats anymore! The hook handles it dynamically.
     end)
 end
 
 -- =====================
--- MOVEMENT MODULE HOOK
+-- MOVEMENT MODULE HOOK (BHOP + AIR STRAFE FIX)
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
     local originalGetStats = m.getStats
     m.getStats = function(s, p)
         local v = originalGetStats(s, p)
+        if not v then return v end
+        
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
+        
+        -- OP AIR STRAFE: Injected directly into the hook so the game can NEVER wipe it!
+        if not isCurrentlyEmoting and AirExploitValue > 0 then
+            v.AirAcceleration = AirExploitValue
+            v.AirStrafeAcceleration = AirExploitValue
+        end
+
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
 
@@ -534,7 +489,7 @@ local function OnStateChanged(old, new)
 end
 
 -- =====================
--- CARRY (Hyper-Responsive Instant Grab)
+-- CARRY
 -- =====================
 local function DoCarry()
     if currentlyCarrying or not holdQ then return end 
@@ -672,7 +627,7 @@ Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):C
 end)
 
 -- =====================
--- COLA HOOK (optimized - early exit when inactive)
+-- COLA HOOK
 -- =====================
 local function InstallColaHook()
     if ColaSettings.HookInstalled then return end
@@ -901,7 +856,7 @@ local function CreateMainGUI()
     CreateInput(content, "Height", y, BounceHeight, function(v) BounceHeight = tonumber(v) or 90 end) y = y + 32
 
     y = CreateSection(content, "AIR STRAFE (OP)", y)
-    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n if not isCurrentlyEmoting then ApplyAirExploit() end end end) y = y + 32
+    CreateInput(content, "Exploit Pwr", y, AirExploitValue, function(v) local n = tonumber(v) if n and n > 0 then AirExploitValue = n end end) y = y + 32
 
     y = CreateSection(content, "CUSTOM COLA", y)
     CreateToggle(content, "InfCola", "Custom Cola", y, function(s) ToggleInfiniteCola(s) end) y = y + 28
@@ -1036,16 +991,6 @@ local function SetupCharacter(character)
     SetupEmoteDetector(character)
     setupJumpButton()
     
-    -- Instantly try to cache and apply
-    CacheMovementInstances()
-    if not isCurrentlyEmoting then ApplyAirExploit() end
-    
-    -- Delayed backup cache for when GC tables load slightly after character
-    task.delay(2, function()
-        CacheMovementInstances()
-        if not isCurrentlyEmoting then ApplyAirExploit() end
-    end)
-    
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
     end
@@ -1073,18 +1018,10 @@ local function StartMainLoop()
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
     local cleanupAccum = 0
-    local airAccum = 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
         if holdQ then DoCarry() end
-        
-        airAccum = airAccum + dt
-        if airAccum >= AIR_CACHE_INTERVAL then
-            airAccum = 0
-            CacheMovementInstances()
-            if not isCurrentlyEmoting then ApplyAirExploit() end
-        end
         
         cleanupAccum = cleanupAccum + dt
         if cleanupAccum >= 10.0 then 
@@ -1108,16 +1045,6 @@ Workspace.ChildAdded:Connect(function(child)
         hasRevived = false
         currentlyCarrying = false
         
-        -- ADDED: Force recache and apply Air Strafe for the new round/map
-        CacheMovementInstances()
-        if not isCurrentlyEmoting then ApplyAirExploit() end
-        
-        -- ADDED: Delayed backup to ensure new GC tables are caught if they load late
-        task.delay(3, function()
-            CacheMovementInstances()
-            if not isCurrentlyEmoting then ApplyAirExploit() end
-        end)
-        
         pcall(function() collectgarbage("step", 200) end)
     end
 end)
@@ -1129,7 +1056,5 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
-CacheMovementInstances()
-ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Lag & Round Optimized!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Hook-Based Air Strafe!")
