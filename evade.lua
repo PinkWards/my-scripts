@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 42
+local SCRIPT_VERSION = 43
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,14 +102,11 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (UNBREAKABLE + FLING PROTECTED)
+-- AIR STRAFE VARIABLES (V34 BHOP/SLIDE LOGIC RESTORED)
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
-local lastSlideTime = 0
-local SLIDE_FLING_COOLDOWN = 0.5 -- Waits 0.5s after a slide ends to prevent slope flings
 
--- Renamed to prevent Executor nil bugs
 local ScriptConns = {}
 local ExScriptConns = {}
 
@@ -141,7 +138,7 @@ local function ApplyAirExploit()
     end)
 end
 
-local function RevertAirStatsForSlide()
+local function RevertAirStatsForEmote()
     pcall(function()
         for _, instance in ipairs(movementInstances) do
             if instance and instance.defaultMovementStats and instance.overrideMovementStats then
@@ -156,31 +153,21 @@ local function RevertAirStatsForSlide()
     end)
 end
 
--- THE UNBREAKABLE ENFORCER: Force-writes every frame so the game cannot wipe it on round changes
+-- UNBREAKABLE ENFORCER + V34 BEHAVIOR RESTORED
+-- Force-writes every frame so the game cannot wipe it on round changes.
+-- Only turns off for EMOTES to prevent emote-slide flings (like V34).
+-- Works in Bhop, Air, and Infinite Slide!
 RunService.Stepped:Connect(function()
     if not Character then return end
     local currentState = Character:GetAttribute("State") or ""
     
-    -- 1. If sliding, turn off exploit and record the time
-    if string.find(currentState, "Slide") then
-        lastSlideTime = tick()
-        RevertAirStatsForSlide()
-        return
-    end
-    
-    -- 2. If emoting, turn off exploit
+    -- If Emoting, turn off exploit (Prevents emote-slide slope flings, exactly like V34)
     if string.find(currentState, "Emoting") then
-        RevertAirStatsForSlide()
+        RevertAirStatsForEmote()
         return
     end
     
-    -- 3. FLING PROTECTION: Wait 0.5 seconds after a slide ends before applying 500 acceleration
-    if tick() - lastSlideTime < SLIDE_FLING_COOLDOWN then
-        RevertAirStatsForSlide()
-        return
-    end
-    
-    -- 4. Safe to enforce exploit
+    -- Safe to enforce exploit for Bhop, Inf-Slide, and Air
     if AirExploitValue > 0 then
         pcall(function()
             for _, instance in ipairs(movementInstances) do
@@ -1144,4 +1131,4 @@ CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUp
 CacheMovementInstances()
 ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Unbreakable Strafe + No Fling!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - V34 Mechanics + Unbreakable!")
