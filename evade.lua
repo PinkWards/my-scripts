@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 45
+local SCRIPT_VERSION = 43
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,22 +102,91 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (ZERO LAG HOOK METHOD)
+-- AIR STRAFE VARIABLES (V34 BHOP/SLIDE LOGIC RESTORED)
 -- =====================
+local movementInstances = {}
 local AirExploitValue = 500
-local isCurrentlyEmoting = false
 
 local ScriptConns = {}
 local ExScriptConns = {}
 
--- Event-Based Emote Detector (Zero CPU usage)
-local function SetupEmoteDetector(character)
-    if ScriptConns.EmoteStateConn then ScriptConns.EmoteStateConn:Disconnect() end
-    ScriptConns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
-        local currentState = character:GetAttribute("State") or ""
-        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
+local function CacheMovementInstances()
+    local newList = {}
+    pcall(function()
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" and rawget(v, "defaultMovementStats") then
+                table.insert(newList, v)
+            end
+        end
+    end)
+    movementInstances = newList
+end
+
+local function ApplyAirExploit()
+    if AirExploitValue <= 0 then return end
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = AirExploitValue
+                    end
+                end
+            end
+        end
     end)
 end
+
+local function RevertAirStatsForEmote()
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = val
+                    end
+                end
+            end
+        end
+    end)
+end
+
+-- UNBREAKABLE ENFORCER + V34 BEHAVIOR RESTORED
+-- Force-writes every frame so the game cannot wipe it on round changes.
+-- Only turns off for EMOTES to prevent emote-slide flings (like V34).
+-- Works in Bhop, Air, and Infinite Slide!
+RunService.Stepped:Connect(function()
+    if not Character then return end
+    local currentState = Character:GetAttribute("State") or ""
+    
+    -- If Emoting, turn off exploit (Prevents emote-slide slope flings, exactly like V34)
+    if string.find(currentState, "Emoting") then
+        RevertAirStatsForEmote()
+        return
+    end
+    
+    -- Safe to enforce exploit for Bhop, Inf-Slide, and Air
+    if AirExploitValue > 0 then
+        pcall(function()
+            for _, instance in ipairs(movementInstances) do
+                if instance and type(instance.overrideMovementStats) == "table" then
+                    instance.overrideMovementStats.AirAcceleration = AirExploitValue
+                    instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
+                end
+            end
+        end)
+    end
+end)
+
+-- RAPID BACKGROUND SCANNER: Catches new tables instantly when the map/round changes
+task.spawn(function()
+    while true do
+        task.wait(2)
+        CacheMovementInstances()
+    end
+end)
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -152,11 +221,16 @@ local FullbrightEnabled = false
 local SavedLighting = nil
 local LastCamera = nil
 
+local LastGCTime = 0
+local GC_INTERVAL = 90
+local LastCacheCleanup = 0
+local CACHE_CLEANUP_INTERVAL = 60
+
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- MOVEMENT MODULE HOOK (ZERO LAG AIR STRAFE + BHOP)
+-- MOVEMENT MODULE HOOK
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
@@ -167,13 +241,6 @@ pcall(function()
         
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
-        
-        -- OP AIR STRAFE: Dynamically injected. Unbreakable across rounds, 0% lag!
-        -- Only disabled for Emoting (prevents emote-slide flings). Works in Bhop & Inf-Slide!
-        if not isCurrentlyEmoting and AirExploitValue > 0 then
-            v.AirAcceleration = AirExploitValue
-            v.AirStrafeAcceleration = AirExploitValue
-        end
         
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
@@ -247,6 +314,18 @@ end
 local function SafeCall(func, ...)
     local success, result = pcall(func, ...)
     return success and result
+end
+
+local function PeriodicCleanup()
+    local now = tick()
+    if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
+        LastCacheCleanup = now
+        if CachedGame and not CachedGame.Parent then CachedGame = Workspace:FindFirstChild("Game") end
+    end
+    if now - LastGCTime >= GC_INTERVAL then
+        LastGCTime = now
+        pcall(function() collectgarbage("step", 100) end)
+    end
 end
 
 local function CleanupRoundConnections()
@@ -348,16 +427,10 @@ local function stopBounce()
 end
 
 -- =====================
--- BHOP SYSTEM (OPTIMIZED RAYCASTING)
+-- BHOP SYSTEM
 -- =====================
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
-    
-    local state = Humanoid:GetState()
-    if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
-        return false
-    end
-    
     local rayOrigin = RootPart.Position
     local rayDirection = Vector3.new(0, -GROUND_CHECK_DISTANCE, 0)
     local raycastResult = workspace:Raycast(rayOrigin, rayDirection, sharedRayParams)
@@ -821,6 +894,7 @@ local function CreateMainGUI()
     local y = 8
     
     y = CreateSection(content, "GENERAL", y)
+    CreateToggle(content, "Bright", "Fullbright", y, function(s) if not s then ToggleFullbright() else ToggleFullbright() end end) y = y + 32
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
 
     y = CreateSection(content, "SELF REVIVE [R]", y)
@@ -974,8 +1048,14 @@ local function SetupCharacter(character)
         ScriptConns.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
     
-    SetupEmoteDetector(character)
     setupJumpButton()
+    
+    CacheMovementInstances()
+    ApplyAirExploit()
+    
+    task.delay(1, function() CacheMovementInstances() ApplyAirExploit() end)
+    task.delay(3, function() CacheMovementInstances() ApplyAirExploit() end)
+    task.delay(6, function() CacheMovementInstances() ApplyAirExploit() end)
     
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
@@ -998,21 +1078,21 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP (ULTRA LIGHTWEIGHT)
+-- MAIN LOOP
 -- =====================
 local function StartMainLoop()
     if ScriptConns.SlowLoop then ScriptConns.SlowLoop:Disconnect() end
     
-    local carryAccum = 0
+    local cleanupAccum = 0
     ScriptConns.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
-        if holdQ then 
-            carryAccum = carryAccum + dt
-            if carryAccum >= 0.1 then
-                carryAccum = 0
-                DoCarry() 
-            end
+        if holdQ then DoCarry() end
+        
+        cleanupAccum = cleanupAccum + dt
+        if cleanupAccum >= 10.0 then 
+            cleanupAccum = 0 
+            PeriodicCleanup() 
         end
     end)
 end
@@ -1030,6 +1110,14 @@ Workspace.ChildAdded:Connect(function(child)
         UpdateTimer()
         hasRevived = false
         currentlyCarrying = false
+        
+        CacheMovementInstances()
+        ApplyAirExploit()
+        
+        task.delay(1, function() CacheMovementInstances() ApplyAirExploit() end)
+        task.delay(3, function() CacheMovementInstances() ApplyAirExploit() end)
+        
+        pcall(function() collectgarbage("step", 200) end)
     end
 end)
 
@@ -1040,5 +1128,7 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
+CacheMovementInstances()
+ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Zero Lag Hook Method!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - V34 Mechanics + Unbreakable!")
