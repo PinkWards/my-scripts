@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 48
+local SCRIPT_VERSION = 49
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,12 +102,11 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (UNBREAKABLE + EMOTE HOP FIX + SPEED CAP)
+-- AIR STRAFE VARIABLES (ONLY BHOP + INF SLIDE)
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
-local EMOTE_HOP_SPEED_CAP = 50 -- Limits speedometer speed to 50 when emote hopping
 
 local ScriptConns = {}
 local ExScriptConns = {}
@@ -139,6 +138,7 @@ local function RevertAirStatsForEmote()
     end)
 end
 
+-- Event-Based Emote Detector (Zero CPU usage)
 local function SetupEmoteDetector(character)
     if ScriptConns.EmoteStateConn then ScriptConns.EmoteStateConn:Disconnect() end
     ScriptConns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
@@ -147,29 +147,19 @@ local function SetupEmoteDetector(character)
     end)
 end
 
--- UNBREAKABLE ENFORCER + EMOTE HOP SPEED LIMITER
--- If Emoting AND NOT BhopActive -> Revert (Prevents slope fling)
--- If Emoting AND BhopActive -> Cap speed to 50 (Emote Hop Limiter)
--- Otherwise -> Apply Exploit
+-- UNBREAKABLE ENFORCER
+-- Completely turns off if Emoting (No Emote Hop Air Strafe)
+-- Applies OP Air Strafe only for Bhop and Inf-Slide
 RunService.Stepped:Connect(function()
-    if isCurrentlyEmoting and not bhopHoldActive then
+    if not Character then return end
+    
+    -- If Emoting, turn off exploit completely (Disables Emote Hop Air Strafe & Prevents slope flings)
+    if isCurrentlyEmoting then
         RevertAirStatsForEmote()
         return
     end
     
-    -- EMOTE HOP SPEED LIMITER
-    if isCurrentlyEmoting and bhopHoldActive then
-        if RootPart then
-            local vel = RootPart.Velocity
-            local hVel = Vector3.new(vel.X, 0, vel.Z)
-            local hSpeed = hVel.Magnitude
-            if hSpeed > EMOTE_HOP_SPEED_CAP then
-                local dir = hVel.Unit
-                RootPart.Velocity = Vector3.new(dir.X * EMOTE_HOP_SPEED_CAP, vel.Y, dir.Z * EMOTE_HOP_SPEED_CAP)
-            end
-        end
-    end
-    
+    -- Safe to enforce exploit for Bhop, Inf-Slide, and Air
     if AirExploitValue > 0 then
         pcall(function()
             for _, instance in ipairs(movementInstances) do
@@ -182,6 +172,7 @@ RunService.Stepped:Connect(function()
     end
 end)
 
+-- OPTIMIZED BACKGROUND SCANNER
 task.spawn(function()
     while true do
         task.wait(20)
@@ -1114,4 +1105,4 @@ end)
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
 CacheMovementInstances()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Emote Hop Speed Cap + Zero Lag!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Bhop/Slide Only Air Strafe!")
