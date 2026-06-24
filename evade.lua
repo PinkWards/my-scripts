@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 40
+local SCRIPT_VERSION = 41
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,7 +102,7 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (RESTORED V34 SAFE LOGIC)
+-- AIR STRAFE VARIABLES
 -- =====================
 local movementInstances = {}
 local AirExploitValue = 500
@@ -120,7 +120,6 @@ local function CacheMovementInstances()
     movementInstances = newList
 end
 
--- V34 EXACT SAFE APPLY
 local function ApplyAirExploit()
     if AirExploitValue <= 0 then return end
     pcall(function()
@@ -137,7 +136,6 @@ local function ApplyAirExploit()
     end)
 end
 
--- V34 EXACT SAFE REVERT
 local function RevertAirStatsForSlide()
     pcall(function()
         for _, instance in ipairs(movementInstances) do
@@ -153,11 +151,14 @@ local function RevertAirStatsForSlide()
     end)
 end
 
+-- Renamed Connections to Conns to prevent Executor nil bugs
+local Conns = {}
+local ExConns = {}
+
 local function SetupEmoteDetector(character)
-    if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
-    Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
+    if Conns.EmoteStateConn then Conns.EmoteStateConn:Disconnect() end
+    Conns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
         local currentState = character:GetAttribute("State") or ""
-        -- Revert Air Strafe if Emoting OR Sliding (Prevents slope flings)
         local isAction = string.find(currentState, "Emoting") ~= nil or string.find(currentState, "Slide") ~= nil
         
         if isAction ~= isCurrentlyEmoting then
@@ -203,9 +204,6 @@ local CachedGame = nil
 local FullbrightEnabled = false
 local SavedLighting = nil
 local LastCamera = nil
-
-local Connections = {}
-local ExchangeConnections = {}
 
 local LastGCTime = 0
 local GC_INTERVAL = 90
@@ -315,17 +313,17 @@ local function PeriodicCleanup()
 end
 
 local function CleanupRoundConnections()
-    if Connections.Timer then
-        Connections.Timer:Disconnect()
-        Connections.Timer = nil
+    if Conns.Timer then
+        Conns.Timer:Disconnect()
+        Conns.Timer = nil
     end
 end
 
 local function CleanupAll()
-    for _, conn in pairs(Connections) do SafeCall(function() conn:Disconnect() end) end
-    table.clear(Connections)
-    for _, conn in pairs(ExchangeConnections) do SafeCall(function() conn:Disconnect() end) end
-    table.clear(ExchangeConnections)
+    for _, conn in pairs(Conns) do SafeCall(function() conn:Disconnect() end) end
+    table.clear(Conns)
+    for _, conn in pairs(ExConns) do SafeCall(function() conn:Disconnect() end) end
+    table.clear(ExConns)
     if edgeTrimpConnection then SafeCall(function() edgeTrimpConnection:Disconnect() end) edgeTrimpConnection = nil end
     if bhopConnection then SafeCall(function() bhopConnection:Disconnect() end) bhopConnection = nil end
     if characterBhopConn then SafeCall(function() characterBhopConn:Disconnect() end) characterBhopConn = nil end
@@ -628,23 +626,23 @@ local function ForceEnableExchange()
         local exitButton = SafeGetPath(player, "PlayerGui", "Menu", "Views", "Battlepass", "Exchange", "Center", "Exit", "ImageButton")
         if exchangeButton then
             player.PlayerGui.Menu.Views.Default.MainMenu.LeftCorner.Exchange.Visible = true
-            if ExchangeConnections.ExchangeClick then ExchangeConnections.ExchangeClick:Disconnect() end
-            ExchangeConnections.ExchangeClick = exchangeButton.MouseButton1Click:Connect(function()
+            if ExConns.ExchangeClick then ExConns.ExchangeClick:Disconnect() end
+            ExConns.ExchangeClick = exchangeButton.MouseButton1Click:Connect(function()
                 local bp = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
                 if bp then bp.Center.Visible = false bp.Exchange.Visible = true end
             end)
         end
         if exitButton then
-            if ExchangeConnections.ExitClick then ExchangeConnections.ExitClick:Disconnect() end
-            ExchangeConnections.ExitClick = exitButton.MouseButton1Click:Connect(function()
+            if ExConns.ExitClick then ExConns.ExitClick:Disconnect() end
+            ExConns.ExitClick = exitButton.MouseButton1Click:Connect(function()
                 local bp = player.PlayerGui.Menu.Views:FindFirstChild("Battlepass")
                 if bp then repeat task.wait() until bp.Visible == false bp.Exchange.Visible = false bp.Center.Visible = true end
             end)
         end
     end
     patchExchange()
-    if ExchangeConnections.DescendantAdded then ExchangeConnections.DescendantAdded:Disconnect() end
-    ExchangeConnections.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function() task.wait(0.1) patchExchange() end)
+    if ExConns.DescendantAdded then ExConns.DescendantAdded:Disconnect() end
+    ExConns.DescendantAdded = player.PlayerGui.DescendantAdded:Connect(function() task.wait(0.1) patchExchange() end)
 end
 
 -- =====================
@@ -660,14 +658,14 @@ local function SetupCameraFOV()
     if camera then
         LastCamera = camera
         SetFOV()
-        if Connections.CameraFOV then Connections.CameraFOV:Disconnect() end
-        Connections.CameraFOV = camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+        if Conns.CameraFOV then Conns.CameraFOV:Disconnect() end
+        Conns.CameraFOV = camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
             if camera.FieldOfView ~= Config.FOV then camera.FieldOfView = Config.FOV end
         end)
     end
 end
 
-Connections.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+Conns.CameraChange = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
     local camera = Workspace.CurrentCamera
     if camera and camera ~= LastCamera then SetupCameraFOV() end
 end)
@@ -959,8 +957,8 @@ local function UpdateTimer()
     if not CachedGame then CachedGame = Workspace:FindFirstChild("Game") end
     local stats = CachedGame and CachedGame:FindFirstChild("Stats")
     if not stats then if TimerLabel then TimerLabel.Text = "0:00" end if StatusLabel then StatusLabel.Text = "WAITING" end return end
-    if Connections.Timer then Connections.Timer:Disconnect() Connections.Timer = nil end
-    Connections.Timer = stats:GetAttributeChangedSignal("Timer"):Connect(function()
+    if Conns.Timer then Conns.Timer:Disconnect() Conns.Timer = nil end
+    Conns.Timer = stats:GetAttributeChangedSignal("Timer"):Connect(function()
         local timer = stats:GetAttribute("Timer") local roundStarted = stats:GetAttribute("RoundStarted")
         if TimerLabel then local m = math.floor((timer or 0) / 60) local s = (timer or 0) % 60 TimerLabel.Text = string.format("%d:%02d", m, s)
             TimerLabel.TextColor3 = (roundStarted and timer and timer <= 15) and Theme.Danger or Theme.TextPrimary end
@@ -1019,7 +1017,7 @@ end)
 -- CHARACTER SETUP
 -- =====================
 local function SetupCharacter(character)
-    if Connections.StateChangedConn then Connections.StateChangedConn:Disconnect() Connections.StateChangedConn = nil end
+    if Conns.StateChangedConn then Conns.StateChangedConn:Disconnect() Conns.StateChangedConn = nil end
     
     Character = character
     Humanoid = character:WaitForChild("Humanoid", 5)
@@ -1031,7 +1029,7 @@ local function SetupCharacter(character)
     currentlyCarrying = false
     
     if Humanoid then 
-        Connections.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
+        Conns.StateChangedConn = Humanoid.StateChanged:Connect(OnStateChanged)
     end
     
     SetupEmoteDetector(character)
@@ -1068,11 +1066,11 @@ end
 -- MAIN LOOP
 -- =====================
 local function StartMainLoop()
-    if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
+    if Conns.SlowLoop then Conns.SlowLoop:Disconnect() end
     
     local cleanupAccum = 0
     local cacheAccum = 0
-    Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
+    Conns.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
         if holdQ then DoCarry() end
@@ -1128,4 +1126,4 @@ CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUp
 CacheMovementInstances()
 ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - No Fling + V34 Bhop!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Nil Bug Fixed!")
