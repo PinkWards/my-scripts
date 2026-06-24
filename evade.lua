@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 44
+local SCRIPT_VERSION = 45
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,79 +102,22 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES (ULTRA OPTIMIZED)
+-- AIR STRAFE VARIABLES (ZERO LAG HOOK METHOD)
 -- =====================
-local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
 
 local ScriptConns = {}
 local ExScriptConns = {}
 
-local function CacheMovementInstances()
-    local newList = {}
-    pcall(function()
-        for _, v in pairs(getgc(true)) do
-            if type(v) == "table" and rawget(v, "defaultMovementStats") then
-                table.insert(newList, v)
-            end
-        end
-    end)
-    movementInstances = newList
-end
-
-local function RevertAirStatsForEmote()
-    pcall(function()
-        for _, instance in ipairs(movementInstances) do
-            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
-                for k, val in pairs(instance.defaultMovementStats) do
-                    local lowerK = string.lower(k)
-                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
-                        instance.overrideMovementStats[k] = val
-                    end
-                end
-            end
-        end
-    end)
-end
-
--- Event-Based Emote Detector (Saves massive CPU instead of checking 60 times a second)
+-- Event-Based Emote Detector (Zero CPU usage)
 local function SetupEmoteDetector(character)
     if ScriptConns.EmoteStateConn then ScriptConns.EmoteStateConn:Disconnect() end
     ScriptConns.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
         local currentState = character:GetAttribute("State") or ""
-        local nowEmoting = string.find(currentState, "Emoting") ~= nil
-        
-        if nowEmoting ~= isCurrentlyEmoting then
-            isCurrentlyEmoting = nowEmoting
-            if isCurrentlyEmoting then
-                RevertAirStatsForEmote()
-            end
-        end
+        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
     end)
 end
-
--- UNBREAKABLE ENFORCER (Optimized to only write, no reading state inside)
-RunService.Stepped:Connect(function()
-    if isCurrentlyEmoting or AirExploitValue <= 0 then return end
-    
-    pcall(function()
-        for _, instance in ipairs(movementInstances) do
-            if instance and type(instance.overrideMovementStats) == "table" then
-                instance.overrideMovementStats.AirAcceleration = AirExploitValue
-                instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
-            end
-        end
-    end)
-end)
-
--- OPTIMIZED BACKGROUND SCANNER: 15 seconds instead of 2. Stepped loop handles the rest.
-task.spawn(function()
-    while true do
-        task.wait(15)
-        CacheMovementInstances()
-    end
-end)
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -209,16 +152,11 @@ local FullbrightEnabled = false
 local SavedLighting = nil
 local LastCamera = nil
 
-local LastGCTime = 0
-local GC_INTERVAL = 90
-local LastCacheCleanup = 0
-local CACHE_CLEANUP_INTERVAL = 60
-
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- MOVEMENT MODULE HOOK
+-- MOVEMENT MODULE HOOK (ZERO LAG AIR STRAFE + BHOP)
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
@@ -229,6 +167,13 @@ pcall(function()
         
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
+        
+        -- OP AIR STRAFE: Dynamically injected. Unbreakable across rounds, 0% lag!
+        -- Only disabled for Emoting (prevents emote-slide flings). Works in Bhop & Inf-Slide!
+        if not isCurrentlyEmoting and AirExploitValue > 0 then
+            v.AirAcceleration = AirExploitValue
+            v.AirStrafeAcceleration = AirExploitValue
+        end
         
         local method = accelerationMethod or "Acceleration"
         local accel = accelerationValue or -0.2
@@ -302,18 +247,6 @@ end
 local function SafeCall(func, ...)
     local success, result = pcall(func, ...)
     return success and result
-end
-
-local function PeriodicCleanup()
-    local now = tick()
-    if now - LastCacheCleanup >= CACHE_CLEANUP_INTERVAL then
-        LastCacheCleanup = now
-        if CachedGame and not CachedGame.Parent then CachedGame = Workspace:FindFirstChild("Game") end
-    end
-    if now - LastGCTime >= GC_INTERVAL then
-        LastGCTime = now
-        pcall(function() collectgarbage("step", 100) end)
-    end
 end
 
 local function CleanupRoundConnections()
@@ -420,7 +353,6 @@ end
 local function IsOnGround()
     if not Character or not RootPart or not Humanoid then return false end
     
-    -- Quick Native Check (Saves expensive raycast if we are clearly in the air)
     local state = Humanoid:GetState()
     if state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping then
         return false
@@ -856,7 +788,7 @@ local function CreateButtonGroup(parent, yPos, options, default, callback)
 end
 
 -- =====================
--- MAIN GUI (FULLBRIGHT REMOVED)
+-- MAIN GUI
 -- =====================
 local GUI_HEIGHT = 380
 
@@ -889,7 +821,6 @@ local function CreateMainGUI()
     local y = 8
     
     y = CreateSection(content, "GENERAL", y)
-    -- Fullbright Toggle Removed (Bound to P instead)
     CreateToggle(content, "Exchange", "Exchange", y, function(s) ForceEnableExchange() end) y = y + 36
 
     y = CreateSection(content, "SELF REVIVE [R]", y)
@@ -998,7 +929,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         else
             holdQ = true
         end
-    elseif key == Enum.KeyCode.P then ToggleFullbright() -- Fullbright is now ONLY bound to P
+    elseif key == Enum.KeyCode.P then ToggleFullbright()
     elseif key == Enum.KeyCode.LeftShift then
         holdLeftShift = true
         startBounce()
@@ -1046,8 +977,6 @@ local function SetupCharacter(character)
     SetupEmoteDetector(character)
     setupJumpButton()
     
-    CacheMovementInstances()
-    
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
     end
@@ -1069,21 +998,21 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP
+-- MAIN LOOP (ULTRA LIGHTWEIGHT)
 -- =====================
 local function StartMainLoop()
     if ScriptConns.SlowLoop then ScriptConns.SlowLoop:Disconnect() end
     
-    local cleanupAccum = 0
+    local carryAccum = 0
     ScriptConns.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
-        if holdQ then DoCarry() end
-        
-        cleanupAccum = cleanupAccum + dt
-        if cleanupAccum >= 10.0 then 
-            cleanupAccum = 0 
-            PeriodicCleanup() 
+        if holdQ then 
+            carryAccum = carryAccum + dt
+            if carryAccum >= 0.1 then
+                carryAccum = 0
+                DoCarry() 
+            end
         end
     end)
 end
@@ -1101,10 +1030,6 @@ Workspace.ChildAdded:Connect(function(child)
         UpdateTimer()
         hasRevived = false
         currentlyCarrying = false
-        
-        CacheMovementInstances()
-        
-        pcall(function() collectgarbage("step", 200) end)
     end
 end)
 
@@ -1115,6 +1040,5 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
-CacheMovementInstances()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Ultra Smooth + Unbreakable!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Zero Lag Hook Method!")
