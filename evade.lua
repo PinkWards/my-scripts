@@ -1,6 +1,6 @@
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local SCRIPT_VERSION = 36
+local SCRIPT_VERSION = 37
 
 local TeleportService = game:GetService("TeleportService")
 local teleportConnection
@@ -102,10 +102,66 @@ local edgeTrimpConnection = nil
 local wasInAir = false
 
 -- =====================
--- AIR STRAFE VARIABLES
+-- AIR STRAFE VARIABLES (RESTORED & UNBREAKABLE)
 -- =====================
+local movementInstances = {}
 local AirExploitValue = 500
 local isCurrentlyEmoting = false
+
+local function CacheMovementInstances()
+    local newList = {}
+    pcall(function()
+        for _, v in pairs(getgc(true)) do
+            if type(v) == "table" and rawget(v, "defaultMovementStats") then
+                table.insert(newList, v)
+            end
+        end
+    end)
+    movementInstances = newList
+end
+
+local function ApplyAirExploit()
+    if AirExploitValue <= 0 then return end
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = AirExploitValue
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function RevertAirStatsForSlide()
+    pcall(function()
+        for _, instance in ipairs(movementInstances) do
+            if instance and instance.defaultMovementStats and instance.overrideMovementStats then
+                for k, val in pairs(instance.defaultMovementStats) do
+                    local lowerK = string.lower(k)
+                    if lowerK == "airacceleration" or lowerK == "airstrafeacceleration" then
+                        instance.overrideMovementStats[k] = val
+                    end
+                end
+            end
+        end
+    end)
+end
+
+local function SetupEmoteDetector(character)
+    if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
+    Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
+        local currentState = character:GetAttribute("State") or ""
+        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
+        if isCurrentlyEmoting then
+            RevertAirStatsForSlide()
+        end
+        -- When emoting finishes, the Heartbeat loop will instantly force the 500 value back automatically!
+    end)
+end
 
 -- =====================
 -- SELF REVIVE VARIABLES
@@ -152,19 +208,7 @@ local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
 
 -- =====================
--- EMOTE DETECTOR
--- =====================
-local function SetupEmoteDetector(character)
-    if Connections.EmoteStateConn then Connections.EmoteStateConn:Disconnect() end
-    Connections.EmoteStateConn = character:GetAttributeChangedSignal("State"):Connect(function()
-        local currentState = character:GetAttribute("State") or ""
-        isCurrentlyEmoting = string.find(currentState, "Emoting") ~= nil
-        -- No need to manually apply/revert stats anymore! The hook handles it dynamically.
-    end)
-end
-
--- =====================
--- MOVEMENT MODULE HOOK (BHOP + AIR STRAFE FIX)
+-- MOVEMENT MODULE HOOK
 -- =====================
 pcall(function()
     local m = require(ReplicatedStorage.Modules.Character.CharacterTable.CharacterController.Local.Movement)
@@ -176,7 +220,7 @@ pcall(function()
         local isBhopActive = bhopHoldActive
         v.BhopEnabled = isBhopActive
         
-        -- OP AIR STRAFE: Injected directly into the hook so the game can NEVER wipe it!
+        -- Double injection via hook just to be safe
         if not isCurrentlyEmoting and AirExploitValue > 0 then
             v.AirAcceleration = AirExploitValue
             v.AirStrafeAcceleration = AirExploitValue
@@ -991,6 +1035,14 @@ local function SetupCharacter(character)
     SetupEmoteDetector(character)
     setupJumpButton()
     
+    CacheMovementInstances()
+    ApplyAirExploit()
+    
+    -- Backup cache just in case the game delays loading the tables
+    task.delay(3, function()
+        CacheMovementInstances()
+    end)
+    
     if bhopHoldActive then
         task.delay(0.5, function() checkBhopState() end)
     end
@@ -1012,16 +1064,34 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 -- =====================
--- MAIN LOOP
+-- MAIN LOOP (WITH UNBREAKABLE FRAME-FORCE)
 -- =====================
 local function StartMainLoop()
     if Connections.SlowLoop then Connections.SlowLoop:Disconnect() end
     
     local cleanupAccum = 0
+    local airAccum = 0
     Connections.SlowLoop = RunService.Heartbeat:Connect(function(dt)
         if not RootPart or not Humanoid then return end
         
         if holdQ then DoCarry() end
+        
+        -- CONTINUOUS FORCE-APPLY AIR EXPLOIT EVERY FRAME
+        -- This ensures the game can NEVER wipe it without it instantly coming back
+        if not isCurrentlyEmoting and AirExploitValue > 0 then
+            for _, instance in ipairs(movementInstances) do
+                if instance and instance.overrideMovementStats then
+                    instance.overrideMovementStats.AirAcceleration = AirExploitValue
+                    instance.overrideMovementStats.AirStrafeAcceleration = AirExploitValue
+                end
+            end
+        end
+        
+        airAccum = airAccum + dt
+        if airAccum >= 3 then -- Rescan GC every 3 seconds to find newly created tables
+            airAccum = 0
+            CacheMovementInstances()
+        end
         
         cleanupAccum = cleanupAccum + dt
         if cleanupAccum >= 10.0 then 
@@ -1045,6 +1115,12 @@ Workspace.ChildAdded:Connect(function(child)
         hasRevived = false
         currentlyCarrying = false
         
+        CacheMovementInstances()
+        
+        task.delay(3, function()
+            CacheMovementInstances()
+        end)
+        
         pcall(function() collectgarbage("step", 200) end)
     end
 end)
@@ -1056,5 +1132,7 @@ LocalPlayer.Idled:Connect(function()
 end)
 
 CreateMainGUI() CreateTimerGUI() UpdateTimer() SetFOV() SetupCameraFOV() ForceUpdateRayFilter() StartMainLoop()
+CacheMovementInstances()
+ApplyAirExploit()
 
-print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Hook-Based Air Strafe!")
+print("[Evade Helper] V" .. SCRIPT_VERSION .. " loaded - Unbreakable Air Strafe!")
