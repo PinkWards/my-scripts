@@ -43,6 +43,7 @@ local cachedScaleH = 1
 local cachedScaleD = 1
 local lastScaleCheck = 0
 local SCALE_CHECK_INTERVAL = 0.5
+local isLocked = false -- State for the lock button
 
 -- // Head/leg cleanup tracking (event-driven instead of per-frame polling)
 local headCleanupConn = nil
@@ -66,8 +67,8 @@ sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 sg.Parent = game:GetService("CoreGui")
 
 local frm = Instance.new("Frame")
-frm.Size = UDim2.new(0, 175, 0, 34)
-frm.Position = UDim2.new(1, -185, 0, 10)
+frm.Size = UDim2.new(0, 200, 0, 34) -- Widened to fit lock button
+frm.Position = UDim2.new(1, -210, 0, 10) -- Adjusted position
 frm.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
 frm.BackgroundTransparency = 0.15
 frm.BorderSizePixel = 0
@@ -174,6 +175,34 @@ dnBtn.BackgroundTransparency = 1
 dnBtn.Text = ""
 dnBtn.Parent = frm
 
+-- Lock Button
+local lockBtn = Instance.new("TextButton")
+lockBtn.Name = "LockBtn"
+lockBtn.Size = UDim2.new(0, 24, 0, 28)
+lockBtn.Position = UDim2.new(0, 168, 0, 3)
+lockBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+lockBtn.BackgroundTransparency = 0.35
+lockBtn.Text = "🔓"
+lockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+lockBtn.TextSize = 12
+lockBtn.Font = Enum.Font.Gotham
+lockBtn.BorderSizePixel = 0
+lockBtn.Parent = frm
+Instance.new("UICorner", lockBtn).CornerRadius = UDim.new(0, 3)
+
+lockBtn.MouseButton1Click:Connect(function()
+    isLocked = not isLocked
+    if isLocked then
+        lockBtn.Text = "🔒"
+        lockBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
+        lockBtn.BackgroundTransparency = 0.1
+    else
+        lockBtn.Text = "🔓"
+        lockBtn.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+        lockBtn.BackgroundTransparency = 0.35
+    end
+end)
+
 -- // ============ LOGIC ============
 local SL_W, KN_W = 84, 8
 
@@ -191,6 +220,7 @@ local function updateVisuals()
 end
 
 local function setValue(val)
+    if isLocked then return end -- Prevent changing value if locked
     local n = tonumber(val)
     if not n then return end
     Config.LegYOffset = math.clamp(math.round(n * 100) / 100, MIN_VAL, MAX_VAL)
@@ -207,6 +237,7 @@ local function getSliderVal(input)
 end
 
 slHit.InputBegan:Connect(function(input)
+    if isLocked then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         setValue(getSliderVal(input))
@@ -220,14 +251,26 @@ slHit.InputEnded:Connect(function(input)
 end)
 
 UserInputService.InputChanged:Connect(function(input)
+    if isLocked then dragging = false return end
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         setValue(getSliderVal(input))
     end
 end)
 
 txB.FocusLost:Connect(function()
+    if isLocked then
+        txB.Text = string.format("%.2f", Config.LegYOffset)
+        return
+    end
     local val = tonumber(txB.Text)
     if val then setValue(val) else txB.Text = string.format("%.2f", Config.LegYOffset) end
+end)
+
+-- Prevent typing if locked
+txB.Focused:Connect(function()
+    if isLocked then
+        txB:ReleaseFocus(true)
+    end
 end)
 
 txB.InputBegan:Connect(function(input)
@@ -237,12 +280,13 @@ end)
 local function setupArrow(btn, vis, delta)
     local holding = false
     btn.MouseButton1Down:Connect(function()
+        if isLocked then return end
         setValue(Config.LegYOffset + delta)
         vis.BackgroundColor3 = Color3.fromRGB(65, 65, 65)
         holding = true
         task.spawn(function()
             task.wait(0.35)
-            while holding do
+            while holding and not isLocked do
                 setValue(Config.LegYOffset + delta)
                 task.wait(0.035)
             end
