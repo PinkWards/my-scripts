@@ -215,6 +215,7 @@ local LastCamera = nil
 
 local VEC3_ZERO = Vector3.zero
 local VEC2_ZERO = Vector2.new(0, 0)
+local LastGCTime = 0 -- Fixed: Added missing variable initialization
 
 -- =====================
 -- MOVEMENT MODULE HOOK
